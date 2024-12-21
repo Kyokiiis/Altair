@@ -1,16 +1,5 @@
 --[[
-
-Sirius
-
-© 2024 Sirius 
-All Rights Reserved.
-
---]]
-
-
---[[
-
-Sirius Pre-Hyperion Todo List
+Pre-Hyperion Todo List
 
 High Priority
  - Invisible, Godmode
