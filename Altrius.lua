@@ -141,7 +141,7 @@ local siriusValues = {
 		adjectives = {"Cool", "Awesome", "Epic", "Ninja", "Super", "Mystic", "Swift", "Golden", "Diamond", "Silver", "Mint", "Roblox", "Amazing"},
 		nouns = {"Player", "Gamer", "Master", "Legend", "Hero", "Ninja", "Wizard", "Champion", "Warrior", "Sorcerer"}
 	},
-	administratorRoles = {"mod","admin","staff","dev","founder","owner","supervis","manager","management","executive","president","chairman","chairwoman","chairperson","director","administrators","administrator"},
+	administratorRoles = {"mod","admin","staff","dev","founder","owner","supervisor","manager","management","executive","president","chairman","chairwoman","chairperson","director","administrator","sr. administrator","council","director"},
 	transparencyProperties = {
 		UIStroke = {'Transparency'},
 		Frame = {'BackgroundTransparency'},
