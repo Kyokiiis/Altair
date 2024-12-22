@@ -141,7 +141,7 @@ local siriusValues = {
 		adjectives = {"Cool", "Awesome", "Epic", "Ninja", "Super", "Mystic", "Swift", "Golden", "Diamond", "Silver", "Mint", "Roblox", "Amazing"},
 		nouns = {"Player", "Gamer", "Master", "Legend", "Hero", "Ninja", "Wizard", "Champion", "Warrior", "Sorcerer"}
 	},
-	administratorRoles = {"mod","admin","staff","dev","founder","owner","supervis","manager","management","executive","president","chairman","chairwoman","chairperson","director"},
+	administratorRoles = {"mod","admin","staff","dev","founder","owner","supervis","manager","management","executive","president","chairman","chairwoman","chairperson","director","administrators","administrator"},
 	transparencyProperties = {
 		UIStroke = {'Transparency'},
 		Frame = {'BackgroundTransparency'},
@@ -803,6 +803,15 @@ local originalSetClipboard = getgenv()[indexSetClipboard]
 
 local index = http_request and "http_request" or "request"
 local originalRequest = getgenv()[index]
+
+-- Game ID Detection
+
+siriusValues.currentCreator = creatorId
+
+if creatorType == Enum.CreatorType.Group then
+	siriusValues.currentGroup = creatorId
+	siriusValues.currentCreator = "group"
+end
 
 -- put this into siriusValues, like the fps and ping shit
 local suppressedSounds = {}
@@ -2438,6 +2447,7 @@ function promptModerator(player, role)
 
 	moderatorDetectionPrompt.Visible = true
 
+	--[[
 	for _, v in ipairs(game:GetService("HttpService"):JSONDecode(game:HttpGetAsync("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")).data) do
 		if type(v) == "table" and v.maxPlayers > v.playing and v.id ~= game.JobId then
 			serversAvailable = true
@@ -2448,7 +2458,9 @@ function promptModerator(player, role)
 		moderatorDetectionPrompt.Serverhop.Visible = false
 	else
 		moderatorDetectionPrompt.ServersAvailableFade.Visible = true
-	end
+	end]]
+
+	moderatorDetectionPrompt.Serverhop.Visible = false
 
 	tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
 	tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {Size = UDim2.new(0, 300, 0, 186)}):Play()
@@ -4045,6 +4057,32 @@ local function start()
 		-- startupSound:Destroy()	
 		--end
 
+		
+		-- Admin Detection
+		coroutine.wrap(function()
+			Toast(creatorId)
+			for index, player in ipairs(players:GetPlayers()) do
+				local roleFound = player:GetRoleInGroup(creatorId)
+				local adminfound = false
+				if checkSetting("Moderator Detection").current and Pro then
+					local roleFound = player:GetRoleInGroup(creatorId)
+					if siriusValues.currentCreator == "group" then
+						for _, role in pairs(siriusValues.administratorRoles) do 
+							if string.find(string.lower(roleFound), role) then
+								promptModerator(player, roleFound)
+								BlinkSmartBar(10, Color3.new(1, 0, 0))
+								adminfound = true
+								--queueNotification("Administrator ".. player.DisplayName .." Is in your session.", 3944670656) -- change to group name
+							end
+						end
+					end
+				end
+				if adminfound = true then
+				queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your", 3944670656)
+				else end
+			end
+		end)()
+
 		openSmartBar()
 		wait(1.5)
 		local startupSound = Instance.new("Sound")
@@ -4054,6 +4092,8 @@ local function start()
 		startupSound.Volume = 0.85
 		startupSound.PlayOnRemove = true
 		startupSound:Destroy()
+
+		--
 	else 
 		closeSmartBar() 
 	end
@@ -4540,20 +4580,6 @@ players.PlayerAdded:Connect(function(player)
 			})
 		end)
 
-	end
-
-	if checkSetting("Moderator Detection").current and Pro then
-		local roleFound = player:GetRoleInGroup(creatorId)
-
-		if siriusValues.currentCreator == "group" then
-			for _, role in pairs(siriusValues.administratorRoles) do 
-				if string.find(string.lower(roleFound), role) then
-					promptModerator(player, roleFound)
-					BlinkSmartBar(10, Color3.new(1, 0, 0))
-					queueNotification("Administrator Joined", siriusValues.currentGroup .." "..roleFound.." ".. player.DisplayName .." has joined your session", 3944670656) -- change to group name
-				end
-			end
-		end
 	end
 
 	if checkSetting("Friend Notifications").current then
