@@ -2498,6 +2498,28 @@ function promptModerator(player, role)
 
 	moderatorDetectionPrompt.Visible = true
 
+	coroutine.wrap(function()
+		local admincount = {}
+			for index, player in ipairs(players:GetPlayers()) do
+				if checkSetting("Moderator Detection").current and Pro then
+					local roleFound = player:GetRoleInGroup(creatorId)
+					if siriusValues.currentCreator == "group" then
+						for _, role in pairs(siriusValues.administratorRoles) do 
+							if string.find(string.lower(roleFound), role) then
+								table.insert(admincount, player.UserId)
+								display(player.UserId, Color3.fromRGB(255, 122, 122), 11849580844)
+							end
+						end
+					end
+				end
+			end
+		if #admincount > 1 then
+			Toast("Multiple Admins detected and highlighted in the ROBLOX leaderboard.")
+		else
+			Toast("The Admin has been highlighted in the ROBLOX leaderboard.")
+		end
+	end)()
+
 	--[[
 	for _, v in ipairs(game:GetService("HttpService"):JSONDecode(game:HttpGetAsync("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")).data) do
 		if type(v) == "table" and v.maxPlayers > v.playing and v.id ~= game.JobId then
@@ -2529,14 +2551,6 @@ function promptModerator(player, role)
 	tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
 	task.wait(0.3)
 	tweenService:Create(moderatorDetectionPrompt.Close, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {ImageTransparency = 0.6}):Play()
-
-
-	coroutine.wrap(function()
-	wait(3)
-	display(player.UserId, Color3.fromRGB(255, 122, 122), 11849580844)
-	wait(0.5)
-	Toast("Admin has been highlighted in the ROBLOX leaderboard.")
-	end)()
 
 	local function closeModPrompt()
 		tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
@@ -4134,7 +4148,7 @@ local function start()
 						end
 					end
 					if adminfound then
-						queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your", 3944670656)
+						queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your session", 3944670656)
 					else end
 				end
 			end
@@ -4653,7 +4667,7 @@ players.PlayerAdded:Connect(function(player)
 			end
 		end
 		if adminfound then
-			queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your", 3944670656)
+			queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your session", 3944670656)
 		else end
 	end
 
