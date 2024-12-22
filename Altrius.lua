@@ -4074,7 +4074,7 @@ local function start()
 							end
 						end
 					end
-					if adminfound = true then
+					if adminfound then
 						queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your", 3944670656)
 					else end
 				end
@@ -4593,7 +4593,7 @@ players.PlayerAdded:Connect(function(player)
 				end
 			end
 		end
-		if adminfound = true then
+		if adminfound then
 			queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your", 3944670656)
 		else end
 	end
