@@ -1688,9 +1688,9 @@ local function createReverb(timing)
 			reverb.Enabled = true
 
 			if timing then
-				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), {HighGain = -20}):Play()
-				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), {LowGain = 5}):Play()
-				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), {MidGain = -20}):Play()
+				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), {HighGain = -80}):Play()
+				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), {LowGain = 80}):Play()
+				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), {MidGain = -80}):Play()
 			end
 		end
 	end
@@ -2431,6 +2431,57 @@ local function checkFriends()
 	end
 end
 
+local function findOverlayFrame(target)
+	if not target then return nil end
+	local frame = target:FindFirstChild("ChildrenFrame")
+
+	if frame then
+		local nameFrame = frame:FindFirstChild("NameFrame")
+
+		if nameFrame then
+			if userInputService.TouchEnabled then
+				return nameFrame
+			else
+				local bgFrame = nameFrame:FindFirstChild("BGFrame")
+
+				if bgFrame then
+					return bgFrame:FindFirstChild("OverlayFrame")
+				end
+			end
+		end
+	end	
+	return nil
+end
+
+local function display(userId, color, image)
+	local target = coreGui:FindFirstChild("p_" .. tostring(userId), true) or coreGui:FindFirstChild("Player_" .. tostring(userId), true)
+	--if not target or not booster then return end
+
+	local overlayFrame = findOverlayFrame(target)
+
+	if overlayFrame then
+		overlayFrame.PlayerIcon.Image = 'rbxassetid://' .. (image or 11849580844)
+		overlayFrame.PlayerIcon.ImageRectOffset = Vector2.zero
+		overlayFrame.PlayerIcon.ImageRectSize = Vector2.zero
+
+		if userInputService.TouchEnabled then
+            if color then
+			    overlayFrame.PlayerName.TextColor3 = color
+            else
+                overlayFrame.PlayerName.TextColor3 = Color3.fromRGB(122, 204, 255)
+            end
+		else
+			if color then
+			    overlayFrame.PlayerName.PlayerName.TextColor3 = color
+            else
+                overlayFrame.PlayerName.PlayerName.TextColor3 = Color3.fromRGB(122, 204, 255)
+            end
+		end
+	end
+end
+-- Template
+-- display(player.UserId, Color3.fromRGB(0, 0, 255), 128645553269928)
+
 function promptModerator(player, role)
 	local serversAvailable = false
 	local promptClosed = false
@@ -2478,6 +2529,9 @@ function promptModerator(player, role)
 	tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
 	task.wait(0.3)
 	tweenService:Create(moderatorDetectionPrompt.Close, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {ImageTransparency = 0.6}):Play()
+
+	
+	display(player.UserId, Color3.fromRGB(255, 122, 122), 11849580844)
 
 	local function closeModPrompt()
 		tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
@@ -3215,9 +3269,9 @@ local function windowFocusChanged(value)
 	if checkSirius() then
 		if value then -- Window Focused
 			setfpscap(tonumber(checkSetting("Artificial FPS Limit").current))
-			removeReverbs(0.5)
+			removeReverbs(1)
 		else          -- Window unfocused
-			if checkSetting("Muffle audio while unfocused").current then createReverb(0.7) end
+			if checkSetting("Muffle audio while unfocused").current then createReverb(1) end
 			if checkSetting("Limit FPS while unfocused").current then setfpscap(60) end
 		end
 	end
