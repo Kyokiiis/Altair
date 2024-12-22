@@ -2530,8 +2530,13 @@ function promptModerator(player, role)
 	task.wait(0.3)
 	tweenService:Create(moderatorDetectionPrompt.Close, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {ImageTransparency = 0.6}):Play()
 
-	
+
+	coroutine.wrap(function()
+	wait(3)
 	display(player.UserId, Color3.fromRGB(255, 122, 122), 11849580844)
+	wait(0.5)
+	Toast("Admin has been highlighted in the ROBLOX leaderboard.")
+	end)()
 
 	local function closeModPrompt()
 		tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
