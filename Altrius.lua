@@ -4330,7 +4330,7 @@ end)
 
 musicPanel.Add.Interact.MouseButton1Click:Connect(function()
 	musicPanel.AddBox.Input:ReleaseFocus()
-	addToQueue(musicPanel.AddBox.Input.Text)
+	addToQueue(musicPanel.AddBox.Input.Text..".mp3")
 end)
 
 musicPanel.Menu.TogglePlaying.MouseButton1Click:Connect(function()
