@@ -4057,15 +4057,13 @@ local function start()
 		-- startupSound:Destroy()	
 		--end
 
-		
+
 		-- Admin Detection
 		coroutine.wrap(function()
-			Toast(creatorId)
 			for index, player in ipairs(players:GetPlayers()) do
-				local roleFound = player:GetRoleInGroup(creatorId)
-				local adminfound = false
 				if checkSetting("Moderator Detection").current and Pro then
 					local roleFound = player:GetRoleInGroup(creatorId)
+					local adminfound = false
 					if siriusValues.currentCreator == "group" then
 						for _, role in pairs(siriusValues.administratorRoles) do 
 							if string.find(string.lower(roleFound), role) then
@@ -4076,10 +4074,10 @@ local function start()
 							end
 						end
 					end
+					if adminfound = true then
+						queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your", 3944670656)
+					else end
 				end
-				if adminfound = true then
-				queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your", 3944670656)
-				else end
 			end
 		end)()
 
@@ -4580,6 +4578,24 @@ players.PlayerAdded:Connect(function(player)
 			})
 		end)
 
+	end
+
+	if checkSetting("Moderator Detection").current and Pro then
+		local roleFound = player:GetRoleInGroup(creatorId)
+		local adminfound = false
+		if siriusValues.currentCreator == "group" then
+			for _, role in pairs(siriusValues.administratorRoles) do 
+				if string.find(string.lower(roleFound), role) then
+					promptModerator(player, roleFound)
+					BlinkSmartBar(10, Color3.new(1, 0, 0))
+					adminfound = true
+					--queueNotification("Administrator ".. player.DisplayName .." Is in your session.", 3944670656) -- change to group name
+				end
+			end
+		end
+		if adminfound = true then
+			queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your", 3944670656)
+		else end
 	end
 
 	if checkSetting("Friend Notifications").current then
