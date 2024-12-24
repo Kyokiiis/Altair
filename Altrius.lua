@@ -86,7 +86,7 @@ local siriusValues = {
 	releaseType = "Stable",
 	siriusFolder = "Sirius",
 	settingsFile = "settings.srs",
-	interfaceAsset = 122360531090209,
+	interfaceAsset = 95010417891946,
 	cdn = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/",
 	icons = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/Icons/",
 	enableExperienceSync = false, -- Games are no longer available due to a lack of whitelisting, they may be made open source at a later date, however they are patched as of now and are useless to the end user. Turning this on may introduce "fake functionality".
@@ -1366,7 +1366,6 @@ local function Toast(content, font)
     template.Visible, template.BackgroundTransparency, template.Title.TextTransparency, template.Title.TextStrokeTransparency = true, 1, 1, 1
 
     table.insert(activeToasts, 1, template)
-	--255881176
 	local startupSound = Instance.new("Sound")
 	startupSound.Parent = UI
 	startupSound.SoundId = "rbxassetid://"..255881176
@@ -1374,6 +1373,11 @@ local function Toast(content, font)
 	startupSound.Volume = 0.85
 	startupSound.PlayOnRemove = true
 	startupSound:Destroy()	
+
+    if #activeToasts == 1 then
+        tweenService:Create(UI.SmartBar.CircleGradient, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {ImageTransparency = 0.7}):Play()
+    end
+
     tweenService:Create(template.Title, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0.01 * (#activeToasts - 1), 0), TextTransparency = 0, TextStrokeTransparency = 0.9}):Play()
 
     task.spawn(function()
@@ -1382,10 +1386,16 @@ local function Toast(content, font)
         task.wait(1.5)
         for i, toast in ipairs(activeToasts) do if toast == template then table.remove(activeToasts, i) break end end
         template:Destroy()
+
+        if #activeToasts == 0 then
+            tweenService:Create(UI.SmartBar.CircleGradient, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {ImageTransparency = 1}):Play()
+        end
     end)
 end
 
-local function queueNotification(Title, Description, Image)
+
+
+local function queueNotification(Title, Description, Color, Image)
 	task.spawn(function()		
 		if checkSirius() then
 			local newNotification = notificationContainer.Template:Clone()
@@ -1425,6 +1435,12 @@ local function queueNotification(Title, Description, Image)
 				newNotification.Icon.Image = 'rbxassetid://'..Image or 0
 			end
 
+			if not Color then
+				newNotification.CircleGradient.ImageColor3 = Color3.fromRGB(255, 255, 255)
+			else
+				newNotification.CircleGradient.ImageColor3 = Color
+			end
+
 			newNotification:TweenPosition(UDim2.new(0.5, 0, 0, newNotification.Size.Y.Offset + 2), "Out", "Quint", 0.9, true)
 			task.wait(0.1)
 			tweenService:Create(newNotification, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 320, 0, newNotification.Description.TextBounds.Y + 50)}):Play()
@@ -1432,13 +1448,18 @@ local function queueNotification(Title, Description, Image)
 			tweenService:Create(newNotification, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.35}):Play()
 			tweenService:Create(newNotification.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0.7}):Play()
 			task.wait(0.05)
+			tweenService:Create(newNotification.Icon.CircleGradient, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 0.7}):Play()
+			task.wait(0.1)
 			tweenService:Create(newNotification.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
 			task.wait(0.04)
 			tweenService:Create(newNotification.Title, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
 			task.wait(0.04)
 			tweenService:Create(newNotification.Description, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0.15}):Play()
 			tweenService:Create(newNotification.Time, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0.5}):Play()
-
+			coroutine.wrap(function()
+			wait(0.5)
+			tweenService:Create(newNotification.CircleGradient, TweenInfo.new(3, Enum.EasingStyle.Exponential), {ImageTransparency = 0.5}):Play()
+			end)()
 			--neonModule:BindFrame(newNotification.BlurModule, {
 			--	Transparency = 0.98,
 			--	BrickColor = BrickColor.new("Institutional white")
@@ -1480,7 +1501,7 @@ local function checkLastVersion()
 	local lastVersion = isfile and isfile(siriusValues.siriusFolder.."/".."version.srs") and readfile(siriusValues.siriusFolder.."/".."version.srs") or nil
 
 	if lastVersion then
-		if lastVersion ~= siriusValues.siriusVersion then queueNotification("Sirius has been updated", "Sirius has been updated to version "..siriusValues.siriusVersion..", check our Discord for all new features and changes.", 4400701828)  end
+		if lastVersion ~= siriusValues.siriusVersion then queueNotification("Sirius has been updated", "Sirius has been updated to version "..siriusValues.siriusVersion..", check our Discord for all new features and changes.", Color3.fromRGB(102, 161, 100), 4400701828)  end
 	end
 
 	if writefile then writefile(siriusValues.siriusFolder.."/".."version.srs", siriusValues.siriusVersion) end
@@ -1514,7 +1535,7 @@ local function playNext()
 	musicPanel.Menu.TogglePlaying.ImageRectOffset = currentAudio.Playing and Vector2.new(804, 124) or Vector2.new(764, 244)
 	local asset = getcustomasset(siriusValues.siriusFolder.."/Music/"..musicQueue[1].sound)
 
-	if checkSetting("Now Playing Notifications").current then queueNotification("Now Playing", musicQueue[1].sound, 4400695581) end
+	if checkSetting("Now Playing Notifications").current then queueNotification("Now Playing", musicQueue[1].sound, Color3.fromRGB(96, 135, 191), 4400695581) end
 
 	if musicPanel.Queue.List:FindFirstChild(tostring(musicQueue[1].instanceName)) then
 		musicPanel.Queue.List:FindFirstChild(tostring(musicQueue[1].instanceName)):Destroy()
@@ -1590,7 +1611,7 @@ Toast(response) -- Display the response using the Toast function
 local function addToQueue(file)
 	if not getcustomasset then return end
 	checkFolder()
-	if not isfile(siriusValues.siriusFolder.."/Music/"..file) then queueNotification("Unable to locate file", "Please ensure that your audio file is in the Sirius/Music folder and that you are including the file extension (e.g mp3 or ogg).", 4370341699) return end
+	if not isfile(siriusValues.siriusFolder.."/Music/"..file) then queueNotification("Unable to locate file", "Please ensure that your audio file is in the Sirius/Music folder and that you are including the file extension (e.g mp3 or ogg).", Color3.fromRGB(255, 91, 101), 4370341699) return end
 	musicPanel.AddBox.Input.Text = ""
 
 	local newAudio = musicPanel.Queue.List.Template:Clone()
@@ -1792,7 +1813,7 @@ local function syncExperienceInformation()
 
 			gameDetectionPrompt.Layer.Run.MouseButton1Click:Connect(function()
 				closeGameDetection()
-				queueNotification("Running "..gameFound.name, "Now running Sirius' "..gameFound.name.." script, this may take a moment.", 4400701828)
+				queueNotification("Running "..gameFound.name, "Now running Sirius' "..gameFound.name.." script, this may take a moment.", Color3.fromRGB(102, 161, 100), 4400701828)
 				BlinkSmartBar(3, Color3.new(1,1,1))
 				wait(3)
 				runScript(rawFile)
@@ -1918,7 +1939,7 @@ local function sortActions()
 			end)
 
 			if not success then
-				queueNotification("Action Error", "This action ('"..(action.name).."') had an error while running, please report this to the Sirius team at sirius.menu/discord", 4370336704)
+				queueNotification("Action Error", "This action ('"..(action.name).."') had an error while running, please report this to the Sirius team at sirius.menu/discord", Color3.fromRGB(255, 91, 101), 4370336704)
 				action.enabled = false
 				newAction.Icon.Image = "rbxassetid://"..action.images[2]
 				tweenService:Create(newAction, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.55}):Play()
@@ -2323,7 +2344,7 @@ end
 
 local function rejoin()
 	BlinkSmartBar(1, Color3.new(1,0,0))
-	queueNotification("Error", "Due to an unknown reason, the Rejoin system is bugged and is currently inoperational.", 4400696294)
+	queueNotification("Error", "Due to an unknown reason, the Rejoin system is bugged and is currently inoperational.", Color3.fromRGB(255, 91, 101), 4400696294)
 	--[[
 	if #players:GetPlayers() <= 1 then
 		task.wait()
@@ -2335,7 +2356,7 @@ end
 
 local function serverhop()
 	BlinkSmartBar(1, Color3.new(1,0,0))
-	queueNotification("Error", "Due to an unknown reason, the Serverhop system is bugged and is currently inoperational.", 4400696294)
+	queueNotification("Error", "Due to an unknown reason, the Serverhop system is bugged and is currently inoperational.", Color3.fromRGB(255, 91, 101), 4400696294)
 	--[[
 	local highestPlayers = 0
 	local servers = {}
@@ -2497,6 +2518,7 @@ function promptModerator(player, role)
 	moderatorDetectionPrompt.Avatar.Image = "https://www.roblox.com/headshot-thumbnail/image?userId="..player.UserId.."&width=420&height=420&format=png"
 
 	moderatorDetectionPrompt.Visible = true
+	moderatorDetectionPrompt.CircleGradient.Visible = true
 
 	coroutine.wrap(function()
 		local admincount = {}
@@ -2534,10 +2556,18 @@ function promptModerator(player, role)
 	end]]
 
 	moderatorDetectionPrompt.Serverhop.Visible = false
+	moderatorDetectionPrompt.Stroke.Size = UDim2.new(0.1, 0, 0, 1)
 
 	tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
-	tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {Size = UDim2.new(0, 300, 0, 186)}):Play()
+	tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {Size = UDim2.new(0, 300, 0, 220)}):Play()
+	wait(0.5)
+	tweenService:Create(moderatorDetectionPrompt.Stroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
+	tweenService:Create(moderatorDetectionPrompt.Stroke, TweenInfo.new(1, Enum.EasingStyle.Quint), {Size = UDim2.new(1, 0, 0, 1)}):Play()
+	task.wait(0.5)
+	tweenService:Create(moderatorDetectionPrompt.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {Transparency = 0}):Play()
 	tweenService:Create(moderatorDetectionPrompt.UIGradient, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {Offset = Vector2.new(0, 0.65)}):Play()
+	tweenService:Create(moderatorDetectionPrompt.TitleGradient, TweenInfo.new(1, Enum.EasingStyle.Quint), {ImageTransparency = 0.8}):Play()
+	task.wait(0.5)
 	tweenService:Create(moderatorDetectionPrompt.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
 	tweenService:Create(moderatorDetectionPrompt.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
 	tweenService:Create(moderatorDetectionPrompt.Avatar, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 0.7}):Play()
@@ -2545,17 +2575,35 @@ function promptModerator(player, role)
 	tweenService:Create(moderatorDetectionPrompt.DisplayName, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
 	tweenService:Create(moderatorDetectionPrompt.Rank, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
 	tweenService:Create(moderatorDetectionPrompt.Serverhop, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 0.7}):Play()
-	tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 0.7}):Play()
+	tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 0.4}):Play()
+	tweenService:Create(moderatorDetectionPrompt.Leave.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {Transparency = 0}):Play()
+	tweenService:Create(moderatorDetectionPrompt.Leave.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0.05}):Play()
+
 	task.wait(0.2)
 	tweenService:Create(moderatorDetectionPrompt.Serverhop, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
-	tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
-	task.wait(0.3)
 	tweenService:Create(moderatorDetectionPrompt.Close, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {ImageTransparency = 0.6}):Play()
 
+
+	task.spawn(function()
+		while moderatorDetectionPrompt.CircleGradient.Visible do
+				tweenService:Create(moderatorDetectionPrompt.CircleGradient, TweenInfo.new(1.5, Enum.EasingStyle.Quint), {ImageTransparency = 0.7}):Play()
+			task.wait(2.5)
+				tweenService:Create(moderatorDetectionPrompt.CircleGradient, TweenInfo.new(1.5, Enum.EasingStyle.Quint), {ImageTransparency = 1}):Play()
+			task.wait(1)
+			end
+		end)
+
 	local function closeModPrompt()
+		tweenService:Create(moderatorDetectionPrompt.CircleGradient, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {ImageTransparency = 1}):Play()
+		task.wait(0.5)
+		moderatorDetectionPrompt.CircleGradient.Visible = false
+		--
 		tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
+		tweenService:Create(moderatorDetectionPrompt.Stroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
+		tweenService:Create(moderatorDetectionPrompt.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {Transparency = 1}):Play()
 		tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {Size = UDim2.new(0, 283, 0, 175)}):Play()
 		tweenService:Create(moderatorDetectionPrompt.UIGradient, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {Offset = Vector2.new(0, 1)}):Play()
+		tweenService:Create(moderatorDetectionPrompt.TitleGradient, TweenInfo.new(1, Enum.EasingStyle.Quint), {ImageTransparency = 1}):Play()
 		tweenService:Create(moderatorDetectionPrompt.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
 		tweenService:Create(moderatorDetectionPrompt.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
 		tweenService:Create(moderatorDetectionPrompt.Avatar, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
@@ -2563,15 +2611,16 @@ function promptModerator(player, role)
 		tweenService:Create(moderatorDetectionPrompt.DisplayName, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
 		tweenService:Create(moderatorDetectionPrompt.Rank, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
 		tweenService:Create(moderatorDetectionPrompt.Serverhop, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
-		tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
 		tweenService:Create(moderatorDetectionPrompt.Serverhop, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
-		tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
+		tweenService:Create(moderatorDetectionPrompt.Leave.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {Transparency = 1}):Play()
+		tweenService:Create(moderatorDetectionPrompt.Leave.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
+		tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
 		tweenService:Create(moderatorDetectionPrompt.Close, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {ImageTransparency = 1}):Play()
 		task.wait(0.5)
 		moderatorDetectionPrompt.Visible = false
 	end
 
-	moderatorDetectionPrompt.Leave.MouseButton1Click:Connect(function()
+	moderatorDetectionPrompt.Leave.Leave.MouseButton1Click:Connect(function()
 		closeModPrompt()
 		game:Shutdown()
 	end)
@@ -2941,7 +2990,7 @@ local function createScript(result)
 	newScript.Tags.Patched.Visible = result.isPatched or false
 
 	newScript.Execute.MouseButton1Click:Connect(function()
-		queueNotification("ScriptSearch", "Running "..result.title.. " via ScriptSearch" , 4384403532)
+		queueNotification("ScriptSearch", "Running "..result.title.. " via ScriptSearch" , Color3.fromRGB(102, 161, 100), 4384403532)
 		closeScriptSearch()
 		loadstring(result.script)()
 	end)
@@ -3125,7 +3174,7 @@ local function searchScriptBlox(query)
 	end)
 
 	if not success then
-		queueNotification("ScriptSearch", "ScriptSearch backend encountered an error, try again later", 4384402990)
+		queueNotification("ScriptSearch", "ScriptSearch backend encountered an error, try again later", Color3.fromRGB(255, 91, 101), 4384402990)
 		closeScriptSearch()
 		return
 	end
@@ -3174,7 +3223,7 @@ local function searchScriptBlox(query)
 			tweenService:Create(scriptSearch.List, TweenInfo.new(.3,Enum.EasingStyle.Quint),  {ScrollBarImageTransparency = 0}):Play()
 		end
 	else
-		queueNotification("ScriptSearch", "ScriptSearch backend encountered an error, try again later", 4384402990)
+		queueNotification("ScriptSearch", "ScriptSearch backend encountered an error, try again later", Color3.fromRGB(255, 91, 101), 4384402990)
 		closeScriptSearch()
 		return
 	end
@@ -3373,12 +3422,12 @@ end
 
 local function teleportTo(player)
 	if players:FindFirstChild(player.Name) then
-		queueNotification("Teleportation", "Teleporting to "..player.DisplayName..".")
+		queueNotification("Teleportation", "Teleporting to "..player.DisplayName..".", Color3.fromRGB(96, 135, 191))
 
 		local target = workspace:FindFirstChild(player.Name).HumanoidRootPart
 		localPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(target.Position.X, target.Position.Y, target.Position.Z)
 	else
-		queueNotification("Teleportation Error", player.DisplayName.." has left this server.")
+		queueNotification("Teleportation Error", player.DisplayName.." has left this server.", Color3.fromRGB(255, 91, 101))
 	end
 end
 
@@ -3498,7 +3547,7 @@ local function createPlayer(player)
 	end)
 
 	newPlayer.PlayerInteractions.Kill.Interact.MouseButton1Click:Connect(function()
-		queueNotification("Simulation Notification","Simulating Kill Notification for "..player.DisplayName..".")
+		queueNotification("Simulation Notification","Simulating Kill Notification for "..player.DisplayName..".", Color3.fromRGB(102, 161, 100))
 		Toast("Due to Hyperion, Player Interactions have been disabled for your account's safety.")
 		tweenService:Create(newPlayer.PlayerInteractions.Kill, TweenInfo.new(0.4, Enum.EasingStyle.Quint), {BackgroundColor3 = Color3.fromRGB(0, 124, 89)}):Play()
 		tweenService:Create(newPlayer.PlayerInteractions.Kill.Icon, TweenInfo.new(0.4, Enum.EasingStyle.Quint), {ImageColor3 = Color3.fromRGB(220, 220, 220)}):Play()
@@ -3523,13 +3572,13 @@ local function createPlayer(player)
 	end)
 
 	newPlayer.PlayerInteractions.Spectate.Interact.MouseButton1Click:Connect(function()
-		queueNotification("Simulation Notification","Simulating Spectate Notification for "..player.DisplayName..".")
+		queueNotification("Simulation Notification","Simulating Spectate Notification for "..player.DisplayName..".", Color3.fromRGB(102, 161, 100))
 		Toast("Due to Hyperion, Player Interactions have been disabled for your account's safety.")
 		-- Spectate
 	end)
 
 	newPlayer.PlayerInteractions.Locate.Interact.MouseButton1Click:Connect(function()
-		queueNotification("Simulation Notification","Simulating Locate ESP Notification for "..player.DisplayName..".")
+		queueNotification("Simulation Notification","Simulating Locate ESP Notification for "..player.DisplayName..".", Color3.fromRGB(102, 161, 100))
 		Toast("Due to Hyperion, Player Interactions have been disabled for your account's safety.")
 		-- ESP for that user only
 	end)
@@ -3786,7 +3835,7 @@ local function assembleSettings()
 					newSwitch.Interact.MouseButton1Click:Connect(function()
 						if minimumLicense then
 							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.", 4483345875)
+								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.", Color3.fromRGB(255, 91, 101), 4483345875)
 								return
 							end
 						end
@@ -3837,7 +3886,7 @@ local function assembleSettings()
 					newInput.InputFrame.InputBox.FocusLost:Connect(function()
 						if minimumLicense then
 							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.", 4483345875)
+								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.",Color3.fromRGB(255, 91, 101), 4483345875)
 								newInput.InputFrame.InputBox.Text = setting.current
 								return
 							end
@@ -3882,7 +3931,7 @@ local function assembleSettings()
 
 						if minimumLicense then
 							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.", 4483345875)
+								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.",Color3.fromRGB(255, 91, 101), 4483345875)
 								newInput.InputFrame.InputBox.Text = setting.current
 								return
 							end
@@ -3941,7 +3990,7 @@ local function assembleSettings()
 
 						if minimumLicense then
 							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.", 4483345875)
+								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.",Color3.fromRGB(255, 91, 101), 4483345875)
 								newKeybind.InputFrame.InputBox.Text = setting.current
 								return
 							end
@@ -4056,7 +4105,7 @@ local function initialiseAntiKick()
 
 			originalIndex = hookmetamethod(game, "__index", function(self, method)
 				if self == localPlayer and method:lower() == "kick" and checkSetting("Client-Based Anti Kick").current and checkSirius() then
-					queueNotification("Kick Prevented", "Sirius has prevented you from being kicked by the client.", 4400699701)
+					queueNotification("Kick Prevented", "Sirius has prevented you from being kicked by the client.",Color3.fromRGB(255, 91, 101), 4400699701)
 					BlinkSmartBar(3, Color3.new(1,0,0))
 					return error("Expected ':' not '.' calling member function Kick", 2)
 				end
@@ -4065,7 +4114,7 @@ local function initialiseAntiKick()
 
 			originalNamecall = hookmetamethod(game, "__namecall", function(self, ...)
 				if self == localPlayer and getnamecallmethod():lower() == "kick" and checkSetting("Client-Based Anti Kick").current and checkSirius() then
-					queueNotification("Kick Prevented", "Sirius has prevented you from being kicked by the client.", 4400699701)
+					queueNotification("Kick Prevented", "Sirius has prevented you from being kicked by the client.",Color3.fromRGB(255, 91, 101), 4400699701)
 					BlinkSmartBar(3, Color3.new(1,0,0))
 					return
 				end
@@ -4148,7 +4197,7 @@ local function start()
 						end
 					end
 					if adminfound then
-						queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your session", 3944670656)
+						queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your session",Color3.fromRGB(255, 91, 101), 3944670656)
 					else end
 				end
 			end
@@ -4170,7 +4219,7 @@ local function start()
 	end
 
 	if script_key and not (Essential or Pro) then
-		queueNotification("License Error", "We've detected a key being placed above Sirius loadstring, however your key seems to be invalid. Make a support request at sirius.menu/discord to get this solved within minutes.", "document-minus")
+		queueNotification("License Error", "We've detected a key being placed above Sirius loadstring, however your key seems to be invalid. Make a support request at sirius.menu/discord to get this solved within minutes.", "document-minus", Color3.fromRGB(255, 91, 101))
 	end
 
 	if siriusValues.enableExperienceSync then
@@ -4367,18 +4416,18 @@ homeContainer.Interactions.Server.JobId.Interact.MouseButton1Click:Connect(funct
 
 game:GetService("TeleportService"):TeleportToPlaceInstance(']]..placeId..[[', ']]..jobId..[[')]]
 		)
-		queueNotification("Copied Join Script","Successfully set clipboard to join script, players can use this script to join your specific server.", 4335479121)
+		queueNotification("Copied Join Script","Successfully set clipboard to join script, players can use this script to join your specific server.",Color3.fromRGB(102, 161, 100), 4335479121)
 	else
-		queueNotification("Unable to copy join script","Missing setclipboard() function, can't set data to your clipboard.", 4335479658)
+		queueNotification("Unable to copy join script","Missing setclipboard() function, can't set data to your clipboard.",Color3.fromRGB(255, 91, 101), 4335479658)
 	end
 end)
 
 homeContainer.Interactions.Discord.Interact.MouseButton1Click:Connect(function()
 	if setclipboard then 
 		originalSetClipboard("https://sirius.menu/discord")
-		queueNotification("Discord Invite Copied", "We've set your clipboard to the Sirius discord invite.", 4335479121)
+		queueNotification("Discord Invite Copied", "We've set your clipboard to the Sirius discord invite.",Color3.fromRGB(102, 161, 100), 4335479121)
 	else
-		queueNotification("Unable to copy Discord invite", "Missing setclipboard() function, can't set data to your clipboard.", 4335479658)
+		queueNotification("Unable to copy Discord invite", "Missing setclipboard() function, can't set data to your clipboard.",Color3.fromRGB(102, 161, 100), 4335479658)
 	end
 end)
 
@@ -4667,14 +4716,14 @@ players.PlayerAdded:Connect(function(player)
 			end
 		end
 		if adminfound then
-			queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your session", 3944670656)
+			queueNotification("Detection", "Administrator ".. player.DisplayName .." has been detected in your session",Color3.fromRGB(255, 91, 101), 3944670656)
 		else end
 	end
 
 	if checkSetting("Friend Notifications").current then
 		if localPlayer:IsFriendsWith(player.UserId) then
 			BlinkSmartBar(1, Color3.new(0, 1, 0))
-			queueNotification("Friend Joined", "Your friend "..player.DisplayName.." has joined your server.", 4370335364)
+			queueNotification("Friend Joined", "Your friend "..player.DisplayName.." has joined your server.",Color3.fromRGB(102, 161, 100), 4370335364)
 		end
 	end
 end)
@@ -4836,7 +4885,7 @@ runService.Heartbeat:Connect(function(frame)
 					end
 					if soundSuppressionNotificationCooldown == 0 then
 						BlinkSmartBar(2, Color3.new(255, 116, 41))
-						queueNotification("Spatial Shield","A high-volume audio is being played ("..sound.Name..") and it has been suppressed.", 4483362458) 
+						queueNotification("Spatial Shield","A high-volume audio is being played ("..sound.Name..") and it has been suppressed.",Color3.fromRGB(255, 91, 101), 4483362458) 
 						soundSuppressionNotificationCooldown = 15
 					end
 					table.remove(soundInstances, index)
@@ -5010,7 +5059,7 @@ while task.wait(1) do
 			if siriusValues.pingProfile.pingNotificationCooldown <= 0 then
 				if checkSetting("Adaptive Latency Warning").current then
 					BlinkSmartBar(5, Color3.new(1,0,0))
-					queueNotification("High Latency Warning","We've noticed your latency has reached a higher value than usual, you may find that you are lagging or your actions are delayed in-game. Consider checking for any background downloads on your machine.", 4370305588)
+					queueNotification("High Latency Warning","We've noticed your latency has reached a higher value than usual, you may find that you are lagging or your actions are delayed in-game. Consider checking for any background downloads on your machine.",Color3.fromRGB(255, 91, 101), 4370305588)
 					siriusValues.pingProfile.pingNotificationCooldown = 120
 				end
 			end
@@ -5028,7 +5077,7 @@ while task.wait(1) do
 				if avgFPS < siriusValues.frameProfile.lowFPSThreshold then
 					if checkSetting("Adaptive Performance Warning").current then
 						BlinkSmartBar(2, Color3.new(1,0,0))
-						queueNotification("Degraded Performance","We've noticed your client's frames per second have decreased. Consider checking for any background tasks or programs on your machine.", 4384400106)
+						queueNotification("Degraded Performance","We've noticed your client's frames per second have decreased. Consider checking for any background tasks or programs on your machine.",Color3.fromRGB(102, 161, 100), 4384400106)
 						siriusValues.frameProfile.frameNotificationCooldown = 120	
 					end
 				end
