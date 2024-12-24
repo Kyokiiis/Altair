@@ -1455,7 +1455,7 @@ local function queueNotification(Title, Description, Color, Image)
 			tweenService:Create(newNotification.Title, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0}):Play()
 			task.wait(0.04)
 			tweenService:Create(newNotification.Description, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0.15}):Play()
-			tweenService:Create(newNotification.Time, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0.5}):Play()
+			tweenService:Create(newNotification.Time, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0.8}):Play()
 			coroutine.wrap(function()
 			wait(0.5)
 			tweenService:Create(newNotification.CircleGradient, TweenInfo.new(3, Enum.EasingStyle.Exponential), {ImageTransparency = 0.5}):Play()
@@ -1480,6 +1480,12 @@ local function queueNotification(Title, Description, Color, Image)
 			local waitTime = (#newNotification.Description.Text*0.1)+2
 			if waitTime <= 1 then waitTime = 2.5 elseif waitTime > 10 then waitTime = 10 end
 
+			task.wait(waitTime)
+			tweenService:Create(newNotification.Time, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 1}):Play()
+			wait(0.1)
+			newNotification.Time.Text = waitTime.."s Ago"
+			wait(0.1)
+			tweenService:Create(newNotification.Time, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0.8}):Play()
 			task.wait(waitTime)
 
 			local foundNotification = table.find(notifications, newNotification)
