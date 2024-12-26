@@ -1,6 +1,6 @@
 --[[
 
-Altrius
+Altair
 
 Pre-Hyperion Todo List
 
@@ -33,6 +33,7 @@ Potential Future Setting Options
 -- Ensure the game is loaded 
 if not game:IsLoaded() then
 	game.Loaded:Wait()
+	wait(10)
 end
 
 -- Check License Tier
@@ -5097,4 +5098,4 @@ while task.wait(1) do
 end
 end)()
 
---
+-- End of Script
