@@ -87,7 +87,7 @@ local siriusValues = {
 	releaseType = "Stable",
 	siriusFolder = "Sirius",
 	settingsFile = "settings.srs",
-	interfaceAsset = 95010417891946,
+	interfaceAsset = 112380943532521,
 	cdn = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/",
 	icons = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/Icons/",
 	enableExperienceSync = false, -- Games are no longer available due to a lack of whitelisting, they may be made open source at a later date, however they are patched as of now and are useless to the end user. Turning this on may introduce "fake functionality".
@@ -153,7 +153,7 @@ local siriusValues = {
 		ImageButton = {'BackgroundTransparency', 'ImageTransparency'},
 		ScrollingFrame = {'BackgroundTransparency', 'ScrollBarImageTransparency'}
 	},
-	buttonPositions = {Character = UDim2.new(0.5, -155, 1, -29), Scripts = UDim2.new(0.5, -122, 1, -29), Playerlist = UDim2.new(0.5, -68, 1, -29)},
+	buttonPositions = {Character = UDim2.new(0.52, -68, 1, -29), Scripts = UDim2.new(0.535, -68, 1, -29), Playerlist = UDim2.new(0.55, -68, 1, -29)},
 	chatSpy = {
 		enabled = true,
 		visual = {
@@ -2081,7 +2081,8 @@ local function closePanel(panelName, openingOther)
 	if not isPanel(panelName) then return end
 	if not (panel and button) then return end
 
-	local panelSize = UDim2.new(0, 581, 0, 246)
+	--local panelSize = UDim2.new(0, 581, 0, 246)
+	local panelSize = UDim2.new(0, 581, 0, 405)
 
 	if not openingOther then
 		if panel.Name == "Character" then -- Character Panel Animation
@@ -2131,6 +2132,25 @@ local function closePanel(panelName, openingOther)
 			end
 
 		elseif panel.Name == "Playerlist" then -- Playerlist Panel Animation
+			tweenService:Create(playerlistPanel.Interactions.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
+			tweenService:Create(playerlistPanel.Interactions.Value, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
+			--
+			tweenService:Create(playerlistPanel.Stroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
+			tweenService:Create(playerlistPanel.Stroke2, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
+			tweenService:Create(playerlistPanel.Stroke, TweenInfo.new(1, Enum.EasingStyle.Quint), {Size = UDim2.new(0.1, 0, 2)}):Play()
+			tweenService:Create(playerlistPanel.Stroke2, TweenInfo.new(1, Enum.EasingStyle.Quint), {Size = UDim2.new(0.1, 0, 2)}):Play()
+		
+			for _, playerIns in ipairs(playerlistPanel.Interactions.TeamList:GetDescendants()) do
+				if playerIns.ClassName == "Frame" then
+					tweenService:Create(playerIns, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {BackgroundTransparency = 1}):Play()
+				elseif playerIns.ClassName == "TextLabel" or playerIns.ClassName == "TextButton" then
+					tweenService:Create(playerIns, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
+				elseif playerIns.ClassName == "ImageLabel" or playerIns.ClassName == "ImageButton" then
+					tweenService:Create(playerIns, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {ImageTransparency = 1}):Play()
+				elseif playerIns.ClassName == "UIStroke" then
+					tweenService:Create(playerIns, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {Transparency = 1}):Play()
+				end
+			end
 
 			for _, playerIns in ipairs(playerlistPanel.Interactions.List:GetDescendants()) do
 				if playerIns.ClassName == "Frame" then
@@ -2164,7 +2184,7 @@ local function closePanel(panelName, openingOther)
 		task.wait(0.03)
 
 		tweenService:Create(panel, TweenInfo.new(0.75, Enum.EasingStyle.Exponential, Enum.EasingDirection.InOut), {BackgroundTransparency = 1}):Play()
-		tweenService:Create(panel, TweenInfo.new(1.1, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Size = button.Size}):Play()
+		tweenService:Create(panel, TweenInfo.new(0.5, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), {Size = UDim2.new(0, 36, 0, 36)}):Play()
 		tweenService:Create(panel, TweenInfo.new(0.65, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {Position = siriusValues.buttonPositions[panelName]}):Play()
 		tweenService:Create(toggle, TweenInfo.new(0.6, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {Position = UDim2.new(0.5, 0, 1, -85)}):Play()
 		tweenService:Create(toastsContainer, TweenInfo.new(0.6, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {Position = UDim2.new(0.5, 0, 1, -110)}):Play()
@@ -2204,6 +2224,10 @@ local function openPanel(panelName)
 
 	local panelSize = UDim2.new(0, 581, 0, 246)
 
+	if panelName == "Playerlist" then
+		panelSize = UDim2.new(0, 581, 0, 405)
+	end
+
 	panel.Size = button.Size
 	panel.Position = siriusValues.buttonPositions[panelName]
 
@@ -2212,7 +2236,7 @@ local function openPanel(panelName)
 	panel.Visible = true
 
 	tweenService:Create(toggle, TweenInfo.new(0.65, Enum.EasingStyle.Quint), {Position = UDim2.new(0.5, 0, 1, -(panelSize.Y.Offset + 95))}):Play()
-	tweenService:Create(toastsContainer, TweenInfo.new(0.65, Enum.EasingStyle.Quint), {Position = UDim2.new(0.5, 0, 1, -365)}):Play()
+	tweenService:Create(toastsContainer, TweenInfo.new(0.65, Enum.EasingStyle.Quint), {Position = UDim2.new(0.5, 0, 1, -(panelSize.Y.Offset + 120))}):Play()
 
 	tweenService:Create(panel, TweenInfo.new(0.1, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
 	tweenService:Create(panel, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), {Size = panelSize}):Play()
@@ -2319,9 +2343,34 @@ local function openPanel(panelName)
 		end
 
 	elseif panel.Name == "Playerlist" then -- Playerlist Panel Animation
+		playerlistPanel.Stroke.Size =  UDim2.new(0.1, 0, 0, 2)
+		playerlistPanel.Stroke2.Size =  UDim2.new(0.1, 0, 0, 2)
+		playerlistPanel.Interactions.Value.Text = #players:GetPlayers().." players in your session."
+		--
+		
+		tweenService:Create(playerlistPanel.Interactions.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
+		tweenService:Create(playerlistPanel.Interactions.Value, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {TextTransparency = 0.5}):Play()
+		--
+		tweenService:Create(playerlistPanel.Stroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
+		tweenService:Create(playerlistPanel.Stroke2, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
+		task.wait(0.1)
+		tweenService:Create(playerlistPanel.Stroke, TweenInfo.new(1, Enum.EasingStyle.Quint), {Size = UDim2.new(1, 0, 0, 2)}):Play()
+		tweenService:Create(playerlistPanel.Stroke2, TweenInfo.new(1, Enum.EasingStyle.Quint), {Size = UDim2.new(1, 0, 0, 2)}):Play()
+		task.wait(0.5)
+		for _, playerIns in ipairs(playerlistPanel.Interactions.TeamList:GetDescendants()) do
+			if playerIns.ClassName == "Frame" then
+				tweenService:Create(playerIns, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
+			elseif playerIns.ClassName == "TextLabel" or playerIns.ClassName == "TextButton" then
+				tweenService:Create(playerIns, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
+			elseif playerIns.ClassName == "ImageLabel" or playerIns.ClassName == "ImageButton" then
+				tweenService:Create(playerIns, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {ImageTransparency = 0}):Play()
+			elseif playerIns.ClassName == "UIStroke" then
+				tweenService:Create(playerIns, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {Transparency = 0}):Play()
+			end
+		end
 
 		for _, playerIns in ipairs(playerlistPanel.Interactions.List:GetDescendants()) do
-			if playerIns.Name ~= "Interact" and playerIns.Name ~= "Role" then 
+			if playerIns.Name ~= "Interact" and playerIns.Name ~= "Role" then
 				if playerIns.ClassName == "Frame" then
 					tweenService:Create(playerIns, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
 				elseif playerIns.ClassName == "TextLabel" or playerIns.ClassName == "TextButton" then
@@ -3438,6 +3487,79 @@ local function teleportTo(player)
 	end
 end
 
+local function createTeamUI(team)
+	local color = team.TeamColor.Color -- Use the team color
+
+	if playerlistPanel.Interactions.TeamList:FindFirstChild(team.Name) then return end
+
+	playerlistPanel.Interactions.TeamList.Template.Visible = false
+	local newTeamUI = playerlistPanel.Interactions.TeamList.Template:Clone()
+	newTeamUI.Name = team.Name
+	newTeamUI.Parent = playerlistPanel.Interactions.TeamList
+	newTeamUI.Visible = true
+
+	-- Set the title and value for the team
+	newTeamUI.Title.Text = team.Name
+	newTeamUI.Value.Text = "0" -- Default count
+
+	-- Set the CircleGradient color
+	if newTeamUI:FindFirstChild("CircleGradient") then
+		newTeamUI.CircleGradient.ImageColor3 = color
+	end
+
+	-- Set the UIGradient color for UIStroke
+	if newTeamUI:FindFirstChild("UIStroke") and newTeamUI.UIStroke:FindFirstChild("UIGradient") then
+		newTeamUI.UIStroke.UIGradient.Color = ColorSequence.new(color)
+	end
+end
+
+-- Function to update administrator count
+local function updateAdminCount()
+
+	local adminCount = 0
+	for _, player in ipairs(game.Players:GetPlayers()) do
+		if player:GetRoleInGroup(creatorId) and table.find(siriusValues.administratorRoles, player:GetRoleInGroup(creatorId):lower()) then
+			adminCount = adminCount + 1
+		end
+	end
+
+	local adminUI = playerlistPanel.Interactions.TeamList:FindFirstChild("Administrator")
+	if adminCount > 0 then
+		if not adminUI then
+			createTeamUI("Administrator", Color3.fromRGB(255, 122, 122)) -- Custom color for Administrator
+			adminUI = playerlistPanel.Interactions.TeamList:FindFirstChild("Administrator")
+		end
+		adminUI.Value.Text = tostring(adminCount)
+	elseif adminUI then
+		adminUI:Destroy() -- Remove the UI if no admins are in the game
+	end
+end
+
+
+-- Function to handle team counts dynamically
+local function updateTeamCounts()
+
+	for _, team in ipairs(game:GetService("Teams"):GetTeams()) do
+		local count = 0
+		for _, player in ipairs(game.Players:GetPlayers()) do
+			if player.Team == team then
+				count = count + 1
+			end
+		end
+
+		local teamUI = playerlistPanel.Interactions.TeamList:FindFirstChild(team.Name)
+		if count > 0 then
+			if not teamUI then
+				createTeamUI(team)
+				teamUI = playerlistPanel.Interactions.TeamList:FindFirstChild(team.Name)
+			end
+			teamUI.Value.Text = tostring(count)
+		elseif teamUI then
+			teamUI:Destroy() -- Remove the UI if no players are in the team
+		end
+	end
+end
+
 local function createPlayer(player)
 	if not checkSirius() then return end
 
@@ -3517,6 +3639,23 @@ local function createPlayer(player)
 		task.wait(0.35)
 		newPlayer.PlayerInteractions.Visible = false
 	end
+
+	coroutine.wrap(function()
+		local function updateTeamColor()
+			local team = player.Team
+			if team then
+				local teamColor = team.TeamColor.Color
+				tweenService:Create(newPlayer.CircleGradient, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {ImageColor3 = teamColor}):Play()
+				newPlayer.UIStroke.UIGradient.Color = ColorSequence.new(teamColor)
+			end
+		end		
+
+		updateTeamColor()
+
+		player:GetPropertyChangedSignal("Team"):Connect(function()
+			updateTeamColor()
+		end)
+	end)()
 
 	newPlayer.MouseEnter:Connect(function()
 		if debounce or not playerlistPanel.Visible then return end
@@ -4672,6 +4811,11 @@ end)
 userInputService.WindowFocusReleased:Connect(function() windowFocusChanged(false) end)
 userInputService.WindowFocused:Connect(function() windowFocusChanged(true) end)
 
+--
+
+updateAdminCount()
+updateTeamCounts()
+
 for index, player in ipairs(players:GetPlayers()) do
 	createPlayer(player)
 	createEsp(player)
@@ -4708,6 +4852,14 @@ players.PlayerAdded:Connect(function(player)
 		end)
 
 	end
+
+	updateTeamCounts()
+	updateAdminCount()
+
+	player:GetPropertyChangedSignal("Team"):Connect(function()
+		updateTeamCounts()
+		updateAdminCount()
+	end)
 
 	if checkSetting("Moderator Detection").current and Pro then
 		local roleFound = player:GetRoleInGroup(creatorId)
@@ -4759,6 +4911,8 @@ players.PlayerRemoving:Connect(function(player)
 	end
 
 	removePlayer(player)
+	updateTeamCounts()
+	updateAdminCount()
 
 	local highlight = espContainer:FindFirstChild(player.Name)
 	if highlight then
@@ -5097,9 +5251,3 @@ while task.wait(1) do
 	end
 end
 end)()
-
-<<<<<<< HEAD:Altrius.lua
--- End of Script
-=======
---
->>>>>>> 85889fd36fbfe460f58c9d5b3d37bf279dc6a104:Altair.lua
