@@ -87,7 +87,7 @@ local siriusValues = {
 	releaseType = "Stable",
 	siriusFolder = "Sirius",
 	settingsFile = "settings.srs",
-	interfaceAsset = 112380943532521,
+	interfaceAsset = 84727810110498,
 	cdn = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/",
 	icons = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/Icons/",
 	enableExperienceSync = false, -- Games are no longer available due to a lack of whitelisting, they may be made open source at a later date, however they are patched as of now and are useless to the end user. Turning this on may introduce "fake functionality".
@@ -1357,10 +1357,10 @@ local function BlinkSmartBar(blinkCount, blinkColor, defaultColor)
 		tweenService:Create(UI.SmartBar.CircleGradient, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageColor3 = defaultColor}):Play()
         wait(1)
     end
-	wait(1)
+	wait(0.5)
 	tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Thickness = 0.7}):Play()
     tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.7, Color = defaultColor}):Play()
-    tweenService:Create(UI.SmartBar.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageTransparency = 0.7}):Play()
+    tweenService:Create(UI.SmartBar.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageTransparency = 0.85}):Play()
 	end)()
 end
 
@@ -2243,7 +2243,7 @@ local function openPanel(panelName)
 	tweenService:Create(toggle, TweenInfo.new(0.65, Enum.EasingStyle.Quint), {Position = UDim2.new(0.5, 0, 1, -(panelSize.Y.Offset + 95))}):Play()
 	tweenService:Create(toastsContainer, TweenInfo.new(0.65, Enum.EasingStyle.Quint), {Position = UDim2.new(0.5, 0, 1, -(panelSize.Y.Offset + 120))}):Play()
 
-	tweenService:Create(panel, TweenInfo.new(0.1, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
+	tweenService:Create(panel, TweenInfo.new(0.1, Enum.EasingStyle.Quint), {BackgroundTransparency = 0.05}):Play()
 	tweenService:Create(panel, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), {Size = panelSize}):Play()
 	tweenService:Create(panel, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {Position = UDim2.new(0.5, 0, 1, -90)}):Play()
 	task.wait(0.1)
@@ -3297,6 +3297,7 @@ local function openSmartBar()
 
 	-- Set Values for frame properties
     smartBar.Back.BackgroundTransparency = 1
+	smartBar.Back.UIStroke.Transparency = 1
 	smartBar.BackgroundTransparency = 1
 	smartBar.Time.TextTransparency = 1
     smartBar.Time.AMPM.TextTransparency = 1
@@ -3331,8 +3332,11 @@ local function openSmartBar()
 	tweenService:Create(toastsContainer, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {Position = UDim2.new(0.5, 0, 1, -110)}):Play()
 	tweenService:Create(toggle, TweenInfo.new(0.7, Enum.EasingStyle.Quint), {Position = UDim2.new(0.5, 0, 1, -85)}):Play()
 	tweenService:Create(smartBar, TweenInfo.new(0.6, Enum.EasingStyle.Quint), {Size = UDim2.new(0,450,0,60)}):Play()
-	tweenService:Create(smartBar, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {BackgroundTransparency = 0.3}):Play()
-	tweenService:Create(smartBar.Shadow, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {ImageTransparency = 0.7}):Play()
+	tweenService:Create(smartBar, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {BackgroundTransparency = 0.1}):Play()
+	coroutine.wrap(function()
+		wait(0.5)
+		tweenService:Create(smartBar.Shadow, TweenInfo.new(3, Enum.EasingStyle.Quint), {ImageTransparency = 0.85}):Play()
+	end)()
 	tweenService:Create(smartBar.Time, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
     tweenService:Create(smartBar.Time.AMPM, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
 	tweenService:Create(smartBar.UIStroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {Transparency = 0.95}):Play()
@@ -3349,7 +3353,10 @@ local function openSmartBar()
 		task.wait(0.03)
 	end
 
-    tweenService:Create(smartBar.Back, TweenInfo.new(1, Enum.EasingStyle.Quint), {BackgroundTransparency = 0}):Play()
+	wait(0.5)
+    tweenService:Create(smartBar.Back, TweenInfo.new(1, Enum.EasingStyle.Quint), {BackgroundTransparency = 0.1}):Play()
+	wait(1.5)
+	tweenService:Create(smartBar.Back.UIStroke, TweenInfo.new(1, Enum.EasingStyle.Quint), {Transparency = 0.85}):Play()
 end
 
 local function closeSmartBar()
@@ -3375,6 +3382,7 @@ local function closeSmartBar()
 
 	tweenService:Create(coreGui.RobloxGui.Backpack, TweenInfo.new(0.6, Enum.EasingStyle.Quint), {Position = UDim2.new(0, 0, 0, 0)}):Play()
 
+	tweenService:Create(smartBar.Back.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {Transparency = 1}):Play()
     tweenService:Create(smartBar.Back, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {BackgroundTransparency = 1}):Play()
 	tweenService:Create(smartBar, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {BackgroundTransparency = 1}):Play()
 	tweenService:Create(smartBar.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {Transparency = 1}):Play()
