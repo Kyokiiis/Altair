@@ -1108,30 +1108,6 @@ local function undoAnonymousChanges()
 	end
 end
 
--- BlinkSmartBar(3, Color3.new(1, 1, 1))
-local function BlinkSmartBar(blinkCount, blinkColor, defaultColor)
-	coroutine.wrap(function()
-    defaultColor = defaultColor or Color3.new(1, 1, 1) -- Default to white if not provided
-    blinkColor = blinkColor or Color3.new(1, 0, 0) -- Default to red if not provided
-
-    for _ = 1, blinkCount do
-		tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Thickness = 1.5}):Play()
-        tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.4, Color = blinkColor}):Play()
-        tweenService:Create(UI.SmartBar.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageTransparency = 0.4, ImageColor3 = blinkColor}):Play()
-        wait(1)
-
-		tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Thickness = 0.7}):Play()
-        tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.7, Color = defaultColor}):Play()
-        tweenService:Create(UI.SmartBar.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageTransparency = 0.7, ImageColor3 = defaultColor}):Play()
-        wait(1)
-    end
-	wait(1)
-	tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Thickness = 0.7}):Play()
-    tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.7, Color = defaultColor}):Play()
-    tweenService:Create(UI.SmartBar.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageTransparency = 0.7}):Play()
-	end)()
-end
-
 local function createEsp(player)
 	if player == localPlayer or not checkSirius() then 
 		return
@@ -1361,6 +1337,34 @@ end
 
 local contentProvider = game:GetService("ContentProvider")
 
+
+-- BlinkSmartBar(3, Color3.new(1, 1, 1))
+local function BlinkSmartBar(blinkCount, blinkColor, defaultColor)
+	coroutine.wrap(function()
+    defaultColor = defaultColor or Color3.new(1, 1, 1) -- Default to white if not provided
+    blinkColor = blinkColor or Color3.new(1, 0, 0) -- Default to red if not provided
+
+    for _ = 1, blinkCount do
+		tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Thickness = 1.5}):Play()
+        tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.4, Color = blinkColor}):Play()
+        tweenService:Create(UI.SmartBar.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageTransparency = 0.4, ImageColor3 = blinkColor}):Play()
+		tweenService:Create(UI.SmartBar.CircleGradient, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageColor3 = blinkColor}):Play()
+        wait(1)
+
+		tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Thickness = 0.7}):Play()
+        tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.7, Color = defaultColor}):Play()
+        tweenService:Create(UI.SmartBar.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageTransparency = 0.7, ImageColor3 = defaultColor}):Play()
+		tweenService:Create(UI.SmartBar.CircleGradient, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageColor3 = defaultColor}):Play()
+        wait(1)
+    end
+	wait(1)
+	tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Thickness = 0.7}):Play()
+    tweenService:Create(UI.SmartBar.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.7, Color = defaultColor}):Play()
+    tweenService:Create(UI.SmartBar.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {ImageTransparency = 0.7}):Play()
+	end)()
+end
+
+
 local function Toast(content, font)
     local template = UI.Toasts.Template:Clone()
     template.Parent, template.Title.Text, template.Title.Font = UI.Toasts, content, font or Enum.Font.GothamSemibold
@@ -1380,6 +1384,7 @@ local function Toast(content, font)
     end
 
     tweenService:Create(template.Title, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0.01 * (#activeToasts - 1), 0), TextTransparency = 0, TextStrokeTransparency = 0.9}):Play()
+	BlinkSmartBar(1, Color3.new(1, 1, 1))
 
     task.spawn(function()
         task.wait(7)
@@ -4350,14 +4355,6 @@ local function start()
 		end)()
 
 		openSmartBar()
-		wait(1.5)
-		local startupSound = Instance.new("Sound")
-		startupSound.Parent = UI
-		startupSound.SoundId = "rbxassetid://"..5515669992
-		startupSound.Name = "startupSound"
-		startupSound.Volume = 0.85
-		startupSound.PlayOnRemove = true
-		startupSound:Destroy()
 
 		--
 	else 
@@ -4376,13 +4373,6 @@ end
 -- Sirius Events
 
 start()
-
-coroutine.wrap(function()
-BlinkSmartBar(5, Color3.new(1, 1, 1))
-Toast("Fully Loaded.")
-wait(1)
-Toast("Welcome back. Nice to see you, "..lowerDisplayName)
-end)()
 
 -- Testing Grounds
 coroutine.wrap(function()
@@ -4817,6 +4807,7 @@ updateAdminCount()
 updateTeamCounts()
 
 for index, player in ipairs(players:GetPlayers()) do
+	wait(0.5)
 	createPlayer(player)
 	createEsp(player)
 	player.Chatted:Connect(function(message) onChatted(player, message) end)
@@ -5251,3 +5242,19 @@ while task.wait(1) do
 	end
 end
 end)()
+
+
+--
+
+BlinkSmartBar(5, Color3.new(1, 1, 1))
+task.wait(5)
+Toast("Fully Loaded.")
+local startupSound = Instance.new("Sound")
+startupSound.Parent = UI
+startupSound.SoundId = "rbxassetid://"..5515669992
+startupSound.Name = "startupSound"
+startupSound.Volume = 0.9
+startupSound.PlayOnRemove = true
+startupSound:Destroy()
+wait(1.5)
+Toast("Welcome back. Nice to see you, "..lowerDisplayName)
