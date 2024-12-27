@@ -87,7 +87,7 @@ local siriusValues = {
 	releaseType = "Stable",
 	siriusFolder = "Sirius",
 	settingsFile = "settings.srs",
-	interfaceAsset = 84727810110498,
+	interfaceAsset = 105656810711490,
 	cdn = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/",
 	icons = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/Icons/",
 	enableExperienceSync = false, -- Games are no longer available due to a lack of whitelisting, they may be made open source at a later date, however they are patched as of now and are useless to the end user. Turning this on may introduce "fake functionality".
@@ -142,7 +142,7 @@ local siriusValues = {
 		adjectives = {"Cool", "Awesome", "Epic", "Ninja", "Super", "Mystic", "Swift", "Golden", "Diamond", "Silver", "Mint", "Roblox", "Amazing"},
 		nouns = {"Player", "Gamer", "Master", "Legend", "Hero", "Ninja", "Wizard", "Champion", "Warrior", "Sorcerer"}
 	},
-	administratorRoles = {"mod","admin","staff","dev","founder","owner","supervisor","manager","management","executive","president","chairman","chairwoman","chairperson","director","administrator","sr. administrator","council","director"},
+	administratorRoles = {"mod","admin","staff","dev","founder","owner","supervisor","manager","management","executive","president","chairman","chairwoman","chairperson","director","administrator","sr. administrator","council","director","structural"},
 	transparencyProperties = {
 		UIStroke = {'Transparency'},
 		Frame = {'BackgroundTransparency'},
@@ -1436,7 +1436,7 @@ local function queueNotification(Title, Description, Color, Image)
 
 
 			if not tonumber(Image) then
-				newNotification.Icon.Image = 'rbxassetid://14317577326'
+				newNotification.Icon.Image = 'rbxassetid://11969554982'
 			else
 				newNotification.Icon.Image = 'rbxassetid://'..Image or 0
 			end
@@ -1451,10 +1451,10 @@ local function queueNotification(Title, Description, Color, Image)
 			task.wait(0.1)
 			tweenService:Create(newNotification, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), {Size = UDim2.new(0, 320, 0, newNotification.Description.TextBounds.Y + 50)}):Play()
 			task.wait(0.05)
-			tweenService:Create(newNotification, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.35}):Play()
+			tweenService:Create(newNotification, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), {BackgroundTransparency = 0.05}):Play()
 			tweenService:Create(newNotification.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), {Transparency = 0.7}):Play()
 			task.wait(0.05)
-			tweenService:Create(newNotification.Icon.CircleGradient, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 0.7}):Play()
+			tweenService:Create(newNotification.Icon.CircleGradient, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 0.65}):Play()
 			task.wait(0.1)
 			tweenService:Create(newNotification.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {ImageTransparency = 0}):Play()
 			task.wait(0.04)
@@ -1464,7 +1464,7 @@ local function queueNotification(Title, Description, Color, Image)
 			tweenService:Create(newNotification.Time, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), {TextTransparency = 0.8}):Play()
 			coroutine.wrap(function()
 			wait(0.5)
-			tweenService:Create(newNotification.CircleGradient, TweenInfo.new(3, Enum.EasingStyle.Exponential), {ImageTransparency = 0.5}):Play()
+			tweenService:Create(newNotification.CircleGradient, TweenInfo.new(3, Enum.EasingStyle.Exponential), {ImageTransparency = 0.4}):Play()
 			end)()
 			--neonModule:BindFrame(newNotification.BlurModule, {
 			--	Transparency = 0.98,
@@ -2405,7 +2405,7 @@ end
 
 local function rejoin()
 	BlinkSmartBar(1, Color3.new(1,0,0))
-	queueNotification("Error", "Due to an unknown reason, the Rejoin system is bugged and is currently inoperational.", Color3.fromRGB(255, 91, 101), 4400696294)
+	queueNotification("Error", "Due to an unknown reason, the Rejoin system is bugged and is currently inoperational.", Color3.fromRGB(255, 91, 101), 11924758053)
 	--[[
 	if #players:GetPlayers() <= 1 then
 		task.wait()
@@ -2417,7 +2417,7 @@ end
 
 local function serverhop()
 	BlinkSmartBar(1, Color3.new(1,0,0))
-	queueNotification("Error", "Due to an unknown reason, the Serverhop system is bugged and is currently inoperational.", Color3.fromRGB(255, 91, 101), 4400696294)
+	queueNotification("Error", "Due to an unknown reason, the Serverhop system is bugged and is currently inoperational.", Color3.fromRGB(255, 91, 101), 11924758053)
 	--[[
 	local highestPlayers = 0
 	local servers = {}
@@ -2567,6 +2567,7 @@ end
 function promptModerator(player, role)
 	local serversAvailable = false
 	local promptClosed = false
+	local admincount = {}
 
 	if moderatorDetectionPrompt.Visible then return end
 
@@ -2582,7 +2583,6 @@ function promptModerator(player, role)
 	moderatorDetectionPrompt.CircleGradient.Visible = true
 
 	coroutine.wrap(function()
-		local admincount = {}
 			for index, player in ipairs(players:GetPlayers()) do
 				if checkSetting("Moderator Detection").current and Pro then
 					local roleFound = player:GetRoleInGroup(creatorId)
@@ -2596,11 +2596,15 @@ function promptModerator(player, role)
 					end
 				end
 			end
+			--
 		if #admincount > 1 then
-			Toast("Multiple Admins detected and highlighted in the ROBLOX leaderboard.")
+			moderatorDetectionPrompt.Subtitle.Text = #admincount.." Administrators for this game are in your session."
+			Toast( #admincount.." Admins detected and highlighted in the ROBLOX leaderboard.")
 		else
+			--moderatorDetectionPrompt.Subtitle.Text = "An Administrator for this game has joined your session."
 			Toast("The Admin has been highlighted in the ROBLOX leaderboard.")
 		end
+		--
 	end)()
 
 	--[[
@@ -3235,7 +3239,7 @@ local function searchScriptBlox(query)
 	end)
 
 	if not success then
-		queueNotification("ScriptSearch", "ScriptSearch backend encountered an error, try again later", Color3.fromRGB(255, 91, 101), 4384402990)
+		queueNotification("ScriptSearch", "ScriptSearch backend encountered an error, try again later", Color3.fromRGB(255, 91, 101), 11924758053)
 		closeScriptSearch()
 		return
 	end
@@ -3284,7 +3288,7 @@ local function searchScriptBlox(query)
 			tweenService:Create(scriptSearch.List, TweenInfo.new(.3,Enum.EasingStyle.Quint),  {ScrollBarImageTransparency = 0}):Play()
 		end
 	else
-		queueNotification("ScriptSearch", "ScriptSearch backend encountered an error, try again later", Color3.fromRGB(255, 91, 101), 4384402990)
+		queueNotification("ScriptSearch", "ScriptSearch backend encountered an error, try again later", Color3.fromRGB(255, 91, 101), 11924758053)
 		closeScriptSearch()
 		return
 	end
@@ -3496,12 +3500,38 @@ local function teleportTo(player)
 		local target = workspace:FindFirstChild(player.Name).HumanoidRootPart
 		localPlayer.Character.HumanoidRootPart.CFrame = CFrame.new(target.Position.X, target.Position.Y, target.Position.Z)
 	else
-		queueNotification("Teleportation Error", player.DisplayName.." has left this server.", Color3.fromRGB(255, 91, 101))
+		queueNotification("Teleportation Error", player.DisplayName.." has left this server.", Color3.fromRGB(255, 91, 101), 11924758053)
 	end
 end
 
 local function createTeamUI(team)
-	local color = team.TeamColor.Color -- Use the team color
+	if team == "Administrators" then
+		local color = Color3.fromRGB(70, 70, 70)
+
+		if playerlistPanel.Interactions.TeamList:FindFirstChild("Administrators") then return end
+	
+		playerlistPanel.Interactions.TeamList.Template.Visible = false
+		local newTeamUI = playerlistPanel.Interactions.TeamList.Template:Clone()
+		newTeamUI.Name = "Administrators"
+		newTeamUI.Parent = playerlistPanel.Interactions.TeamList
+		newTeamUI.Visible = true
+	
+		-- Set the title and value for the team
+		newTeamUI.Title.Text = "Administrators"
+		newTeamUI.Value.Text = "0" -- Default count
+	
+		-- Set the CircleGradient color
+		if newTeamUI:FindFirstChild("CircleGradient") then
+			newTeamUI.CircleGradient.ImageColor3 = color
+		end
+	
+		-- Set the UIGradient color for UIStroke
+		if newTeamUI:FindFirstChild("UIStroke") and newTeamUI.UIStroke:FindFirstChild("UIGradient") then
+			newTeamUI.UIStroke.UIGradient.Color = ColorSequence.new(color)
+		end
+	else
+
+	local color = Color or team.TeamColor.Color -- Use the team color
 
 	if playerlistPanel.Interactions.TeamList:FindFirstChild(team.Name) then return end
 
@@ -3524,32 +3554,40 @@ local function createTeamUI(team)
 	if newTeamUI:FindFirstChild("UIStroke") and newTeamUI.UIStroke:FindFirstChild("UIGradient") then
 		newTeamUI.UIStroke.UIGradient.Color = ColorSequence.new(color)
 	end
+
+	end
 end
 
--- Function to update administrator count
 local function updateAdminCount()
-
-	local adminCount = 0
-	for _, player in ipairs(game.Players:GetPlayers()) do
-		if player:GetRoleInGroup(creatorId) and table.find(siriusValues.administratorRoles, player:GetRoleInGroup(creatorId):lower()) then
-			adminCount = adminCount + 1
+	local adminUI = playerlistPanel.Interactions.TeamList:FindFirstChild("Administrators")
+	local AdminRole = "Administrator"
+	local adminCount = {}
+	for index, player in ipairs(players:GetPlayers()) do
+		if checkSetting("Moderator Detection").current and Pro then
+			local roleFound = player:GetRoleInGroup(creatorId)
+			if siriusValues.currentCreator == "group" then
+				for _, role in pairs(siriusValues.administratorRoles) do 
+					if string.find(string.lower(roleFound), role) then
+						table.insert(adminCount, player.UserId)
+						AdminRole = roleFound
+					end
+				end
+			end
 		end
 	end
-
-	local adminUI = playerlistPanel.Interactions.TeamList:FindFirstChild("Administrator")
-	if adminCount > 0 then
+	--
+	if #adminCount > 0 then
 		if not adminUI then
-			createTeamUI("Administrator", Color3.fromRGB(255, 122, 122)) -- Custom color for Administrator
-			adminUI = playerlistPanel.Interactions.TeamList:FindFirstChild("Administrator")
+			createTeamUI("Administrators")
+			adminUI = playerlistPanel.Interactions.TeamList:FindFirstChild("Administrators")
 		end
-		adminUI.Value.Text = tostring(adminCount)
+		adminUI.Value.Text = "#"..tostring(#adminCount)
+		--adminUI.Title.Text = AdminRole
 	elseif adminUI then
-		adminUI:Destroy() -- Remove the UI if no admins are in the game
+		adminUI:Destroy()
 	end
 end
 
-
--- Function to handle team counts dynamically
 local function updateTeamCounts()
 
 	for _, team in ipairs(game:GetService("Teams"):GetTeams()) do
@@ -3566,7 +3604,7 @@ local function updateTeamCounts()
 				createTeamUI(team)
 				teamUI = playerlistPanel.Interactions.TeamList:FindFirstChild(team.Name)
 			end
-			teamUI.Value.Text = tostring(count)
+			teamUI.Value.Text = "#"..tostring(count)
 		elseif teamUI then
 			teamUI:Destroy() -- Remove the UI if no players are in the team
 		end
@@ -3994,7 +4032,7 @@ local function assembleSettings()
 					newSwitch.Interact.MouseButton1Click:Connect(function()
 						if minimumLicense then
 							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.", Color3.fromRGB(255, 91, 101), 4483345875)
+								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.", Color3.fromRGB(255, 91, 101), 11924758053)
 								return
 							end
 						end
@@ -4045,7 +4083,7 @@ local function assembleSettings()
 					newInput.InputFrame.InputBox.FocusLost:Connect(function()
 						if minimumLicense then
 							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.",Color3.fromRGB(255, 91, 101), 4483345875)
+								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.",Color3.fromRGB(255, 91, 101), 11924758053)
 								newInput.InputFrame.InputBox.Text = setting.current
 								return
 							end
@@ -4090,7 +4128,7 @@ local function assembleSettings()
 
 						if minimumLicense then
 							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.",Color3.fromRGB(255, 91, 101), 4483345875)
+								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.",Color3.fromRGB(255, 91, 101), 11924758053)
 								newInput.InputFrame.InputBox.Text = setting.current
 								return
 							end
@@ -4149,7 +4187,7 @@ local function assembleSettings()
 
 						if minimumLicense then
 							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.",Color3.fromRGB(255, 91, 101), 4483345875)
+								queueNotification("This feature is locked", "You must be "..minimumLicense.." or higher to use "..setting.name..". \n\nUpgrade at https://sirius.menu.",Color3.fromRGB(255, 91, 101), 11924758053)
 								newKeybind.InputFrame.InputBox.Text = setting.current
 								return
 							end
@@ -4562,7 +4600,7 @@ game:GetService("TeleportService"):TeleportToPlaceInstance(']]..placeId..[[', ']
 		)
 		queueNotification("Copied Join Script","Successfully set clipboard to join script, players can use this script to join your specific server.",Color3.fromRGB(102, 161, 100), 4335479121)
 	else
-		queueNotification("Unable to copy join script","Missing setclipboard() function, can't set data to your clipboard.",Color3.fromRGB(255, 91, 101), 4335479658)
+		queueNotification("Unable to copy join script","Missing setclipboard() function, can't set data to your clipboard.",Color3.fromRGB(255, 91, 101), 11924758053)
 	end
 end)
 
@@ -4571,7 +4609,7 @@ homeContainer.Interactions.Discord.Interact.MouseButton1Click:Connect(function()
 		originalSetClipboard("https://sirius.menu/discord")
 		queueNotification("Discord Invite Copied", "We've set your clipboard to the Sirius discord invite.",Color3.fromRGB(102, 161, 100), 4335479121)
 	else
-		queueNotification("Unable to copy Discord invite", "Missing setclipboard() function, can't set data to your clipboard.",Color3.fromRGB(102, 161, 100), 4335479658)
+		queueNotification("Unable to copy Discord invite", "Missing setclipboard() function, can't set data to your clipboard.",Color3.fromRGB(102, 161, 100), 11924758053)
 	end
 end)
 
@@ -5219,7 +5257,7 @@ while task.wait(1) do
 			if siriusValues.pingProfile.pingNotificationCooldown <= 0 then
 				if checkSetting("Adaptive Latency Warning").current then
 					BlinkSmartBar(5, Color3.new(1,0,0))
-					queueNotification("High Latency Warning","We've noticed your latency has reached a higher value than usual, you may find that you are lagging or your actions are delayed in-game. Consider checking for any background downloads on your machine.",Color3.fromRGB(255, 91, 101), 4370305588)
+					queueNotification("High Latency Warning","We've noticed your latency has reached a higher value than usual, you may find that you are lagging or your actions are delayed in-game. Consider checking for any background downloads on your machine.",Color3.fromRGB(255, 91, 101), 11924758053)
 					siriusValues.pingProfile.pingNotificationCooldown = 120
 				end
 			end
@@ -5237,7 +5275,7 @@ while task.wait(1) do
 				if avgFPS < siriusValues.frameProfile.lowFPSThreshold then
 					if checkSetting("Adaptive Performance Warning").current then
 						BlinkSmartBar(2, Color3.new(1,0,0))
-						queueNotification("Degraded Performance","We've noticed your client's frames per second have decreased. Consider checking for any background tasks or programs on your machine.",Color3.fromRGB(102, 161, 100), 4384400106)
+						queueNotification("Degraded Performance","We've noticed your client's frames per second have decreased. Consider checking for any background tasks or programs on your machine.",Color3.fromRGB(102, 161, 100), 11924758053)
 						siriusValues.frameProfile.frameNotificationCooldown = 120	
 					end
 				end
