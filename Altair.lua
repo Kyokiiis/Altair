@@ -5428,8 +5428,6 @@ end)()
 
 
 --
-
-Notify({Title = "Error", Content = "This is a testing notification made to test the new Notify System on this smart script", Duration = 10, Image = 11924758053, Color = Color3.fromRGB(255, 0, 0),})
 BlinkSmartBar(5, Color3.new(1, 1, 1))
 task.wait(5)
 Toast("Fully Loaded.")
