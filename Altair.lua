@@ -87,7 +87,7 @@ local siriusValues = {
 	releaseType = "Stable",
 	siriusFolder = "Sirius",
 	settingsFile = "settings.srs",
-	interfaceAsset = 71248128971753,
+	interfaceAsset = 122294152738156,
 	cdn = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/",
 	icons = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/Icons/",
 	enableExperienceSync = false, -- Games are no longer available due to a lack of whitelisting, they may be made open source at a later date, however they are patched as of now and are useless to the end user. Turning this on may introduce "fake functionality".
@@ -1679,6 +1679,7 @@ local function playNext()
 		newAudio.Parent = UI
 		newAudio.Name = "Audio"
 		currentAudio = newAudio
+
 	end
 
 	musicPanel.Menu.TogglePlaying.ImageRectOffset = currentAudio.Playing and Vector2.new(804, 124) or Vector2.new(764, 244)
@@ -1692,6 +1693,7 @@ local function playNext()
 	currentAudio.SoundId = asset
 	musicPanel.Playing.Text = musicQueue[1].sound
 	currentAudio:Play()
+	addReverbEffect(currentAudio)
 	musicPanel.Menu.TogglePlaying.ImageRectOffset = currentAudio.Playing and Vector2.new(804, 124) or Vector2.new(764, 244)
 	currentAudio.Ended:Wait()
 
@@ -1828,18 +1830,30 @@ end
 
 local function openMusic()
 	debounce = true
+	--
 	musicPanel.Visible = true
+	musicPanel.Playlist.Visible = false
 	musicPanel.Queue.List.Template.Visible = false
-
+	musicPanel.Playlist.List.Template.Visible = false
+	--
 	debounce = false
 end
 
 local function closeMusic()
 	debounce = true
 	musicPanel.Visible = false
-
+	musicPanel.Queue.Visible = false
 	debounce = false
 end
+
+musicPanel.Menu.Queue.Interact.MouseButton1Click:Connect(function()
+	if not musicPanel.Visible then return end
+		if musicPanel.Playlist.Visible == true then
+			musicPanel.Playlist.Visible = false
+		else
+			musicPanel.Playlist.Visible = true
+		end
+end)
 
 local function createReverb(timing)
 	for index, sound in next, soundInstances do
@@ -3696,6 +3710,8 @@ local function createTeamUI(team)
 end
 
 local function updateAdminCount()
+	if playerlistPanel.Visible == false then return end
+
 	local adminUI = playerlistPanel.Interactions.TeamList:FindFirstChild("Administrators")
 	local AdminRole = "Administrator"
 	local adminCount = {}
@@ -3726,7 +3742,7 @@ local function updateAdminCount()
 end
 
 local function updateTeamCounts()
-
+	if playerlistPanel.Visible == false then return end
 	for _, team in ipairs(game:GetService("Teams"):GetTeams()) do
 		local count = 0
 		for _, player in ipairs(game.Players:GetPlayers()) do
@@ -4690,6 +4706,37 @@ characterPanel.Interactions.Rejoin.MouseLeave:Connect(function()
 	tweenService:Create(characterPanel.Interactions.Rejoin.UIStroke, TweenInfo.new(.5,Enum.EasingStyle.Quint),  {Transparency = 0}):Play()
 end)
 
+--
+
+local musicfiles = listfiles(siriusValues.siriusFolder.."/Music")
+for _, file in ipairs(musicfiles) do
+	if string.match(file, "%.mp3$") then
+		local fileName = string.match(file, "[^/\\]+$") -- Extract the filename
+		local newAudio = musicPanel.Playlist.List.Template:Clone()
+		newAudio.Parent = musicPanel.Playlist.List
+		newAudio.Name = fileName
+		if string.len(fileName) > 26 then
+			newAudio.FileName.Text = string.sub(fileName, 1, 24) .. ".."
+		else
+			newAudio.FileName.Text = fileName
+		end
+
+		newAudio.Visible = true
+		newAudio.Add.MouseButton1Click:Connect(function()
+			addToQueue(fileName) -- Use the filename directly
+		end)
+		--
+		local getLength = Instance.new("Sound", workspace)
+		getLength.SoundId = getcustomasset(siriusValues.siriusFolder.."/Music/"..file)
+		getLength.Volume = 0
+		getLength:Play()
+		task.wait(0.05)
+		newAudio.Duration.Text = tostring(math.round(getLength.TimeLength)).."s"
+		getLength:Stop()
+		getLength:Destroy()
+	end
+end
+
 musicPanel.Close.MouseButton1Click:Connect(function()
 	if musicPanel.Visible and not debounce then
 		closeMusic()
@@ -5440,3 +5487,5 @@ startupSound.PlayOnRemove = true
 startupSound:Destroy()
 wait(1.5)
 Toast("Welcome back. Nice to see you, "..lowerDisplayName)
+--
+print("hi")
