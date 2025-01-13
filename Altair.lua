@@ -87,7 +87,7 @@ local siriusValues = {
 	releaseType = "Stable",
 	siriusFolder = "Sirius",
 	settingsFile = "settings.srs",
-	interfaceAsset = 122294152738156,
+	interfaceAsset = 79877560553786,
 	cdn = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/",
 	icons = "https://cdn.sirius.menu/SIRIUS-SCRIPT-CORE-ASSETS/Icons/",
 	enableExperienceSync = false, -- Games are no longer available due to a lack of whitelisting, they may be made open source at a later date, however they are patched as of now and are useless to the end user. Turning this on may introduce "fake functionality".
@@ -4826,6 +4826,23 @@ for _, button in ipairs(scriptsPanel.Interactions.Selection:GetChildren()) do
 		if button.Name == "Library" then
 			if not scriptSearch.Visible and not debounce then openScriptSearch() end
 		end
+		--
+		if button.Name == "V4" then
+			for _, inGameUI in ipairs(game:GetService("Players").LocalPlayer:FindFirstChildWhichIsA("PlayerGui"):GetChildren()) do
+				if inGameUI:IsA("ScreenGui") then
+					local VapeUI = inGameUI:FindFirstChild("ScaledGui")
+					if VapeUI then 
+						Notify({Title = "Vape", Content = "Vape has already been executed", Duration = 6.5, Image = "activity", Color = Color3.fromRGB(133, 5, 5),})
+					else 
+						Notify({Title = "Vape", Content = "Vape has been executed.. Loading now.", Duration = 6.5, Image = "activity", Color = Color3.fromRGB(5, 133, 104),})
+						wait(1)
+						runScript("https://raw.githubusercontent.com/7GrandDadPGN/VapeV4ForRoblox/main/NewMainScript.lua")
+					end
+				end
+			end
+		end
+
+		Notify({Title = "Altair", Content = "This system currently has no functionality. Therefore Useless until a future update.", Duration = 6.5, Image = "activity", Color = Color3.fromRGB(133, 5, 5),})
 		-- run action
 	end)
 end
