@@ -1062,7 +1062,7 @@ local Icons = useStudio and require(script.Parent.icons) or loadstring(game:Http
 -- Sirius Functions
 local function checkSirius() return UI.Parent end
 local function getPing() return math.clamp(statsService.Network.ServerStatsItem["Data Ping"]:GetValue(), 10, 700) end
-local function checkFolder() if isfolder then if not isfolder(siriusValues.siriusFolder) then makefolder(siriusValues.siriusFolder) end if not isfolder(siriusValues.siriusFolder.."/Music") then makefolder(siriusValues.siriusFolder.."/Music") writefile(siriusValues.siriusFolder.."/Music/readme.txt", "Hey there! Place your MP3 or other audio files in this folder, and have the ability to play them through the Sirius Music UI!") end if not isfolder(siriusValues.siriusFolder.."/Assets/Icons") then makefolder(siriusValues.siriusFolder.."/Assets/Icons") end if not isfolder(siriusValues.siriusFolder.."/Assets") then makefolder(siriusValues.siriusFolder.."/Assets") end end end
+local function checkFolder() if isfolder then if not isfolder(siriusValues.siriusFolder) then makefolder(siriusValues.siriusFolder) end if not isfolder(siriusValues.siriusFolder.."/Scripts") then makefolder(siriusValues.siriusFolder.."/Scripts") end if not isfolder(siriusValues.siriusFolder.."/Music") then makefolder(siriusValues.siriusFolder.."/Music") writefile(siriusValues.siriusFolder.."/Music/readme.txt", "Hey there! Place your MP3 or other audio files in this folder, and have the ability to play them through the Sirius Music UI!") end if not isfolder(siriusValues.siriusFolder.."/Assets/Icons") then makefolder(siriusValues.siriusFolder.."/Assets/Icons") end if not isfolder(siriusValues.siriusFolder.."/Assets") then makefolder(siriusValues.siriusFolder.."/Assets") end end end
 local function isPanel(name) return not table.find({"Home", "Music", "Settings"}, name) end
 
 
@@ -2554,21 +2554,19 @@ local function openPanel(panelName)
 end
 
 local function rejoin()
-	BlinkSmartBar(1, Color3.new(1,0,0))
-	Notify({Title = "Error", Content = "Due to using Solara, Any teleportation systems have been disabled as it crashes roblox.", Duration = 10, Image = 11924758053, Color = Color3.fromRGB(255, 91, 101),})
-	--[[
+	--BlinkSmartBar(1, Color3.new(1,0,0))
+	--Notify({Title = "Error", Content = "Due to using Solara, Any teleportation systems have been disabled as it crashes roblox.", Duration = 10, Image = 11924758053, Color = Color3.fromRGB(255, 91, 101),})
 	if #players:GetPlayers() <= 1 then
 		task.wait()
 		teleportService:Teleport(placeId, localPlayer)
 	else
 		teleportService:TeleportToPlaceInstance(placeId, jobId, localPlayer)
-	end]]
+	end
 end
 
 local function serverhop()
-	BlinkSmartBar(1, Color3.new(1,0,0))
-	Notify({Title = "Error", Content = "Due to using Solara, Any teleportation systems have been disabled as it crashes roblox.", Duration = 10, Image = 11924758053, Color = Color3.fromRGB(255, 91, 101),})
-	--[[
+	--BlinkSmartBar(1, Color3.new(1,0,0))
+	--Notify({Title = "Error", Content = "Due to using Solara, Any teleportation systems have been disabled as it crashes roblox.", Duration = 10, Image = 11924758053, Color = Color3.fromRGB(255, 91, 101),})
 	local highestPlayers = 0
 	local servers = {}
 
@@ -2582,14 +2580,13 @@ local function serverhop()
 	end
 
 	if #servers > 0 then
-		queueNotification("Teleporting", "We're now moving you to the new session, this may take a few seconds.", 4335479121)
+		Toast("We're now moving you to the new session, this may take a few seconds.")
 		BlinkSmartBar(1, Color3.new(0,1,0))
 		task.wait(0.3)
 		teleportService:TeleportToPlaceInstance(placeId, servers[1])
 	else
-		return queueNotification("No Servers Found", "We couldn't find another server, this may be the only server.", 4370317928)
+		return Toast("We couldn't find another server, this may be the only server.")
 	end
-	]]
 end
 
 local function ensureFrameProperties()
@@ -4825,25 +4822,20 @@ for _, button in ipairs(scriptsPanel.Interactions.Selection:GetChildren()) do
 
 		if button.Name == "Library" then
 			if not scriptSearch.Visible and not debounce then openScriptSearch() end
-		end
-		--
-		if button.Name == "V4" then
-			for _, inGameUI in ipairs(game:GetService("Players").LocalPlayer:FindFirstChildWhichIsA("PlayerGui"):GetChildren()) do
-				if inGameUI:IsA("ScreenGui") then
-					local VapeUI = inGameUI:FindFirstChild("ScaledGui")
-					if VapeUI then 
-						Notify({Title = "Vape", Content = "Vape has already been executed", Duration = 6.5, Image = "activity", Color = Color3.fromRGB(133, 5, 5),})
-					else 
-						Notify({Title = "Vape", Content = "Vape has been executed.. Loading now.", Duration = 6.5, Image = "activity", Color = Color3.fromRGB(5, 133, 104),})
-						wait(1)
-						runScript("https://raw.githubusercontent.com/7GrandDadPGN/VapeV4ForRoblox/main/NewMainScript.lua")
-					end
-				end
+		elseif button.Name == "V4" then
+			local VapeUI = false
+			if VapeUI == true then 
+				Notify({Title = "Vape", Content = "Vape has already been executed!", Duration = 6.5, Image = "activity", Color = Color3.fromRGB(133, 5, 5),})
+			else
+				Notify({Title = "Vape", Content = "Vape has been executed.. Loading now.", Duration = 6.5, Image = "activity", Color = Color3.fromRGB(5, 133, 104),})
+				VapeUI = true
+				wait(1)
+				runScript("https://raw.githubusercontent.com/7GrandDadPGN/VapeV4ForRoblox/main/NewMainScript.lua")
 			end
-		end
-
+		else
 		Notify({Title = "Altair", Content = "This system currently has no functionality. Therefore Useless until a future update.", Duration = 6.5, Image = "activity", Color = Color3.fromRGB(133, 5, 5),})
 		-- run action
+		end
 	end)
 end
 
@@ -5504,5 +5496,4 @@ startupSound.PlayOnRemove = true
 startupSound:Destroy()
 wait(1.5)
 Toast("Welcome back. Nice to see you, "..lowerDisplayName)
---
-print("hi")
+--[[]]
