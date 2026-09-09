@@ -3,8 +3,7 @@
 
 Altair
 
-© 2026 Corridon Capital. 
-All Rights Reserved.
+© 2026 Cloudz Softwares. 
 
 Altair is a Smart Script based and built around Sirius
 
