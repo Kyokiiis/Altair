@@ -151,7 +151,11 @@ local cachedIds = {}
 local activeToasts = {}
 local cachedText = {}
 
-local blinkQueue, blinkRunning, blinkColorOverride = {}, false, nil
+local blinkState = {
+	queue = {},
+	running = false,
+	color = nil,
+}
 local spectating
 local closeModPrompt
 
@@ -1462,7 +1466,7 @@ do
                     end
                 end
             end
-			local smartBarColor = blinkColorOverride or color
+			local smartBarColor = blinkState.color or color
 			bar.Shadow.ImageColor3 = smartBarColor
 			bar.CircleGradient.ImageColor3 = smartBarColor
 			bar.UIStroke.Color = smartBarColor
@@ -1487,156 +1491,137 @@ do
 	end))
 end
 
-local startBlinkWorker
-
-local function captureBlinkState(bar)
-	local saved = {}
-
-	for _, object in ipairs({
-		bar.Shadow,
-		bar.CircleGradient,
-		bar.UIStroke,
-		bar.Back.UIStroke,
-	}) do
-		local isStroke = object:IsA("UIStroke")
-		local transparencyProperty = isStroke and "Transparency" or "ImageTransparency"
-		local colorProperty = isStroke and "Color" or "ImageColor3"
-
-		saved[object] = {
-			transparencyProperty = transparencyProperty,
-			transparency = object[transparencyProperty],
-			colorProperty = colorProperty,
-			color = object[colorProperty],
-		}
-	end
-
-	return saved
-end
-
-local function restoreBlinkState(bar, saved)
-	blinkColorOverride = nil
-
-	if not saved then return end
-
-	for object, state in pairs(saved) do
-		if object.Parent then
-			object[state.transparencyProperty] =
-				object == bar.Back.UIStroke
-				and math.min(state.transparency, 0.8)
-				or state.transparency
-
-			object[state.colorProperty] = state.color
-		end
-	end
-end
-
-startBlinkWorker = function()
-	if blinkRunning or #blinkQueue == 0 then return end
-	blinkRunning = true
-
-	task.spawn(function()
-		local activeBar
-		local activeSaved
-
-		local ok, err = pcall(function()
-			while #blinkQueue > 0 do
-				local request = table.remove(blinkQueue, 1)
-				local bar = UI.SmartBar
-
-				if not bar or not bar.Parent then
-					continue
-				end
-
-				activeBar = bar
-				activeSaved = captureBlinkState(bar)
-
-				local tweenInfo = TweenInfo.new(
-					0.5,
-					Enum.EasingStyle.Sine,
-					Enum.EasingDirection.InOut
-				)
-
-				for _ = 1, request.count do
-					-- Flash in.
-					blinkColorOverride = request.color
-
-					for object, state in pairs(activeSaved) do
-						if object.Parent then
-							local transparency = math.max(0, state.transparency - 0.25)
-							if object == bar.Back.UIStroke then
-								transparency = math.min(transparency, 0.8)
-							end
-
-							local goal = {
-								[state.transparencyProperty] = transparency,
-							}
-
-							if request.color then
-								goal[state.colorProperty] = request.color
-							end
-
-							tweenService:Create(object, tweenInfo, goal):Play()
-						end
-					end
-
-					task.wait(0.5)
-
-					-- Flash out. Keep the request isolated from whatever blink
-					-- comes next instead of letting two tweens own the same bar.
-					blinkColorOverride = nil
-
-					for object, state in pairs(activeSaved) do
-						if object.Parent then
-							local transparency =
-								object == bar.Back.UIStroke
-								and math.min(state.transparency, 0.8)
-								or state.transparency
-
-							tweenService:Create(object, tweenInfo, {
-								[state.transparencyProperty] = transparency,
-								[state.colorProperty] = state.color,
-							}):Play()
-						end
-					end
-
-					task.wait(0.5)
-				end
-
-				-- Hard restore after every request. Tween completion timing,
-				-- Rainbow Mode, or another toast can never leave the bar stuck.
-				restoreBlinkState(bar, activeSaved)
-				activeBar, activeSaved = nil, nil
-			end
-		end)
-
-		-- Final safety restore if anything inside a blink errors.
-		if activeBar and activeSaved then
-			pcall(restoreBlinkState, activeBar, activeSaved)
-		else
-			blinkColorOverride = nil
-		end
-
-		blinkRunning = false
-
-		if not ok then
-			warn("Altair | SmartBar blink failed: " .. tostring(err))
-		end
-
-		-- A request can arrive in the tiny window between the queue becoming
-		-- empty and this worker releasing blinkRunning.
-		if #blinkQueue > 0 then
-			startBlinkWorker()
-		end
-	end)
-end
-
 local function BlinkSmartBar(blinkCount, color)
-	table.insert(blinkQueue, {
+	table.insert(blinkState.queue, {
 		count = math.max(1, math.floor(tonumber(blinkCount) or 1)),
 		color = typeof(color) == "Color3" and color or nil,
 	})
 
-	startBlinkWorker()
+	if blinkState.running then return end
+	blinkState.running = true
+
+	task.spawn(function()
+		local activeBar, activeSaved
+
+		local function capture(bar)
+			local saved = {}
+
+			for _, object in ipairs({
+				bar.Shadow,
+				bar.CircleGradient,
+				bar.UIStroke,
+				bar.Back.UIStroke,
+			}) do
+				local stroke = object:IsA("UIStroke")
+				local transparencyProperty = stroke and "Transparency" or "ImageTransparency"
+				local colorProperty = stroke and "Color" or "ImageColor3"
+
+				saved[object] = {
+					transparencyProperty,
+					object[transparencyProperty],
+					colorProperty,
+					object[colorProperty],
+				}
+			end
+
+			return saved
+		end
+
+		local function restore(bar, saved)
+			blinkState.color = nil
+			if not saved then return end
+
+			for object, state in pairs(saved) do
+				if object.Parent then
+					object[state[1]] =
+						object == bar.Back.UIStroke
+						and math.min(state[2], 0.8)
+						or state[2]
+
+					object[state[3]] = state[4]
+				end
+			end
+		end
+
+		local ok, err = pcall(function()
+			while #blinkState.queue > 0 do
+				local request = table.remove(blinkState.queue, 1)
+				local bar = UI.SmartBar
+
+				if bar and bar.Parent then
+					activeBar = bar
+					activeSaved = capture(bar)
+
+					local tweenInfo = TweenInfo.new(
+						0.5,
+						Enum.EasingStyle.Sine,
+						Enum.EasingDirection.InOut
+					)
+
+					for _ = 1, request.count do
+						-- Flash in.
+						blinkState.color = request.color
+
+						for object, state in pairs(activeSaved) do
+							if object.Parent then
+								local transparency = math.max(0, state[2] - 0.25)
+								if object == bar.Back.UIStroke then
+									transparency = math.min(transparency, 0.8)
+								end
+
+								local goal = {
+									[state[1]] = transparency,
+								}
+
+								if request.color then
+									goal[state[3]] = request.color
+								end
+
+								tweenService:Create(object, tweenInfo, goal):Play()
+							end
+						end
+
+						task.wait(0.5)
+
+						-- Flash out.
+						blinkState.color = nil
+
+						for object, state in pairs(activeSaved) do
+							if object.Parent then
+								local transparency =
+									object == bar.Back.UIStroke
+									and math.min(state[2], 0.8)
+									or state[2]
+
+								tweenService:Create(object, tweenInfo, {
+									[state[1]] = transparency,
+									[state[3]] = state[4],
+								}):Play()
+							end
+						end
+
+						task.wait(0.5)
+					end
+
+					-- Hard restore after every queued request.
+					restore(bar, activeSaved)
+					activeBar, activeSaved = nil, nil
+				end
+			end
+		end)
+
+		if activeBar and activeSaved then
+			pcall(restore, activeBar, activeSaved)
+		else
+			blinkState.color = nil
+		end
+
+		blinkState.running = false
+
+		if not ok then
+			warn("Altair | SmartBar blink failed: " .. tostring(err))
+		end
+	end)
 end
 
 local function Toast(content, color, font, skipBlink)
