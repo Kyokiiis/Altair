@@ -1466,7 +1466,7 @@ do
                     end
                 end
             end
-			local smartBarColor = blinkState.color or color
+			local smartBarColor = blinkState.color or (rainbow and color or Color3.new(1, 1, 1))
 			bar.Shadow.ImageColor3 = smartBarColor
 			bar.CircleGradient.ImageColor3 = smartBarColor
 			bar.UIStroke.Color = smartBarColor
@@ -1531,6 +1531,8 @@ local function BlinkSmartBar(blinkCount, color)
 			blinkState.color = nil
 			if not saved then return end
 
+			local rainbow = settingValue("Rainbow Mode", false)
+
 			for object, state in pairs(saved) do
 				if object.Parent then
 					object[state[1]] =
@@ -1538,7 +1540,10 @@ local function BlinkSmartBar(blinkCount, color)
 						and math.min(state[2], 0.8)
 						or state[2]
 
-					object[state[3]] = state[4]
+					-- SmartBar's normal non-rainbow colour is white. If Rainbow Mode
+					-- was disabled while this blink was running, do not restore the
+					-- rainbow colour captured at blink start.
+					object[state[3]] = rainbow and state[4] or Color3.new(1, 1, 1)
 				end
 			end
 		end
@@ -1628,6 +1633,7 @@ local function Toast(content, color, font, skipBlink)
 	local template = UI.Toasts.Template:Clone()
 	template.Parent, template.Title.Text, template.Title.TextColor3, template.Title.Font = UI.Toasts, content, color or Color3.fromRGB(240, 240, 240), font or Enum.Font.GothamSemibold
 	template.Visible, template.BackgroundTransparency, template.Title.TextTransparency, template.Title.TextStrokeTransparency, template.Title.FontFace = true, 1, 1, 0.3, Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold, Enum.FontStyle.Italic)
+	template.Title.MaxVisibleGraphemes = 0
 
 	table.insert(activeToasts, 1, template)
 
@@ -1639,7 +1645,26 @@ local function Toast(content, color, font, skipBlink)
 		tweenService:Create(UI.SmartBar.CircleGradient, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {ImageTransparency = 0.7}):Play()
 	end
 
+	-- Keep the existing fade/position entrance, with a typewriter reveal layered
+	-- on top. MaxVisibleGraphemes leaves the full Text intact, so sizing/layout
+	-- does not jump around while the message is being typed.
 	tweenService:Create(template.Title, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0.01 * (#activeToasts - 1), 0), TextTransparency = 0, TextStrokeTransparency = 0.3}):Play()
+
+	task.spawn(function()
+		local length = utf8.len(content) or #content
+		local delay = math.clamp(1.15 / math.max(length, 1), 0.012, 0.035)
+
+		for i = 1, length do
+			if not template.Parent or template:GetAttribute("AltairExiting") then return end
+			template.Title.MaxVisibleGraphemes = i
+			task.wait(delay)
+		end
+
+		if template.Parent then
+			template.Title.MaxVisibleGraphemes = -1
+		end
+	end)
+
 	if not skipBlink then
 		BlinkSmartBar(1, color)
 	end
@@ -1648,8 +1673,12 @@ local function Toast(content, color, font, skipBlink)
 		task.wait(7)
 		if not template.Parent then return end
 		template:SetAttribute("AltairExiting", true)
-		tweenService:Create(template.Title, TweenInfo.new(1.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, -0.5, 0), TextTransparency = 1, TextStrokeTransparency = 1}):Play()
-		task.wait(1.5)
+		template.Title.MaxVisibleGraphemes = -1
+
+		-- Slightly slower than the old 1.5s exit so the toast eases upward and
+		-- fades away instead of disappearing as abruptly.
+		tweenService:Create(template.Title, TweenInfo.new(2.1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, -0.5, 0), TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+		task.wait(2.1)
 
 		for i, toast in ipairs(activeToasts) do
 			if toast == template then table.remove(activeToasts, i) break end
