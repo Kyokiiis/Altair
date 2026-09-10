@@ -151,7 +151,7 @@ local cachedIds = {}
 local activeToasts = {}
 local cachedText = {}
 
-local blinkVersion, blinkTargets = 0, nil
+local blinkVersion, blinkTargets, blinkColorOverride = 0, nil, nil
 local spectating
 local closeModPrompt
 
@@ -1462,10 +1462,11 @@ do
                     end
                 end
             end
-			bar.Shadow.ImageColor3 = color
-			bar.CircleGradient.ImageColor3 = color
-			bar.UIStroke.Color = color
-			bar.Back.UIStroke.Color = color
+			local smartBarColor = blinkColorOverride or color
+			bar.Shadow.ImageColor3 = smartBarColor
+			bar.CircleGradient.ImageColor3 = smartBarColor
+			bar.UIStroke.Color = smartBarColor
+			bar.Back.UIStroke.Color = smartBarColor
 			toggle.ImageColor3 = rainbow and color or toggleColor
 
 			if rainbow then
@@ -1490,16 +1491,25 @@ local function BlinkSmartBar(blinkCount, color)
 	blinkVersion += 1
 	local version, bar = blinkVersion, UI.SmartBar
 
-	-- Keep the original state from the first blink in a chain. If another blink
-	-- starts before the previous one finishes, both transparency and colour still
-	-- restore to the real pre-blink values instead of whatever the interrupted
-	-- tween happened to leave behind.
+	-- A new blink owns the temporary colour override. Setting this even when
+	-- color is nil also clears a colour left by an interrupted older blink.
+	blinkColorOverride = color
+
+	-- Preserve the ORIGINAL state for the whole blink chain. If another blink
+	-- interrupts this one, the replacement still restores the actual pre-blink
+	-- transparency/colour instead of an in-between tween value.
 	if not blinkTargets then
 		blinkTargets = {}
 
-		for _, object in ipairs({bar.Shadow, bar.CircleGradient, bar.UIStroke, bar.Back.UIStroke}) do
-			local transparencyProperty = object:IsA("UIStroke") and "Transparency" or "ImageTransparency"
-			local colorProperty = object:IsA("UIStroke") and "Color" or "ImageColor3"
+		for _, object in ipairs({
+			bar.Shadow,
+			bar.CircleGradient,
+			bar.UIStroke,
+			bar.Back.UIStroke,
+		}) do
+			local isStroke = object:IsA("UIStroke")
+			local transparencyProperty = isStroke and "Transparency" or "ImageTransparency"
+			local colorProperty = isStroke and "Color" or "ImageColor3"
 
 			blinkTargets[object] = {
 				transparencyProperty = transparencyProperty,
@@ -1511,12 +1521,21 @@ local function BlinkSmartBar(blinkCount, color)
 	end
 
 	local targets = blinkTargets
-	local tweenInfo = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+	local tweenInfo = TweenInfo.new(
+		0.5,
+		Enum.EasingStyle.Sine,
+		Enum.EasingDirection.InOut
+	)
 
 	task.spawn(function()
 		for _ = 1, blinkCount or 1 do
 			for _, flashing in ipairs({true, false}) do
 				if version ~= blinkVersion then return end
+
+				-- Keep a supplied colour authoritative while flashing. This is
+				-- important when Rainbow Mode is enabled because that renderer
+				-- otherwise writes a new SmartBar colour every frame.
+				blinkColorOverride = flashing and color or nil
 
 				for object, saved in pairs(targets) do
 					if object.Parent then
@@ -1532,8 +1551,6 @@ local function BlinkSmartBar(blinkCount, color)
 							[saved.transparencyProperty] = transparency,
 						}
 
-						-- Colour is optional. With no colour argument BlinkSmartBar keeps
-						-- the SmartBar's current theme/rainbow colour exactly as before.
 						if color then
 							goal[saved.colorProperty] = flashing and color or saved.color
 						end
@@ -1546,24 +1563,28 @@ local function BlinkSmartBar(blinkCount, color)
 			end
 		end
 
-		if version == blinkVersion then
-			for object, saved in pairs(targets) do
-				if object.Parent then
-					object[saved.transparencyProperty] =
-						object == bar.Back.UIStroke and math.min(saved.transparency, 0.8) or saved.transparency
+		if version ~= blinkVersion then return end
 
-					if color then
-						object[saved.colorProperty] = saved.color
-					end
+		blinkColorOverride = nil
+
+		for object, saved in pairs(targets) do
+			if object.Parent then
+				object[saved.transparencyProperty] =
+					object == bar.Back.UIStroke
+					and math.min(saved.transparency, 0.8)
+					or saved.transparency
+
+				if color then
+					object[saved.colorProperty] = saved.color
 				end
 			end
-
-			blinkTargets = nil
 		end
+
+		blinkTargets = nil
 	end)
 end
 
-local function Toast(content, color, font)
+local function Toast(content, color, font, skipBlink)
 	local template = UI.Toasts.Template:Clone()
 	template.Parent, template.Title.Text, template.Title.TextColor3, template.Title.Font = UI.Toasts, content, color or Color3.fromRGB(240, 240, 240), font or Enum.Font.GothamSemibold
 	template.Visible, template.BackgroundTransparency, template.Title.TextTransparency, template.Title.TextStrokeTransparency, template.Title.FontFace = true, 1, 1, 0.3, Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold, Enum.FontStyle.Italic)
@@ -1579,7 +1600,9 @@ local function Toast(content, color, font)
 	end
 
 	tweenService:Create(template.Title, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0.01 * (#activeToasts - 1), 0), TextTransparency = 0, TextStrokeTransparency = 0.3}):Play()
-	BlinkSmartBar(1, color)
+	if not skipBlink then
+		BlinkSmartBar(1, color)
+	end
 
 	task.spawn(function()
 		task.wait(7)
@@ -5011,7 +5034,9 @@ local altairAPI = type(env.Altair) == "table" and env.Altair or {}
 altairAPI.Toast = Toast
 altairAPI.QueueNotification = queueNotification
 altairAPI.Notify = queueNotification
-altairAPI.BlinkSmartBar = BlinkSmartBar -- BlinkSmartBar(blinkCount, color?)
+altairAPI.BlinkSmartBar = BlinkSmartBar
+altairAPI.SupportsColoredSmartBarBlink = true
+altairAPI.ToastSupportsSkipBlink = true
 
 altairAPI.OpenSmartBar = openSmartBar
 altairAPI.CloseSmartBar = closeSmartBar
