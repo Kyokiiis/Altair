@@ -1,62 +1,14 @@
---[[ arsenal.lua - "Arsenal" by ROLVe (place 286090429)
+--[[
 
-  Second shooter in this collection, and the genre file
-  (.claude/docs/games-shooters.md) carries everything that transfers from
-  counterblox. What follows is only what ARSENAL does differently, all of it
-  measured through the bridge before a line of this was written.
+	Arsenal is a free-for-all gun game with a weapon ladder. This script adds ESP,
+	aim assist, triggerbot, recoil control and hitbox expansion. It also tracks
+	session stats and shows the current target's weapon and level.
 
-  * **Enemy positions replicate in full.** Every player's
-    `Character.HumanoidRootPart.Position` reads correctly at any range, through
-    any wall - ten players, ten live positions, including the ones sitting in
-    the lobby at y = -403. No server-side culling, so the ESP is honest.
-  * **The character is R15 and carries the same hitbox trio as Counter Blox:**
-    `Head` (1.25, CanCollide, invisible), `FakeHead` (0.625, the visible one)
-    and **`HeadHB`** (1.45 x 1.30 x 1.30) - HeadHB is the headshot box. On top
-    of those Arsenal has a fourth part the other game does not: **`Hitbox`**,
-    4.5 x 4 x 4 studs, transparent, CanQuery true. That is the body hitbox and
-    it is what the hitbox page below resizes.
-  * **`Character.EquippedWep` is a StringValue that is EMPTY for everybody.**
-    Measured on nine players in a live round: not one of them had a value in
-    it, so it is set locally and never replicates. The enemy's weapon is NOT
-    readable from the character.
-  * **...but in the default mode it is derivable exactly.** `Player.Status.Level`
-    replicates for every player, and `ReplicatedStorage.Levels[<level>]` is a
-    StringValue naming the gun for that level - 1 = M4A1 up to 32 = Golden Gun.
-    Arsenal's standard mode is a gun game, so level IS weapon, and the ESP
-    prints it without guessing.
-  * **`Player.Status` is the per-player oracle** and it replicates for everyone:
-    `Level`, `Alive`, `Team` (the string "TRC"/"TBC"/"Spectator"), `SessionKills`.
-    `Player.ScoreFolder` adds `Kills`, `Deaths`, `Streak`, `Headshots`,
-    `Backstabs`, `Damage`, `Captures`. `Player.Ping` is there too.
-  * **`Player.Status.Team` and `Player.Team` DISAGREE.** IndianaJulian2 read as
-    `TRC` through the Teams service and `TBC` through `Status.Team` in the same
-    second. The Teams object is not the enforced one, so nothing here uses it -
-    and because the standard mode is a free-for-all anyway, the default target
-    rule is "everybody but me" with a dropdown for the team modes.
-  * **`workspace.Map.Clips`** - the same invisible movement brushes as Counter
-    Blox, collision group `Clips`, transparent, CanQuery true. Left in the
-    raycast filter every enemy reads as "behind a wall". Filtered here.
-  * **`workspace.Ray_Ignore`** exists and is the game's own ignore folder.
-  * **`workspace.HWRAP_<name>`** is the third-person WEAPON model, not a hitbox -
-    every part in it is CanQuery false, so it can neither block a ray nor be
-    shot. It is only used here as "this player currently holds a gun".
-  * The round HUD is plain text: `GUI.Timer.GM` (mode), `.Sub`, `.R` / `.B`
-    (the two team scores), `.NW` (next weapon), and `GUI.PlayersAlive.Num`.
-    `ReplicatedStorage.WinnerScore` holds the leader's NAME.
+	Altair integration: if Altair is present, Arsenal will use its toast and
+	notification system instead of printing to the console.
 
-  The aim assist moves the CAMERA and nothing else: no remote is fired and no
-  hit is fabricated. Its core camera movement uses the simple CFrame:Lerp aim
-  from Arsenal.Lua, while this build keeps its FOV, sticky target, target filters,
-  visibility checks plus per-target head/torso randomisation that stays fixed
-  while each acquired player is tracked.
-
-  The hitbox page is the one feature here that is NOT camera-only: it resizes
-  the enemy's own `Hitbox` part on this client. Whether Arsenal grades a hit
-  against the client's copy of that part is not something this session could
-  measure (the account was in the lobby the whole time), so it ships with a
-  readout that says so and it restores every part it touched when switched off.
 ]]
-
+	
 --------------------------------------------------------------------------------
 -- experience check
 --------------------------------------------------------------------------------

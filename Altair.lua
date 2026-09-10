@@ -1802,6 +1802,55 @@ altairValues.scanCustomScripts = function()
 					local rawSource = data.Source
 					local scriptFile = data.LuaFile or data.ScriptFile or data.File
 					local ids = data.PlaceIds or data.Games or data.PlaceId
+					local definitionFile = file
+
+					-- Migrate legacy files named with PlaceIds, such as
+					-- 286090429.altair, to a readable game-name filename.
+					local fileName = tostring(file):match("[^/\\]+$") or tostring(file)
+					local stem, extension = fileName:match("^(.-)(%.[^%.]+)$")
+					if stem and tonumber(stem) and writefile and delfile then
+						local readableName = type(title) == "string" and title:match("^%s*(.-)%s*$") or ""
+
+						if readableName == "" or tonumber(readableName) then
+							local firstId = type(ids) == "table" and ids[1] or ids
+							local numericId = tonumber(firstId)
+							if numericId then
+								local infoOk, info = pcall(
+									marketplaceService.GetProductInfo,
+									marketplaceService,
+									math.floor(numericId)
+								)
+								if infoOk and info and type(info.Name) == "string" and info.Name ~= "" then
+									readableName = info.Name
+								end
+							end
+						end
+
+						readableName = tostring(readableName)
+							:gsub('[<>:"/\\|%?%*]', "")
+							:gsub("^%s+", "")
+							:gsub("%s+$", "")
+
+						if readableName == "" then
+							readableName = "Custom Script"
+						end
+
+						local target = folder .. "/" .. readableName .. extension
+						if isfile and isfile(target) then
+							local base = folder .. "/" .. readableName
+							local suffix = 2
+							while isfile(base .. " (" .. tostring(suffix) .. ")" .. extension) do
+								suffix += 1
+							end
+							target = base .. " (" .. tostring(suffix) .. ")" .. extension
+						end
+
+						local writeOk = pcall(writefile, target, raw)
+						if writeOk then
+							pcall(delfile, file)
+							definitionFile = target
+						end
+					end
 
 					if type(ids) ~= "table" then
 						ids = ids ~= nil and { ids } or {}
@@ -1827,7 +1876,7 @@ altairValues.scanCustomScripts = function()
 							Source = rawSource,
 							LuaFile = scriptFile,
 							ScriptFile = scriptFile,
-							DefinitionFile = file,
+							DefinitionFile = definitionFile,
 						}
 
 						table.insert(altairValues.customScripts, entry)
@@ -1995,7 +2044,17 @@ altairValues.runDetectedScript = function()
 	end
 
 	altairValues.closeGameDetection()
-	Toast("Running " .. tostring(scriptInfo.ScriptTitle) .. "...")
+
+	local currentGameName
+	do
+		local infoOk, info = pcall(
+			marketplaceService.GetProductInfo,
+			marketplaceService,
+			game.PlaceId
+		)
+		currentGameName = infoOk and info and info.Name or "this experience"
+	end
+	Toast("Loading in " .. tostring(currentGameName) .. "...")
 
 	task.spawn(function()
 		if type(scriptInfo.Loadstring) == "string" and scriptInfo.Loadstring ~= "" then
@@ -2241,7 +2300,7 @@ altairValues.saveCustomScriptPrompt = function()
 		return false
 	end
 
-	if not (writefile and isfolder and makefolder) then
+	if not (writefile and readfile and isfolder and makefolder) then
 		Toast("This executor doesn't support saving custom scripts.", Color3.fromRGB(255, 90, 90))
 		return false
 	end
@@ -2249,17 +2308,15 @@ altairValues.saveCustomScriptPrompt = function()
 	local requestedId = tostring(idBox.Text or ""):match("^%s*(.-)%s*$")
 	local targetPlaceId = tonumber(requestedId) or placeId
 
-	-- Blank, whitespace, or invalid input always falls back to the current game.
 	if not targetPlaceId or targetPlaceId <= 0 then
 		targetPlaceId = placeId
 	end
+
 	targetPlaceId = math.floor(targetPlaceId)
 	idBox.Text = tostring(targetPlaceId)
 
-	local description = tostring(descBox.Text or ""):match("^%s*(.-)%s*$")
-	if description == "" then
-		description = "Custom script for this experience."
-	end
+	local enteredDescription = tostring(descBox.Text or ""):match("^%s*(.-)%s*$")
+	local description = enteredDescription ~= "" and enteredDescription or "Custom script for this experience."
 
 	local sourceValue = tostring(scriptBox.Text or ""):match("^%s*(.-)%s*$")
 	if sourceValue == "" then
@@ -2267,11 +2324,134 @@ altairValues.saveCustomScriptPrompt = function()
 		return false
 	end
 
-	local title = placeName
-	if type(title) ~= "string" or title == "" or title == "this experience" then
-		local ok, info = pcall(marketplaceService.GetProductInfo, marketplaceService, targetPlaceId)
-		title = ok and info and info.Name or ("Place " .. tostring(targetPlaceId))
+	local isRemote = sourceValue:match("^https?://") ~= nil
+
+	-- Normalize only for matching. The value saved by the user is otherwise left
+	-- alone, so explicitly supplied extensions and paths are preserved.
+	local function normalizeFile(value)
+		value = tostring(value or ""):match("^%s*(.-)%s*$"):gsub("\\", "/")
+		if value == "" then return "" end
+		if not value:match("%.[^/%.]+$") then
+			value ..= ".lua"
+		end
+		return string.lower(value)
 	end
+
+	local normalizedSource = isRemote and sourceValue or normalizeFile(sourceValue)
+
+	local targetGameName
+	do
+		local infoOk, info = pcall(
+			marketplaceService.GetProductInfo,
+			marketplaceService,
+			targetPlaceId
+		)
+		targetGameName = infoOk and info and info.Name or "this experience"
+	end
+
+	-- Refresh the definitions before checking for an existing source. A custom
+	-- script is identified by its remote URL OR local Lua file, not by PlaceId.
+	altairValues.scanCustomScripts()
+
+	local existing
+	for _, entry in ipairs(altairValues.customScripts) do
+		local matches = false
+
+		if isRemote then
+			matches = type(entry.Loadstring) == "string"
+				and entry.Loadstring:match("^%s*(.-)%s*$") == normalizedSource
+		else
+			local existingFile = entry.LuaFile or entry.ScriptFile
+			matches = normalizeFile(existingFile) == normalizedSource
+		end
+
+		if matches then
+			existing = entry
+			break
+		end
+	end
+
+	if existing and type(existing.DefinitionFile) == "string" then
+		local readOk, raw = pcall(readfile, existing.DefinitionFile)
+		local decodeOk, definition = false, nil
+
+		if readOk and type(raw) == "string" and raw ~= "" then
+			decodeOk, definition = pcall(httpService.JSONDecode, httpService, raw)
+		end
+
+		if not decodeOk or type(definition) ~= "table" then
+			Toast("Couldn't update the existing custom script.", Color3.fromRGB(255, 90, 90))
+			return false
+		end
+
+		local ids = definition.PlaceIds or definition.Games or definition.PlaceId
+		if type(ids) ~= "table" then
+			ids = ids ~= nil and { ids } or {}
+		end
+
+		local alreadySupported = false
+		local mergedIds = {}
+
+		for _, id in ipairs(ids) do
+			local numericId = tonumber(id)
+			if numericId then
+				numericId = math.floor(numericId)
+				if numericId == targetPlaceId then
+					alreadySupported = true
+				end
+				if not table.find(mergedIds, numericId) then
+					table.insert(mergedIds, numericId)
+				end
+			end
+		end
+
+		if not alreadySupported then
+			table.insert(mergedIds, targetPlaceId)
+		end
+
+		-- Canonicalize the supported-place list while leaving the original source
+		-- field intact. This means a manually-created Url/File alias still works.
+		definition.PlaceIds = mergedIds
+
+		-- Only replace an existing description when the user actually typed one.
+		-- Leaving the box blank keeps the existing description for multi-game hubs.
+		if enteredDescription ~= "" then
+			definition.ScriptSubtitle = enteredDescription
+		end
+
+		local encodedOk, encoded = pcall(httpService.JSONEncode, httpService, definition)
+		if not encodedOk then
+			Toast("Couldn't rebuild the existing custom script.", Color3.fromRGB(255, 90, 90))
+			return false
+		end
+
+		local writeOk, writeError = pcall(writefile, existing.DefinitionFile, encoded)
+		if not writeOk then
+			warn("Altair | Couldn't update custom script: " .. tostring(writeError))
+			Toast("Couldn't update the existing custom script.", Color3.fromRGB(255, 90, 90))
+			return false
+		end
+
+		altairValues.scanCustomScripts()
+		altairValues.closeCustomScriptPrompt()
+
+		if alreadySupported then
+			Toast(
+				"Updated custom script for " .. tostring(targetGameName) .. ".",
+				Color3.fromRGB(80, 220, 145)
+			)
+		else
+			Toast(
+				"Added " .. tostring(targetGameName) .. " to the existing custom script.",
+				Color3.fromRGB(80, 220, 145)
+			)
+		end
+
+		return true
+	end
+
+	-- No matching source exists yet, so create a new custom-script definition.
+	local title = targetGameName ~= "this experience" and targetGameName or "Custom Script"
 
 	local definition = {
 		ScriptTitle = title,
@@ -2279,11 +2459,9 @@ altairValues.saveCustomScriptPrompt = function()
 		PlaceIds = { targetPlaceId },
 	}
 
-	if sourceValue:match("^https?://") then
+	if isRemote then
 		definition.Loadstring = sourceValue
 	else
-		-- Treat anything that is not a URL as a local file reference.
-		-- "Arsenal" defaults to Arsenal.lua; explicit extensions are preserved.
 		definition.LuaFile = sourceValue
 	end
 
@@ -2302,9 +2480,28 @@ altairValues.saveCustomScriptPrompt = function()
 		return false
 	end
 
-	-- One definition per PlaceId keeps imports deterministic and makes importing
-	-- the same game again behave like an update instead of creating duplicates.
-	local filePath = folder .. "/" .. tostring(targetPlaceId) .. ".altair"
+	local safeTitle = tostring(title)
+		:gsub('[<>:"/\\|%?%*]', "")
+		:gsub("^%s+", "")
+		:gsub("%s+$", "")
+
+	if safeTitle == "" then
+		safeTitle = "Custom Script"
+	end
+
+	local filePath = folder .. "/" .. safeTitle .. ".altair"
+
+	-- If another unrelated definition already has this game name, keep both
+	-- human-readable instead of falling back to a numeric PlaceId filename.
+	if isfile and isfile(filePath) then
+		local base = folder .. "/" .. safeTitle
+		local suffix = 2
+		while isfile(base .. " (" .. tostring(suffix) .. ").altair") do
+			suffix += 1
+		end
+		filePath = base .. " (" .. tostring(suffix) .. ").altair"
+	end
+
 	local writeOk, writeError = pcall(writefile, filePath, encoded)
 
 	if not writeOk then

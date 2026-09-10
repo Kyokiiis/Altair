@@ -1,5 +1,8 @@
 --[[
-	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
+
+Tower Defense is a tower defense game where players place towers to defend against waves of enemies. 
+This script automates various aspects of the game, including tower placement, upgrades, and game state management.
+
 ]]
 -- [[ CONFIGURATION ]]
 _G.AutoStrat = false
