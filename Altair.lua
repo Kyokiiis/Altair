@@ -1486,38 +1486,78 @@ do
 	end))
 end
 
-local function BlinkSmartBar(blinkCount)
+local function BlinkSmartBar(blinkCount, color)
 	blinkVersion += 1
 	local version, bar = blinkVersion, UI.SmartBar
 
+	-- Keep the original state from the first blink in a chain. If another blink
+	-- starts before the previous one finishes, both transparency and colour still
+	-- restore to the real pre-blink values instead of whatever the interrupted
+	-- tween happened to leave behind.
 	if not blinkTargets then
 		blinkTargets = {}
-		for _, v in ipairs({bar.Shadow, bar.CircleGradient, bar.UIStroke, bar.Back.UIStroke}) do
-			local property = v:IsA("UIStroke") and "Transparency" or "ImageTransparency"
-			blinkTargets[v] = {property, v[property]}
+
+		for _, object in ipairs({bar.Shadow, bar.CircleGradient, bar.UIStroke, bar.Back.UIStroke}) do
+			local transparencyProperty = object:IsA("UIStroke") and "Transparency" or "ImageTransparency"
+			local colorProperty = object:IsA("UIStroke") and "Color" or "ImageColor3"
+
+			blinkTargets[object] = {
+				transparencyProperty = transparencyProperty,
+				transparency = object[transparencyProperty],
+				colorProperty = colorProperty,
+				color = object[colorProperty],
+			}
 		end
 	end
+
 	local targets = blinkTargets
+	local tweenInfo = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 
 	task.spawn(function()
 		for _ = 1, blinkCount or 1 do
 			for _, flashing in ipairs({true, false}) do
 				if version ~= blinkVersion then return end
-				for v, saved in pairs(targets) do
-					if v.Parent then
-						local transparency = flashing and math.max(0, saved[2] - 0.25) or saved[2]
-						if v == bar.Back.UIStroke then transparency = math.min(transparency, 0.8) end
-						tweenService:Create(v, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {[saved[1]] = transparency}):Play()
+
+				for object, saved in pairs(targets) do
+					if object.Parent then
+						local transparency = flashing
+							and math.max(0, saved.transparency - 0.25)
+							or saved.transparency
+
+						if object == bar.Back.UIStroke then
+							transparency = math.min(transparency, 0.8)
+						end
+
+						local goal = {
+							[saved.transparencyProperty] = transparency,
+						}
+
+						-- Colour is optional. With no colour argument BlinkSmartBar keeps
+						-- the SmartBar's current theme/rainbow colour exactly as before.
+						if color then
+							goal[saved.colorProperty] = flashing and color or saved.color
+						end
+
+						tweenService:Create(object, tweenInfo, goal):Play()
 					end
 				end
+
 				task.wait(0.5)
 			end
 		end
 
 		if version == blinkVersion then
-			for v, saved in pairs(targets) do
-				if v.Parent then v[saved[1]] = v == bar.Back.UIStroke and math.min(saved[2], 0.8) or saved[2] end
+			for object, saved in pairs(targets) do
+				if object.Parent then
+					object[saved.transparencyProperty] =
+						object == bar.Back.UIStroke and math.min(saved.transparency, 0.8) or saved.transparency
+
+					if color then
+						object[saved.colorProperty] = saved.color
+					end
+				end
 			end
+
 			blinkTargets = nil
 		end
 	end)
@@ -1539,7 +1579,7 @@ local function Toast(content, color, font)
 	end
 
 	tweenService:Create(template.Title, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0.01 * (#activeToasts - 1), 0), TextTransparency = 0, TextStrokeTransparency = 0.3}):Play()
-	BlinkSmartBar(1)
+	BlinkSmartBar(1, color)
 
 	task.spawn(function()
 		task.wait(7)
@@ -4971,7 +5011,7 @@ local altairAPI = type(env.Altair) == "table" and env.Altair or {}
 altairAPI.Toast = Toast
 altairAPI.QueueNotification = queueNotification
 altairAPI.Notify = queueNotification
-altairAPI.BlinkSmartBar = BlinkSmartBar
+altairAPI.BlinkSmartBar = BlinkSmartBar -- BlinkSmartBar(blinkCount, color?)
 
 altairAPI.OpenSmartBar = openSmartBar
 altairAPI.CloseSmartBar = closeSmartBar
