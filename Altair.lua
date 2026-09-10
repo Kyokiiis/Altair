@@ -4961,6 +4961,49 @@ local function initialiseAntiKick()
 	end
 end
 
+
+-- Public Altair API for separately executed scripts.
+-- Existing keys are preserved so another script can attach its own Altair integrations.
+local altairAPI = type(env.Altair) == "table" and env.Altair or {}
+
+altairAPI.Toast = Toast
+altairAPI.QueueNotification = queueNotification
+altairAPI.Notify = queueNotification
+altairAPI.BlinkSmartBar = BlinkSmartBar
+
+altairAPI.OpenSmartBar = openSmartBar
+altairAPI.CloseSmartBar = closeSmartBar
+altairAPI.OpenPanel = openPanel
+altairAPI.ClosePanel = closePanel
+altairAPI.OpenMusic = openMusic
+altairAPI.CloseMusic = closeMusic
+altairAPI.OpenScriptSearch = openScriptSearch
+altairAPI.SearchScripts = searchRoScripts
+
+altairAPI.Rejoin = rejoin
+altairAPI.ServerHop = serverhop
+altairAPI.LeaveExperience = leaveExperience
+altairAPI.TeleportToPlayer = teleportTo
+altairAPI.ToggleSpectate = toggleSpectate
+altairAPI.CreateESP = createEsp
+
+altairAPI.GetPing = getPing
+altairAPI.GetSetting = settingValue
+altairAPI.SaveSettings = saveSettings
+altairAPI.UpdateHome = UpdateHome
+altairAPI.IsLoaded = checkAltair
+
+altairAPI.GetUI = function()
+	return UI
+end
+
+altairAPI.GetSmartBar = function()
+	return smartBar
+end
+
+altairAPI.Version = altairValues.altairVersion
+env.Altair = altairAPI
+
 local function start()
 	if altairValues.releaseType == "Experimental" then -- Make this more secure.
 		if not Pro then
