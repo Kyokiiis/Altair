@@ -167,6 +167,12 @@ local altairValues = {
 	releaseType = "Stable",
 	altairFolder = "Altair",
 	settingsFile = "settings.altair",
+	customScriptsFolder = "Custom Scripts",
+	scriptsFolder = "Scripts",
+	customScripts = {},
+	detectedScript = nil,
+	detectionPromptOpen = false,
+	customScriptPromptOpen = false,
 	interfaceAsset = 106482431665693,
 
 
@@ -1084,7 +1090,17 @@ local function checkFolder()
 	end
 
 	local root = altairValues.altairFolder
-	for _, path in ipairs({ root, root .. "/Music", root .. "/Assets", root .. "/Assets/Icons" }) do
+	local customRoot = root .. "/" .. altairValues.customScriptsFolder
+	local scriptsRoot = root .. "/" .. altairValues.scriptsFolder
+
+	for _, path in ipairs({
+		root,
+		root .. "/Music",
+		root .. "/Assets",
+		root .. "/Assets/Icons",
+		customRoot,
+		scriptsRoot,
+	}) do
 		if not isfolder(path) then
 			makefolder(path)
 		end
@@ -1092,6 +1108,55 @@ local function checkFolder()
 
 	if writefile and isfile and not isfile(root .. "/Music/readme.txt") then
 		writefile(root .. "/Music/readme.txt", "Hey there! Place your MP3 or other audio files in this folder, and have the ability to play them through the Altair Music UI!")
+	end
+
+	if writefile and isfile and not isfile(customRoot .. "/README.txt") then
+		writefile(customRoot .. "/README.txt", [[Altair Custom Scripts
+
+The files in this folder are DETECTION DEFINITIONS. Each definition can use
+either a remote Loadstring URL or a local .lua file stored in Altair/Scripts.
+
+REMOTE SCRIPT:
+{
+    "ScriptTitle": "Example Script",
+    "ScriptSubtitle": "Shown underneath the script title",
+    "PlaceIds": [123456789],
+    "Loadstring": "https://raw.githubusercontent.com/user/repo/refs/heads/main/script.lua"
+}
+
+Loadstring must contain the RAW URL only. Altair executes it as:
+loadstring(game:HttpGet(url))()
+
+LOCAL LUA FILE:
+{
+    "ScriptTitle": "Example Script",
+    "ScriptSubtitle": "Shown underneath the script title",
+    "PlaceIds": [123456789],
+    "LuaFile": "Example.lua"
+}
+
+Put local runnable files here:
+Altair/Scripts/Example.lua
+
+Accepted aliases:
+- ScriptTitle: Title or Name
+- ScriptSubtitle: Subtitle or Description
+- PlaceIds: Games or PlaceId
+- Loadstring: Url or URL
+- LuaFile: ScriptFile or File
+
+If both Loadstring and LuaFile are supplied, Loadstring is used first.
+]])
+	end
+
+	if writefile and isfile and not isfile(scriptsRoot .. "/README.txt") then
+		writefile(scriptsRoot .. "/README.txt", [[Altair Scripts
+
+Place runnable .lua files in this folder.
+
+Reference them from a file in Altair/Custom Scripts with:
+"LuaFile": "YourScript.lua"
+]])
 	end
 end
 
@@ -1690,6 +1755,568 @@ local function Toast(content, color, font, skipBlink)
 			tweenService:Create(UI.SmartBar.CircleGradient, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {ImageTransparency = 1}):Play()
 		end
 	end)
+end
+
+--------------------------------------------------------------------------------
+-- Custom script detection
+--------------------------------------------------------------------------------
+
+altairValues.scanCustomScripts = function()
+	altairValues.customScripts = {}
+	altairValues.detectedScript = nil
+
+	if not (isfolder and listfiles and readfile) then
+		return nil, "filesystem unavailable"
+	end
+
+	local folder = altairValues.altairFolder .. "/" .. altairValues.customScriptsFolder
+	if not isfolder(folder) then
+		if not makefolder then
+			return nil, "custom scripts folder unavailable"
+		end
+		local ok = pcall(makefolder, folder)
+		if not ok then
+			return nil, "could not create custom scripts folder"
+		end
+	end
+
+	local ok, files = pcall(listfiles, folder)
+	if not ok or type(files) ~= "table" then
+		return nil, "could not list custom scripts"
+	end
+
+	table.sort(files)
+
+	for _, file in ipairs(files) do
+		local lower = string.lower(tostring(file))
+		if lower:sub(-5) == ".json" or lower:sub(-7) == ".altair" then
+			local readOk, raw = pcall(readfile, file)
+
+			if readOk and type(raw) == "string" and raw ~= "" then
+				local decodeOk, data = pcall(httpService.JSONDecode, httpService, raw)
+
+				if decodeOk and type(data) == "table" then
+					local title = data.ScriptTitle or data.Title or data.Name
+					local subtitle = data.ScriptSubtitle or data.Subtitle or data.Description
+					local sourceUrl = data.Loadstring or data.Url or data.URL
+					local rawSource = data.Source
+					local scriptFile = data.LuaFile or data.ScriptFile or data.File
+					local ids = data.PlaceIds or data.Games or data.PlaceId
+
+					if type(ids) ~= "table" then
+						ids = ids ~= nil and { ids } or {}
+					end
+
+					local validSource =
+						(type(sourceUrl) == "string" and sourceUrl ~= "")
+						or (type(rawSource) == "string" and rawSource ~= "")
+						or (type(scriptFile) == "string" and scriptFile ~= "")
+
+					if type(title) == "string"
+						and title ~= ""
+						and type(subtitle) == "string"
+						and subtitle ~= ""
+						and validSource
+						and #ids > 0
+					then
+						local entry = {
+							ScriptTitle = title,
+							ScriptSubtitle = subtitle,
+							PlaceIds = ids,
+							Loadstring = sourceUrl,
+							Source = rawSource,
+							LuaFile = scriptFile,
+							ScriptFile = scriptFile,
+							DefinitionFile = file,
+						}
+
+						table.insert(altairValues.customScripts, entry)
+
+						if not altairValues.detectedScript then
+							for _, id in ipairs(ids) do
+								if tonumber(id) == placeId then
+									altairValues.detectedScript = entry
+									break
+								end
+							end
+						end
+					else
+						warn("Altair | Ignoring invalid custom script definition: " .. tostring(file))
+					end
+				else
+					warn("Altair | Couldn't parse custom script definition: " .. tostring(file))
+				end
+			end
+		end
+	end
+
+	return altairValues.detectedScript
+end
+
+altairValues.closeGameDetection = function()
+	if not gameDetectionPrompt.Visible then
+		altairValues.detectionPromptOpen = false
+		return
+	end
+
+	altairValues.detectionPromptOpen = false
+
+	local scale = gameDetectionPrompt:FindFirstChild("AltairDetectionScale")
+	if scale then
+		tweenService:Create(
+			scale,
+			TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
+			{ Scale = 0.94 }
+		):Play()
+	end
+
+	for _, object in ipairs(gameDetectionPrompt:GetDescendants()) do
+		local warning = gameDetectionPrompt:FindFirstChild("Warning", true)
+		if not (warning and object:IsDescendantOf(warning)) then
+			local properties = altairValues.transparencyProperties[object.ClassName]
+			if properties then
+				for _, property in ipairs(properties) do
+					pcall(function()
+						tweenService:Create(
+							object,
+							TweenInfo.new(0.28, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
+							{ [property] = 1 }
+						):Play()
+					end)
+				end
+			end
+		end
+	end
+
+	task.delay(0.3, function()
+		if not altairValues.detectionPromptOpen then
+			gameDetectionPrompt.Visible = false
+		end
+	end)
+end
+
+altairValues.showGameDetection = function(scriptInfo)
+	if type(scriptInfo) ~= "table" then return false end
+
+	local layer = gameDetectionPrompt:FindFirstChild("Layer")
+	if not layer then
+		warn("Altair | GameDetection.Layer is missing from the interface.")
+		return false
+	end
+
+	local subtitle = layer:FindFirstChild("ScriptSubtitle")
+	local thumbnail = gameDetectionPrompt:FindFirstChild("Thumbnail")
+	local warning = gameDetectionPrompt:FindFirstChild("Warning")
+
+	-- ScriptTitle is NOT inside Layer. Its actual path in the Altair asset is:
+	-- GameDetection.ScriptTitle.Text
+	--
+	-- Resolve the CURRENT PlaceId every time the prompt opens so this can never
+	-- reuse a stale title from another experience/session.
+	local currentPlaceId = game.PlaceId
+	local ok, info = pcall(marketplaceService.GetProductInfo, marketplaceService, currentPlaceId)
+	local gameTitle = ok and info and info.Name or ("Place " .. tostring(currentPlaceId))
+
+	placeName = gameTitle
+	gameDetectionPrompt.ScriptTitle.Text = gameTitle
+
+	if subtitle then subtitle.Text = tostring(scriptInfo.ScriptSubtitle or "") end
+	if warning then warning.Visible = false end
+
+	if thumbnail and thumbnail:IsA("ImageLabel") then
+		thumbnail.Image = "rbxthumb://type=GameIcon&id=" .. tostring(game.GameId) .. "&w=512&h=512"
+	end
+
+	local scale = gameDetectionPrompt:FindFirstChild("AltairDetectionScale")
+	if not scale then
+		scale = Instance.new("UIScale")
+		scale.Name = "AltairDetectionScale"
+		scale.Scale = 1
+		scale.Parent = gameDetectionPrompt
+	end
+
+	-- Preserve the asset's authored transparency values once. The prompt then
+	-- fades to those exact values rather than flattening every element to zero.
+	for _, object in ipairs(gameDetectionPrompt:GetDescendants()) do
+		if not (warning and object:IsDescendantOf(warning)) then
+			local properties = altairValues.transparencyProperties[object.ClassName]
+			if properties then
+				for _, property in ipairs(properties) do
+					pcall(function()
+						local attribute = "AltairDetection_" .. property
+						if object:GetAttribute(attribute) == nil then
+							object:SetAttribute(attribute, object[property])
+						end
+						object[property] = 1
+					end)
+				end
+			end
+		end
+	end
+
+	scale.Scale = 0.92
+	gameDetectionPrompt.Visible = true
+	altairValues.detectionPromptOpen = true
+
+	tweenService:Create(
+		scale,
+		TweenInfo.new(0.55, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Scale = 1 }
+	):Play()
+
+	for _, object in ipairs(gameDetectionPrompt:GetDescendants()) do
+		if not (warning and object:IsDescendantOf(warning)) then
+			local properties = altairValues.transparencyProperties[object.ClassName]
+			if properties then
+				for _, property in ipairs(properties) do
+					pcall(function()
+						local target = object:GetAttribute("AltairDetection_" .. property)
+						if target ~= nil then
+							tweenService:Create(
+								object,
+								TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+								{ [property] = target }
+							):Play()
+						end
+					end)
+				end
+			end
+		end
+	end
+
+	return true
+end
+
+altairValues.runDetectedScript = function()
+	local scriptInfo = altairValues.detectedScript
+	if type(scriptInfo) ~= "table" then
+		Toast("No custom script was detected for this experience.")
+		return false
+	end
+
+	altairValues.closeGameDetection()
+	Toast("Running " .. tostring(scriptInfo.ScriptTitle) .. "...")
+
+	task.spawn(function()
+		if type(scriptInfo.Loadstring) == "string" and scriptInfo.Loadstring ~= "" then
+			local url = scriptInfo.Loadstring
+
+			-- Custom-script URLs are intentionally executed using the normal
+			-- executor pattern:
+			--
+			-- loadstring(game:HttpGet(url))()
+			--
+			-- Some executors are more reliable with the colon-form HttpGet call
+			-- than invoking game.HttpGet as an unbound function through pcall.
+			if not loadstring then
+				Toast("This executor doesn't support loadstring.", Color3.fromRGB(255, 90, 90))
+				return
+			end
+
+			if not (url:match("^https?://")) then
+				Toast("The custom script Loadstring must be a raw http(s) URL.", Color3.fromRGB(255, 90, 90))
+				return
+			end
+
+			local ok, err = pcall(function()
+				loadstring(game:HttpGet(url))()
+			end)
+
+			if not ok then
+				warn("Altair | Remote custom script failed: " .. tostring(err))
+				Toast("The remote custom script failed to load.", Color3.fromRGB(255, 90, 90))
+			end
+
+			return
+		end
+
+		local source = scriptInfo.Source
+		local scriptFile = scriptInfo.LuaFile or scriptInfo.ScriptFile
+
+		if (type(source) ~= "string" or source == "")
+			and type(scriptFile) == "string"
+			and scriptFile ~= ""
+			and readfile
+		then
+			local path = scriptFile
+
+			-- A simple filename is resolved from Altair/Scripts.
+			-- If NO extension is supplied, .lua is the default.
+			-- If an extension is explicitly supplied (.Lua, .txt, .luau, etc.),
+			-- preserve it exactly instead of appending another extension.
+			if not path:find("[/\\]") then
+				if not path:match("%.[^/\\%.]+$") then
+					path ..= ".lua"
+				end
+
+				local scriptsRoot = altairValues.altairFolder .. "/" .. altairValues.scriptsFolder
+				local requestedName = path
+				path = scriptsRoot .. "/" .. requestedName
+
+				-- Some executor filesystems are case-sensitive. Resolve the filename
+				-- case-insensitively so Arsenal.lua, Arsenal.Lua and ARSENAL.LUA all
+				-- refer to the same file when one exists.
+				if isfile and not isfile(path) and listfiles then
+					local ok, files = pcall(listfiles, scriptsRoot)
+					if ok and type(files) == "table" then
+						local wanted = string.lower(requestedName)
+						for _, candidate in ipairs(files) do
+							local name = tostring(candidate):match("[^/\\]+$")
+							if name and string.lower(name) == wanted then
+								path = candidate
+								break
+							end
+						end
+					end
+				end
+			end
+
+			if not isfile or not isfile(path) then
+				Toast(
+					"Custom script file not found: " .. tostring(scriptFile),
+					Color3.fromRGB(255, 90, 90)
+				)
+				return
+			end
+
+			local ok, result = pcall(readfile, path)
+			if ok and type(result) == "string" and result ~= "" then
+				source = result
+			else
+				Toast("Couldn't read the custom script file.", Color3.fromRGB(255, 90, 90))
+				return
+			end
+		end
+
+		if type(source) ~= "string" or source == "" then
+			Toast("This custom script has no runnable source.", Color3.fromRGB(255, 90, 90))
+			return
+		end
+
+		if not loadstring then
+			Toast("This executor doesn't support loadstring.", Color3.fromRGB(255, 90, 90))
+			return
+		end
+
+		local compileOk, chunk = pcall(loadstring, source)
+		if not compileOk or type(chunk) ~= "function" then
+			Toast("The custom script couldn't be compiled.", Color3.fromRGB(255, 90, 90))
+			return
+		end
+
+		local runOk, runError = pcall(chunk)
+		if not runOk then
+			warn("Altair | Custom script failed: " .. tostring(runError))
+			Toast("The custom script returned an error.", Color3.fromRGB(255, 90, 90))
+		end
+	end)
+
+	return true
+end
+
+altairValues.closeCustomScriptPrompt = function()
+	if not customScriptPrompt.Visible then
+		altairValues.customScriptPromptOpen = false
+		return
+	end
+
+	altairValues.customScriptPromptOpen = false
+
+	local scale = customScriptPrompt:FindFirstChild("AltairCustomScriptScale")
+	if scale then
+		tweenService:Create(
+			scale,
+			TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
+			{ Scale = 0.95 }
+		):Play()
+	end
+
+	-- Fade out without destroying the prompt's authored transparency values.
+	-- In particular, the TextBoxes are intentionally transparent in the asset;
+	-- forcing every BackgroundTransparency to 0 caused the white rectangles.
+	for _, object in ipairs({ customScriptPrompt, table.unpack(customScriptPrompt:GetDescendants()) }) do
+		local properties = altairValues.transparencyProperties[object.ClassName]
+		if properties then
+			for _, property in ipairs(properties) do
+				pcall(function()
+					tweenService:Create(
+						object,
+						TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
+						{ [property] = 1 }
+					):Play()
+				end)
+			end
+		end
+	end
+
+	task.delay(0.26, function()
+		if not altairValues.customScriptPromptOpen then
+			customScriptPrompt.Visible = false
+		end
+	end)
+end
+
+altairValues.openCustomScriptPrompt = function()
+	local idBox = customScriptPrompt:FindFirstChild("IDTextBox", true)
+	local descBox = customScriptPrompt:FindFirstChild("DescTextBox", true)
+	local scriptBox = customScriptPrompt:FindFirstChild("ScriptTextBox", true)
+
+	if not (idBox and descBox and scriptBox) then
+		Toast("Custom Scripts UI is missing one or more text boxes.", Color3.fromRGB(255, 90, 90))
+		return false
+	end
+
+	-- The current PlaceId is prefilled every time the prompt opens.
+	-- The user can edit it normally; Submit falls back to the current PlaceId
+	-- when this is left blank or contains no valid number.
+	idBox.Text = tostring(placeId)
+	descBox.Text = ""
+	scriptBox.Text = ""
+
+	local scale = customScriptPrompt:FindFirstChild("AltairCustomScriptScale")
+	if not scale then
+		scale = Instance.new("UIScale")
+		scale.Name = "AltairCustomScriptScale"
+		scale.Scale = 1
+		scale.Parent = customScriptPrompt
+	end
+
+	scale.Scale = 0.94
+
+	-- Cache every authored transparency once, then start hidden.
+	-- Restoring to those cached values keeps transparent TextBoxes transparent
+	-- instead of turning them into solid white GuiObjects.
+	for _, object in ipairs({ customScriptPrompt, table.unpack(customScriptPrompt:GetDescendants()) }) do
+		local properties = altairValues.transparencyProperties[object.ClassName]
+		if properties then
+			for _, property in ipairs(properties) do
+				pcall(function()
+					local attribute = "AltairCustomScript_" .. property
+					if object:GetAttribute(attribute) == nil then
+						object:SetAttribute(attribute, object[property])
+					end
+					object[property] = 1
+				end)
+			end
+		end
+	end
+
+	customScriptPrompt.Visible = true
+	altairValues.customScriptPromptOpen = true
+
+	tweenService:Create(
+		scale,
+		TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Scale = 1 }
+	):Play()
+
+	for _, object in ipairs({ customScriptPrompt, table.unpack(customScriptPrompt:GetDescendants()) }) do
+		local properties = altairValues.transparencyProperties[object.ClassName]
+		if properties then
+			for _, property in ipairs(properties) do
+				pcall(function()
+					local target = object:GetAttribute("AltairCustomScript_" .. property)
+					if target ~= nil then
+						tweenService:Create(
+							object,
+							TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+							{ [property] = target }
+						):Play()
+					end
+				end)
+			end
+		end
+	end
+
+	return true
+end
+
+altairValues.saveCustomScriptPrompt = function()
+	local idBox = customScriptPrompt:FindFirstChild("IDTextBox", true)
+	local descBox = customScriptPrompt:FindFirstChild("DescTextBox", true)
+	local scriptBox = customScriptPrompt:FindFirstChild("ScriptTextBox", true)
+
+	if not (idBox and descBox and scriptBox) then
+		Toast("Custom Scripts UI is missing one or more text boxes.", Color3.fromRGB(255, 90, 90))
+		return false
+	end
+
+	if not (writefile and isfolder and makefolder) then
+		Toast("This executor doesn't support saving custom scripts.", Color3.fromRGB(255, 90, 90))
+		return false
+	end
+
+	local requestedId = tostring(idBox.Text or ""):match("^%s*(.-)%s*$")
+	local targetPlaceId = tonumber(requestedId) or placeId
+
+	-- Blank, whitespace, or invalid input always falls back to the current game.
+	if not targetPlaceId or targetPlaceId <= 0 then
+		targetPlaceId = placeId
+	end
+	targetPlaceId = math.floor(targetPlaceId)
+	idBox.Text = tostring(targetPlaceId)
+
+	local description = tostring(descBox.Text or ""):match("^%s*(.-)%s*$")
+	if description == "" then
+		description = "Custom script for this experience."
+	end
+
+	local sourceValue = tostring(scriptBox.Text or ""):match("^%s*(.-)%s*$")
+	if sourceValue == "" then
+		Toast("Enter a raw script URL or Lua file name.", Color3.fromRGB(255, 90, 90))
+		return false
+	end
+
+	local title = placeName
+	if type(title) ~= "string" or title == "" or title == "this experience" then
+		local ok, info = pcall(marketplaceService.GetProductInfo, marketplaceService, targetPlaceId)
+		title = ok and info and info.Name or ("Place " .. tostring(targetPlaceId))
+	end
+
+	local definition = {
+		ScriptTitle = title,
+		ScriptSubtitle = description,
+		PlaceIds = { targetPlaceId },
+	}
+
+	if sourceValue:match("^https?://") then
+		definition.Loadstring = sourceValue
+	else
+		-- Treat anything that is not a URL as a local file reference.
+		-- "Arsenal" defaults to Arsenal.lua; explicit extensions are preserved.
+		definition.LuaFile = sourceValue
+	end
+
+	local folder = altairValues.altairFolder .. "/" .. altairValues.customScriptsFolder
+	if not isfolder(folder) then
+		local ok = pcall(makefolder, folder)
+		if not ok then
+			Toast("Couldn't create the Custom Scripts folder.", Color3.fromRGB(255, 90, 90))
+			return false
+		end
+	end
+
+	local encodedOk, encoded = pcall(httpService.JSONEncode, httpService, definition)
+	if not encodedOk then
+		Toast("Couldn't build the custom script definition.", Color3.fromRGB(255, 90, 90))
+		return false
+	end
+
+	-- One definition per PlaceId keeps imports deterministic and makes importing
+	-- the same game again behave like an update instead of creating duplicates.
+	local filePath = folder .. "/" .. tostring(targetPlaceId) .. ".altair"
+	local writeOk, writeError = pcall(writefile, filePath, encoded)
+
+	if not writeOk then
+		warn("Altair | Couldn't save custom script: " .. tostring(writeError))
+		Toast("Couldn't save the custom script.", Color3.fromRGB(255, 90, 90))
+		return false
+	end
+
+	altairValues.scanCustomScripts()
+	altairValues.closeCustomScriptPrompt()
+	Toast("Imported custom script for " .. tostring(title) .. ".", Color3.fromRGB(80, 220, 145))
+	return true
 end
 
 local function checkLastVersion()
@@ -5138,6 +5765,21 @@ altairAPI.GetSmartBar = function()
 	return smartBar
 end
 
+altairAPI.GetDetectedScript = function()
+	return altairValues.detectedScript
+end
+altairAPI.ScanCustomScripts = altairValues.scanCustomScripts
+altairAPI.OpenCustomScriptImporter = altairValues.openCustomScriptPrompt
+altairAPI.SaveCustomScriptImporter = altairValues.saveCustomScriptPrompt
+altairAPI.RepromptCustomScript = function()
+	local detected = altairValues.detectedScript or altairValues.scanCustomScripts()
+	if detected then
+		return altairValues.showGameDetection(detected)
+	end
+	Toast("No custom script was detected for this experience.")
+	return false
+end
+
 altairAPI.Version = altairValues.altairVersion
 env.Altair = altairAPI
 
@@ -5180,6 +5822,16 @@ local function start()
 		closeSmartBar()
 	end
 
+	-- DomainX-style custom script detection, rebuilt around Altair's own
+	-- filesystem layout and GameDetection prompt.
+	task.spawn(function()
+		task.wait(0.65)
+		local detected = altairValues.scanCustomScripts()
+		if detected then
+			altairValues.showGameDetection(detected)
+		end
+	end)
+
 	-- Chat Spy is built on the legacy chat system, which Roblox retired. Rather than appearing
 	-- switched on while doing nothing, say so once.
 	if settingValue("Chat Spy") and not legacyChatActive then
@@ -5208,6 +5860,44 @@ local startSuccess, startError = pcall(start)
 if not startSuccess then
 	warn("Altair | Startup error: " .. tostring(startError))
 	pcall(queueNotification, "Altair had trouble starting", "Some features may be unavailable. Error details: " .. tostring(startError), 4370336704)
+end
+
+do
+	local closeButton = customScriptPrompt:FindFirstChild("Close", true)
+	local submitButton = customScriptPrompt:FindFirstChild("Submit", true)
+
+	if closeButton and closeButton:IsA("GuiButton") then
+		track(closeButton.MouseButton1Click:Connect(function()
+			altairValues.closeCustomScriptPrompt()
+		end))
+	end
+
+	if submitButton and submitButton:IsA("GuiButton") then
+		track(submitButton.MouseButton1Click:Connect(function()
+			altairValues.saveCustomScriptPrompt()
+		end))
+	end
+end
+
+do
+	local layer = gameDetectionPrompt:FindFirstChild("Layer")
+
+	if layer then
+		local runButton = layer:FindFirstChild("Run")
+		local closeButton = layer:FindFirstChild("Close")
+
+		if runButton and runButton:IsA("GuiButton") then
+			track(runButton.MouseButton1Click:Connect(function()
+				altairValues.runDetectedScript()
+			end))
+		end
+
+		if closeButton and closeButton:IsA("GuiButton") then
+			track(closeButton.MouseButton1Click:Connect(function()
+				altairValues.closeGameDetection()
+			end))
+		end
+	end
 end
 
 toggle.MouseButton1Click:Connect(function()
@@ -5378,8 +6068,16 @@ for _, button in ipairs(scriptsPanel.Interactions.Selection:GetChildren()) do
 			if not scriptSearch.Visible and not debounce then
 				openScriptSearch()
 			end
+		elseif button.Name == "CustomScripts" then
+			altairValues.openCustomScriptPrompt()
+		elseif button.Name == "Reprompt" then
+			local detected = altairValues.detectedScript or altairValues.scanCustomScripts()
+			if detected then
+				altairValues.showGameDetection(detected)
+			else
+				Toast("No custom script was detected for this experience.")
+			end
 		end
-		-- run action
 	end)
 end
 
