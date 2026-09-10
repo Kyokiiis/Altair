@@ -2173,7 +2173,7 @@ do
 			end
 		end
 		-- Live toast clones have different positions from the hidden template.
-		-- Keep the lowest active text above the hotbar; let exiting text animate freely.
+		-- Keep the lowest active text above Altair's toggle button; let exiting text animate freely.
 		local measured
 		for _, toast in ipairs(activeToasts) do
 			local title = toast.Parent and not toast:GetAttribute("AltairExiting") and toast:FindFirstChild("Title")
@@ -2185,12 +2185,14 @@ do
 			end
 		end
 		if measured then toastOffset = measured end
-		local boundary = hotbarTop or ceiling
+
+		local toggleVisible = toggle.Parent and visible(toggle) and toggle.AbsoluteSize.Y > 0
+		local boundary = toggleVisible and toggle.AbsolutePosition.Y or hotbarTop or ceiling
 		local targetTop = boundary and boundary - 14 - toastOffset or UI.AbsolutePosition.Y + UI.AbsoluteSize.Y - 28
 		targetTop = math.max(UI.AbsolutePosition.Y + 8, targetTop)
 		local delta = targetTop - toastsContainer.AbsolutePosition.Y
-		-- Follow the same motion as the backpack; ease the no-backpack fallback.
-		toastsContainer.Position += UDim2.new(0,0,delta * (hotbarTop and 1 or alpha) / parentHeight(toastsContainer),0)
+		-- Track the toggle exactly while it animates; ease only when the toggle is unavailable.
+		toastsContainer.Position += UDim2.new(0,0,delta * ((toggleVisible or hotbarTop) and 1 or alpha) / parentHeight(toastsContainer),0)
 	end))
 	UI.Destroying:Connect(function()
 		connection:Disconnect()
