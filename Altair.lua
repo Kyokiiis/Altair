@@ -151,7 +151,7 @@ local cachedIds = {}
 local activeToasts = {}
 local cachedText = {}
 
-local blinkVersion, blinkTargets, blinkColorOverride = 0, nil, nil
+local blinkQueue, blinkRunning, blinkColorOverride = {}, false, nil
 local spectating
 local closeModPrompt
 
@@ -1487,101 +1487,156 @@ do
 	end))
 end
 
-local function BlinkSmartBar(blinkCount, color)
-	blinkVersion += 1
-	local version, bar = blinkVersion, UI.SmartBar
+local startBlinkWorker
 
-	-- A new blink owns the temporary colour override. Setting this even when
-	-- color is nil also clears a colour left by an interrupted older blink.
-	blinkColorOverride = color
+local function captureBlinkState(bar)
+	local saved = {}
 
-	-- Preserve the ORIGINAL state for the whole blink chain. If another blink
-	-- interrupts this one, the replacement still restores the actual pre-blink
-	-- transparency/colour instead of an in-between tween value.
-	if not blinkTargets then
-		blinkTargets = {}
+	for _, object in ipairs({
+		bar.Shadow,
+		bar.CircleGradient,
+		bar.UIStroke,
+		bar.Back.UIStroke,
+	}) do
+		local isStroke = object:IsA("UIStroke")
+		local transparencyProperty = isStroke and "Transparency" or "ImageTransparency"
+		local colorProperty = isStroke and "Color" or "ImageColor3"
 
-		for _, object in ipairs({
-			bar.Shadow,
-			bar.CircleGradient,
-			bar.UIStroke,
-			bar.Back.UIStroke,
-		}) do
-			local isStroke = object:IsA("UIStroke")
-			local transparencyProperty = isStroke and "Transparency" or "ImageTransparency"
-			local colorProperty = isStroke and "Color" or "ImageColor3"
-
-			blinkTargets[object] = {
-				transparencyProperty = transparencyProperty,
-				transparency = object[transparencyProperty],
-				colorProperty = colorProperty,
-				color = object[colorProperty],
-			}
-		end
+		saved[object] = {
+			transparencyProperty = transparencyProperty,
+			transparency = object[transparencyProperty],
+			colorProperty = colorProperty,
+			color = object[colorProperty],
+		}
 	end
 
-	local targets = blinkTargets
-	local tweenInfo = TweenInfo.new(
-		0.5,
-		Enum.EasingStyle.Sine,
-		Enum.EasingDirection.InOut
-	)
+	return saved
+end
+
+local function restoreBlinkState(bar, saved)
+	blinkColorOverride = nil
+
+	if not saved then return end
+
+	for object, state in pairs(saved) do
+		if object.Parent then
+			object[state.transparencyProperty] =
+				object == bar.Back.UIStroke
+				and math.min(state.transparency, 0.8)
+				or state.transparency
+
+			object[state.colorProperty] = state.color
+		end
+	end
+end
+
+startBlinkWorker = function()
+	if blinkRunning or #blinkQueue == 0 then return end
+	blinkRunning = true
 
 	task.spawn(function()
-		for _ = 1, blinkCount or 1 do
-			for _, flashing in ipairs({true, false}) do
-				if version ~= blinkVersion then return end
+		local activeBar
+		local activeSaved
 
-				-- Keep a supplied colour authoritative while flashing. This is
-				-- important when Rainbow Mode is enabled because that renderer
-				-- otherwise writes a new SmartBar colour every frame.
-				blinkColorOverride = flashing and color or nil
+		local ok, err = pcall(function()
+			while #blinkQueue > 0 do
+				local request = table.remove(blinkQueue, 1)
+				local bar = UI.SmartBar
 
-				for object, saved in pairs(targets) do
-					if object.Parent then
-						local transparency = flashing
-							and math.max(0, saved.transparency - 0.25)
-							or saved.transparency
+				if not bar or not bar.Parent then
+					continue
+				end
 
-						if object == bar.Back.UIStroke then
-							transparency = math.min(transparency, 0.8)
+				activeBar = bar
+				activeSaved = captureBlinkState(bar)
+
+				local tweenInfo = TweenInfo.new(
+					0.5,
+					Enum.EasingStyle.Sine,
+					Enum.EasingDirection.InOut
+				)
+
+				for _ = 1, request.count do
+					-- Flash in.
+					blinkColorOverride = request.color
+
+					for object, state in pairs(activeSaved) do
+						if object.Parent then
+							local transparency = math.max(0, state.transparency - 0.25)
+							if object == bar.Back.UIStroke then
+								transparency = math.min(transparency, 0.8)
+							end
+
+							local goal = {
+								[state.transparencyProperty] = transparency,
+							}
+
+							if request.color then
+								goal[state.colorProperty] = request.color
+							end
+
+							tweenService:Create(object, tweenInfo, goal):Play()
 						end
-
-						local goal = {
-							[saved.transparencyProperty] = transparency,
-						}
-
-						if color then
-							goal[saved.colorProperty] = flashing and color or saved.color
-						end
-
-						tweenService:Create(object, tweenInfo, goal):Play()
 					end
+
+					task.wait(0.5)
+
+					-- Flash out. Keep the request isolated from whatever blink
+					-- comes next instead of letting two tweens own the same bar.
+					blinkColorOverride = nil
+
+					for object, state in pairs(activeSaved) do
+						if object.Parent then
+							local transparency =
+								object == bar.Back.UIStroke
+								and math.min(state.transparency, 0.8)
+								or state.transparency
+
+							tweenService:Create(object, tweenInfo, {
+								[state.transparencyProperty] = transparency,
+								[state.colorProperty] = state.color,
+							}):Play()
+						end
+					end
+
+					task.wait(0.5)
 				end
 
-				task.wait(0.5)
+				-- Hard restore after every request. Tween completion timing,
+				-- Rainbow Mode, or another toast can never leave the bar stuck.
+				restoreBlinkState(bar, activeSaved)
+				activeBar, activeSaved = nil, nil
 			end
+		end)
+
+		-- Final safety restore if anything inside a blink errors.
+		if activeBar and activeSaved then
+			pcall(restoreBlinkState, activeBar, activeSaved)
+		else
+			blinkColorOverride = nil
 		end
 
-		if version ~= blinkVersion then return end
+		blinkRunning = false
 
-		blinkColorOverride = nil
-
-		for object, saved in pairs(targets) do
-			if object.Parent then
-				object[saved.transparencyProperty] =
-					object == bar.Back.UIStroke
-					and math.min(saved.transparency, 0.8)
-					or saved.transparency
-
-				if color then
-					object[saved.colorProperty] = saved.color
-				end
-			end
+		if not ok then
+			warn("Altair | SmartBar blink failed: " .. tostring(err))
 		end
 
-		blinkTargets = nil
+		-- A request can arrive in the tiny window between the queue becoming
+		-- empty and this worker releasing blinkRunning.
+		if #blinkQueue > 0 then
+			startBlinkWorker()
+		end
 	end)
+end
+
+local function BlinkSmartBar(blinkCount, color)
+	table.insert(blinkQueue, {
+		count = math.max(1, math.floor(tonumber(blinkCount) or 1)),
+		color = typeof(color) == "Color3" and color or nil,
+	})
+
+	startBlinkWorker()
 end
 
 local function Toast(content, color, font, skipBlink)
@@ -5036,6 +5091,7 @@ altairAPI.QueueNotification = queueNotification
 altairAPI.Notify = queueNotification
 altairAPI.BlinkSmartBar = BlinkSmartBar
 altairAPI.SupportsColoredSmartBarBlink = true
+altairAPI.SupportsQueuedSmartBarBlink = true
 altairAPI.ToastSupportsSkipBlink = true
 
 altairAPI.OpenSmartBar = openSmartBar
