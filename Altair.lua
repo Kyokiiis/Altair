@@ -163,7 +163,7 @@ local closeModPrompt
 -- Configurable Core Values
 local SECURITY_PROMPT_TIMEOUT = 60 -- seconds before an unanswered prompt denies by default
 local altairValues = {
-	altairVersion = "1.31",
+	altairVersion = "1.34",
 	altairName = "Altair",
 	releaseType = "Stable",
 	altairFolder = "Altair",
@@ -848,9 +848,10 @@ local altairSettings = {
 			},
 			{
 				name = "MCP Auto-Connect",
-				description = "Automatically connect Developer Tools to the local Altair MCP companion while Debug Mode is enabled.",
+				description = "Keep the live MCP bridge connected for this Debug Mode session. This control appears only while an MCP companion is connected.",
 				settingType = "Boolean",
 				current = true,
+				persistent = false,
 				id = "devmcpauto",
 			},
 			{
@@ -870,10 +871,10 @@ local altairSettings = {
 			},
 			{
 				name = "Event Buffer Capacity",
-				description = "Maximum number of observation events retained by the next recording's bounded circular buffer.",
+				description = "Total retained events for the next recording. Altair reserves independent critical/state/general lanes so noisy UI cannot evict diagnostics. Larger values improve 10+ minute captures but use more memory.",
 				settingType = "Number",
-				current = 5000,
-				values = { 250, 25000 },
+				current = 30000,
+				values = { 1000, 100000 },
 				id = "deveventcap",
 			},
 		},
@@ -6022,6 +6023,11 @@ local developerTools = (function()
 	}
 	local activeService
 	local generation = 0
+	local observers = env.__ALTAIR_DEBUG_OBSERVERS
+	if type(observers) ~= "table" then
+		observers = setmetatable({}, { __mode = "k" })
+		env.__ALTAIR_DEBUG_OBSERVERS = observers
+	end
 
 	local controller = {}
 	local stateSink
@@ -6037,6 +6043,32 @@ local developerTools = (function()
 			if ok and exists then return true end
 		end
 		return false
+	end
+
+	function controller:PublishDebugState(enabled, details)
+		for callback in pairs(observers) do
+			task.defer(function()
+				local ok, err = pcall(callback, enabled == true, details)
+				if not ok then warn("Altair | Debug observer failed: " .. tostring(err)) end
+			end)
+		end
+	end
+
+	function controller:Observe(callback)
+		if type(callback) ~= "function" then return nil end
+		observers[callback] = true
+		local connection = { Connected = true }
+		function connection:Disconnect()
+			if not self.Connected then return end
+			self.Connected = false
+			observers[callback] = nil
+		end
+		task.defer(function()
+			if connection.Connected then
+				pcall(callback, settingValue("Debug Mode", false) == true and activeService ~= nil, { reason = "subscribe" })
+			end
+		end)
+		return connection
 	end
 
 	function controller:SetStateSink(callback)
@@ -6162,10 +6194,13 @@ local developerTools = (function()
 
 		if enabled then
 			self:Stop("replaced")
-			return self:Start(currentGeneration)
+			local ok, serviceOrError = self:Start(currentGeneration)
+			self:PublishDebugState(ok == true, { reason = ok and "enabled" or "start-failed", detail = serviceOrError })
+			return ok, serviceOrError
 		end
 
 		self:Stop("debug-disabled")
+		self:PublishDebugState(false, { reason = "disabled" })
 		return true
 	end
 
@@ -6245,6 +6280,31 @@ altairAPI.RepromptCustomScript = function()
 	return false
 end
 
+-- Cloudz child-script debug contract.
+-- These entrypoints are safe for every Cloudz script to know about, but they only
+-- return a live debug client while Altair Debug Mode is active and DevTools is
+-- loaded. Child scripts never create their own recorder or MCP connection.
+altairAPI.DebugContractVersion = 2
+
+altairAPI.DebugEnabled = function()
+	local dev = type(env.Altair) == "table" and env.Altair.Dev or nil
+	return settingValue("Debug Mode", false) == true
+		and type(dev) == "table"
+		and dev._destroyed ~= true
+end
+
+altairAPI.GetDebugClient = function(name, provider, metadata)
+	if not altairAPI.DebugEnabled() then return nil end
+	local dev = env.Altair.Dev
+	if type(dev.CreateClient) ~= "function" then return nil end
+	local ok, client = pcall(dev.CreateClient, dev, name, provider, metadata)
+	return ok and client or nil
+end
+
+altairAPI.OnDebugChanged = function(callback)
+	return developerTools:Observe(callback)
+end
+
 altairAPI.Version = altairValues.altairVersion
 env.Altair = altairAPI
 
@@ -6296,13 +6356,38 @@ local function start()
 		end
 	end
 
+	local function setDeveloperSettingVisible(name, visible)
+		local setting = checkSetting(name, "Developer")
+		if not setting then return end
+		setting.runtimeHidden = not visible
+		local object = setting._uiObject
+		if object then object.Visible = visible == true end
+	end
+
+	local function syncMcpControls(connected)
+		-- These controls have no local-debugging meaning. Keep them out of the UI unless
+		-- a live MCP companion has completed its handshake. Auto-connect is session-only,
+		-- so a fresh Debug Mode activation always gets another opportunity to connect.
+		setDeveloperSettingVisible("MCP Auto-Connect", connected)
+		setDeveloperSettingVisible("Stream Observation Events", connected)
+	end
+
+	-- Avoid flashing irrelevant MCP controls while the bridge is still starting.
+	syncMcpControls(false)
+
+	local legacyCapacity = checkSetting("Event Buffer Capacity", "Developer")
+	if legacyCapacity and tonumber(legacyCapacity.current) == 5000 then
+		legacyCapacity.current = 30000
+		saveSettings()
+	end
+
 	developerTools:SetConfigProvider(function()
 		return {
 			Bridge = { AutoConnect = settingValue("MCP Auto-Connect", true) == true },
 			Recorder = {
 				StreamEvents = settingValue("Stream Observation Events", false) == true,
 				SampleHz = settingValue("Recording Sample Rate", 8),
-				EventCapacity = settingValue("Event Buffer Capacity", 5000),
+				EventCapacity = settingValue("Event Buffer Capacity", 30000),
 			},
 		}
 	end)
@@ -6310,6 +6395,8 @@ local function start()
 	developerTools:SetStateSink(function(state, value, details)
 		if state == "recording" then
 			syncDeveloperBoolean("Record Session", value == true)
+		elseif state == "bridge" then
+			syncMcpControls(value == true)
 		end
 	end)
 
@@ -6333,8 +6420,15 @@ local function start()
 		debugSetting.onChanged = function()
 			local enabled = developerAvailable and settingValue("Debug Mode", false) == true
 			altairAPI.SetSmartBarPersistentColor(enabled and Color3.fromRGB(126, 104, 220) or nil)
+			if enabled then
+				-- MCP Auto-Connect is intentionally session-only. Re-entering Debug Mode
+				-- restores the bootstrap behavior even if it was disabled earlier this run.
+				syncDeveloperBoolean("MCP Auto-Connect", true)
+			else
+				syncDeveloperBoolean("Record Session", false)
+				syncMcpControls(false)
+			end
 			developerTools:Sync(enabled)
-			if not enabled then syncDeveloperBoolean("Record Session", false) end
 		end
 	end
 

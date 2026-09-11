@@ -145,6 +145,7 @@ local CONFIG = {
 	-- Core camera movement follows the simple CFrame:Lerp aim from Arsenal.Lua.
 	-- FOV, sticky targeting and the existing Arsenal target filters stay intact.
 	aim        = false,
+	aimMethod  = "Classic", -- Classic | Improved
 	aimPart    = "Head",   -- Head | Torso | Hitbox | Nearest
 	aimPick    = "Crosshair", -- Crosshair | Closest | Lowest HP | Lowest level
 	aimSticky  = true,
@@ -1319,9 +1320,21 @@ local function aimActive()
 	return true
 end
 
-local function aimNumbers()
+local function aimNumbers(dt)
 	aimFovNow = CONFIG.aimFov
-	return CONFIG.aimFov, math.clamp(CONFIG.aimSmooth / 100, 0.01, 1)
+	local base = math.clamp(CONFIG.aimSmooth / 100, 0.01, 1)
+
+	if CONFIG.aimMethod == "Improved" and dt then
+		local frameScale = math.clamp(dt * 60, 0.5, 1.5)
+		local compensated = 1 - ((1 - base) ^ frameScale)
+
+		-- The first version of this method could feel like a snap on slow frames.
+		-- Keep the consistency benefit, but never let one frame become more than
+		-- 25% stronger than the user's configured base strength.
+		return CONFIG.aimFov, math.clamp(compensated, 0.01, math.min(1, base * 1.25))
+	end
+
+	return CONFIG.aimFov, base
 end
 
 local function targetPart(char, mode)
@@ -1418,7 +1431,7 @@ local function candidatePart(char)
 end
 
 local function pickTarget()
-	local fov = select(1, aimNumbers())
+	local fov = CONFIG.aimFov
 	local mid = centre()
 	local camPos = camera.CFrame.Position
 	local best, bestScore
@@ -1481,7 +1494,7 @@ local function aimPass(dt)
 		return
 	end
 
-	local fov, alpha = aimNumbers()
+	local fov, alpha = aimNumbers(dt)
 	local pick
 
 	-- Sticky targeting keeps both the player AND the already-rolled body region.
@@ -1494,8 +1507,9 @@ local function aimPass(dt)
 			if part then
 				local sp = camera:WorldToViewportPoint(part.Position)
 				local px = (Vector2.new(sp.X, sp.Y) - centre()).Magnitude
+				local retainFov = CONFIG.aimMethod == "Improved" and (fov * 1.45) or (fov * 1.35)
 				if sp.Z > 0
-					and px <= fov * 1.35
+					and px <= retainFov
 					and ((not CONFIG.aimVisible) or visible(part.Position)) then
 					pick = { player = stickyTarget, char = char, part = part, px = px }
 				end
@@ -1514,8 +1528,9 @@ local function aimPass(dt)
 			if part then
 				local sp = camera:WorldToViewportPoint(part.Position)
 				local px = (Vector2.new(sp.X, sp.Y) - centre()).Magnitude
+				local acquireFov = CONFIG.aimMethod == "Improved" and fov or (fov * 1.35)
 				if sp.Z > 0
-					and px <= fov * 1.35
+					and px <= acquireFov
 					and ((not CONFIG.aimVisible) or visible(part.Position)) then
 					pick = {
 						player = candidate.player,
@@ -1590,7 +1605,7 @@ local function rcsPass(dt)
 
 	if lastYaw == nil then lastYaw, lastPitch = yaw, pitch return end
 
-	local dYaw = angleDelta(lastYaw, yaw)
+	local dYaw = ((yaw - lastYaw + math.pi) % (2 * math.pi)) - math.pi
 	local dPitch = pitch - lastPitch
 	lastYaw, lastPitch = yaw, pitch
 
@@ -2614,6 +2629,19 @@ aimBody:Dropdown(
 
 local aimMovement = aimPage:Card("AIMING", 1)
 
+aimMovement:Dropdown(
+	"Aim method",
+	{ "Classic", "Improved" },
+	CONFIG.aimMethod,
+	function(v)
+		CONFIG.aimMethod = v
+		stickyTarget = nil
+		currentAimMode = nil
+		clearRandomPart()
+	end,
+	"Classic keeps the original Arsenal aim; Improved uses stricter acquisition, stronger target retention, and frame-consistent smoothing"
+)
+
 aimMovement:Toggle("Draw FOV", CONFIG.aimCircle, function(v)
 	CONFIG.aimCircle = v
 end)
@@ -2623,7 +2651,7 @@ end, "only enemies inside this circle are acquired")
 
 aimMovement:Slider("Smoothness", 5, 100, CONFIG.aimSmooth, function(v)
 	CONFIG.aimSmooth = v
-end, "CFrame:Lerp strength; 15 equals 0.15")
+end, "Classic uses this directly; Improved keeps the same feel while smoothing frame-rate changes")
 
 aimMovement:Slider("Delay after kill (ms)", 0, 1000, CONFIG.aimKillMs, function(v)
 	CONFIG.aimKillMs = v
@@ -2984,7 +3012,8 @@ task.spawn(function()
 				aimOut:set({
 					"  target   " .. tostring(STATE.target)
 						.. "   shot " .. tostring(STATE.shots),
-					"  state    " .. (STATE.engaged and "tracking" or "idle"),
+					"  state    " .. (STATE.engaged and "tracking" or "idle")
+						.. "   method " .. tostring(CONFIG.aimMethod),
 					"  active   " .. (CONFIG.aim and "enabled" or "off")
 						.. (STATE.panelOpen and CONFIG.aimPauseUI and "   PAUSED BY UI" or ""),
 					"  body     " .. (currentAimMode
@@ -3204,7 +3233,7 @@ ENV.__ARSENAL_DBG = {
 	underCrosshair = underCrosshair, pullTrigger = pullTrigger,
 	weaponInfo = weaponInfo, weaponForLevel = weaponForLevel, levelOf = levelOf,
 	statusTeam = statusTeam, gunGate = gunGate, airGate = airGate,
-	keyHeld = keyHeld, approach = approach, angleDelta = angleDelta,
+	keyHeld = keyHeld,
 	firing = firing, hudText = hudText, ffaNow = ffaNow,
 	hbApply = hbApply, hbRestoreAll = hbRestoreAll, hbSaved = hbSaved,
 	refreshFilter = refreshFilter, scanGhosts = scanGhosts,
@@ -3215,6 +3244,424 @@ ENV.__ARSENAL_DBG = {
 	TOUCH = TOUCH, screenHeld = screenHeld, reachable = reachable,
 	hotkeyHeld = hotkeyHeld, aimActive = aimActive, trigActive = trigActive,
 }
+
+--[[
+Cloudz Softworks / Arsenal -> Altair native debug integration
+
+Placement:
+  Append this block near the end of the Arsenal script, AFTER ENV.__ARSENAL_DBG
+  has been assigned and before the final loaded toast/print if convenient.
+
+Architecture:
+  * Altair is the parent debugger.
+  * Arsenal never creates its own recorder or MCP connection.
+  * No diagnostic provider/client exists unless Altair Debug Mode is active.
+  * No new polling loop is created; Provider:Sample() runs only when Altair's
+    recorder samples providers, and transitions are emitted from that sample.
+]]
+
+(function()
+	local previousDebugConnection = rawget(ENV, "__ARSENAL_ALTAIR_DEBUG_CONNECTION")
+	if type(previousDebugConnection) == "table" and type(previousDebugConnection.Disconnect) == "function" then
+		pcall(previousDebugConnection.Disconnect, previousDebugConnection)
+	end
+	ENV.__ARSENAL_ALTAIR_DEBUG_CONNECTION = nil
+
+	local activeDebugClient
+	local debugProvider
+	local debugAttachError
+	local previousDebugState = {}
+	local lastAuditAt = -math.huge
+	local cachedCandidateAudit
+
+	local function safeCall(fn, ...)
+		if type(fn) ~= "function" then return nil end
+		local packed = table.pack(pcall(fn, ...))
+		if not packed[1] then return nil end
+		return table.unpack(packed, 2, packed.n)
+	end
+
+	local function findPlayerByName(name)
+		if type(name) ~= "string" or name == "" or name == "-" then return nil end
+		local exact = Players:FindFirstChild(name)
+		if exact then return exact end
+		local lowered = name:lower()
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player.Name:lower() == lowered or player.DisplayName:lower() == lowered then
+				return player
+			end
+		end
+		return nil
+	end
+
+	local function centerRay(maxDistance)
+		local cam = workspace.CurrentCamera
+		if not cam then return nil end
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.IgnoreWater = true
+		params.FilterDescendantsInstances = plr.Character and { plr.Character } or {}
+		local ray = cam:ViewportPointToRay(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+		local hit = workspace:Raycast(ray.Origin, ray.Direction * (tonumber(maxDistance) or 2000), params)
+		if not hit then
+			return {
+				origin = ray.Origin,
+				direction = ray.Direction,
+			}
+		end
+		return {
+			origin = ray.Origin,
+			direction = ray.Direction,
+			instance = hit.Instance,
+			position = hit.Position,
+			distance = (hit.Position - ray.Origin).Magnitude,
+		}
+	end
+
+	local function targetGeometry(player)
+		local cam = workspace.CurrentCamera
+		local char = player and player.Character
+		if not cam or not char then return nil end
+		local root = char:FindFirstChild("HumanoidRootPart")
+		local head = char:FindFirstChild("Head")
+		local headHB = char:FindFirstChild("HeadHB")
+		local fakeHead = char:FindFirstChild("FakeHead")
+		local hitbox = char:FindFirstChild("Hitbox")
+		local selected = targetPart(char, currentAimMode or CONFIG.aimPart)
+			or headHB or head or root
+		if not selected then return nil end
+
+		local screen = cam:WorldToViewportPoint(selected.Position)
+		local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+		local screenDelta = Vector2.new(screen.X, screen.Y) - center
+		local toPart = selected.Position - cam.CFrame.Position
+		local alignmentDegrees
+		if toPart.Magnitude > 1e-6 then
+			alignmentDegrees = math.deg(math.acos(math.clamp(cam.CFrame.LookVector:Dot(toPart.Unit), -1, 1)))
+		end
+
+		local velocity = selected.AssemblyLinearVelocity
+		local predicted = selected.Position
+		if CONFIG.aimPredict and CONFIG.aimPredictAmt > 0 then
+			predicted += velocity * CONFIG.aimPredictAmt
+		end
+
+		local function partState(part)
+			return part and {
+				name = part.Name,
+				position = part.Position,
+				size = part.Size,
+				velocity = part.AssemblyLinearVelocity,
+				canQuery = part.CanQuery,
+				canCollide = part.CanCollide,
+				transparency = part.Transparency,
+			} or nil
+		end
+
+		return {
+			player = player.Name,
+			selected = partState(selected),
+			root = partState(root),
+			head = partState(head),
+			headHB = partState(headHB),
+			fakeHead = partState(fakeHead),
+			hitbox = partState(hitbox),
+			distanceStuds = root and (cam.CFrame.Position - root.Position).Magnitude or toPart.Magnitude,
+			fovErrorPx = screen.Z > 0 and screenDelta.Magnitude or nil,
+			alignmentDegrees = alignmentDegrees,
+			predictedPosition = predicted,
+			predictionSeconds = CONFIG.aimPredict and CONFIG.aimPredictAmt or 0,
+		}
+	end
+
+	local function auditCandidates()
+		local cam = workspace.CurrentCamera
+		local counts = {
+			total = 0,
+			notEnemy = 0,
+			notAlive = 0,
+			noPart = 0,
+			tooFar = 0,
+			behindCamera = 0,
+			outsideFov = 0,
+			notVisible = 0,
+			eligible = 0,
+		}
+		if not cam then return counts end
+
+		local fov = tonumber(CONFIG.aimFov) or 120
+		local maxDistance = tonumber(CONFIG.aimMaxDist) or math.huge
+		local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+		local camPos = cam.CFrame.Position
+
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player ~= plr then
+				counts.total += 1
+				if not isEnemy(player) then
+					counts.notEnemy += 1
+				else
+					local char, _, root = alive(player)
+					if not char or not root then
+						counts.notAlive += 1
+					else
+						local part = candidatePart(char)
+						if not part then
+							counts.noPart += 1
+						elseif (camPos - root.Position).Magnitude > maxDistance then
+							counts.tooFar += 1
+						else
+							local screen = cam:WorldToViewportPoint(part.Position)
+							if screen.Z <= 0 then
+								counts.behindCamera += 1
+							else
+								local errorPx = (Vector2.new(screen.X, screen.Y) - center).Magnitude
+								if errorPx > fov then
+									counts.outsideFov += 1
+								elseif CONFIG.aimVisible and not visible(part.Position) then
+									counts.notVisible += 1
+								else
+									counts.eligible += 1
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		return counts
+	end
+
+	local function currentBlocker(gunAllowed, airAllowed)
+		if CONFIG.aim ~= true then return "aim_disabled" end
+		if CONFIG.aimPauseUI and STATE.panelOpen then return "ui_paused" end
+		if os.clock() * 1000 - lastKillAt < CONFIG.aimKillMs then return "kill_pause" end
+		if gunAllowed == false then return "gun_gate" end
+		if airAllowed == false then return "air_gate" end
+		if STATE.engaged == true then return "engaged" end
+		if STATE.target ~= "-" then return "target_not_engaged" end
+		return "no_target"
+	end
+
+	local function buildDiagnostic(forceAudit)
+		local info, weaponName = weaponInfo()
+		local gunAllowed = gunGate(CONFIG.aimOnlyGun)
+		local airAllowed = airGate(CONFIG.aimAir)
+		local active = aimActive()
+		local targetPlayer = findPlayerByName(STATE.target)
+		local underPlayer, underPart = underCrosshair()
+		local cam = workspace.CurrentCamera
+		local char = plr.Character
+		local localHead = char and char:FindFirstChild("Head")
+		local blocker = currentBlocker(gunAllowed, airAllowed)
+
+		if CONFIG.aim and (forceAudit or os.clock() - lastAuditAt >= 0.5) then
+			lastAuditAt = os.clock()
+			cachedCandidateAudit = auditCandidates()
+		end
+		if blocker == "no_target" and cachedCandidateAudit and cachedCandidateAudit.eligible > 0 then
+			blocker = "eligible_candidate_not_acquired"
+		end
+
+		return {
+			source = "Arsenal.NativeDebugClient",
+			generation = GEN,
+			config = {
+				aim = CONFIG.aim,
+				aimPart = CONFIG.aimPart,
+				aimPick = CONFIG.aimPick,
+				aimSticky = CONFIG.aimSticky,
+				aimVisible = CONFIG.aimVisible,
+				aimOnlyGun = CONFIG.aimOnlyGun,
+				aimAir = CONFIG.aimAir,
+				aimMethod = CONFIG.aimMethod,
+				aimFov = CONFIG.aimFov,
+				aimSmooth = CONFIG.aimSmooth,
+				aimPredict = CONFIG.aimPredict,
+				aimPredictAmt = CONFIG.aimPredictAmt,
+				aimRandomPart = CONFIG.aimRandomPart,
+				aimDistancePart = CONFIG.aimDistancePart,
+				aimHeadRangeM = CONFIG.aimHeadRangeM,
+				trig = CONFIG.trig,
+				trigHeadOnly = CONFIG.trigHeadOnly,
+				trigOnlyGun = CONFIG.trigOnlyGun,
+				trigBurst = CONFIG.trigBurst,
+				rcs = CONFIG.rcs,
+			},
+			state = {
+				target = STATE.target,
+				engaged = STATE.engaged,
+				panelOpen = STATE.panelOpen,
+				shots = STATE.shots,
+				trigHits = STATE.trigHits,
+				trigOn = STATE.trigOn,
+				underCross = STATE.underCross,
+				weapon = STATE.weapon,
+				level = STATE.level,
+				kickYaw = STATE.kickY,
+				kickPitch = STATE.kickP,
+				kickPeak = STATE.kickPeak,
+				currentAimMode = currentAimMode,
+				stickyTarget = stickyTarget and stickyTarget.Name or nil,
+				aimWroteCamera = aimWroteCamera,
+				trigShots = trigShots,
+			},
+			gates = {
+				aimActive = active,
+				gun = gunAllowed,
+				air = airAllowed,
+				blocker = blocker,
+			},
+			weapon = info,
+			weaponName = weaponName,
+			target = targetGeometry(targetPlayer),
+			candidates = cachedCandidateAudit,
+			underCrosshair = underPlayer and {
+				player = underPlayer.Name,
+				part = underPart and underPart.Name or nil,
+			} or nil,
+			camera = cam and {
+				cframe = cam.CFrame,
+				fov = cam.FieldOfView,
+				viewport = cam.ViewportSize,
+			} or nil,
+			shotOriginCandidates = {
+				camera = cam and cam.CFrame.Position or nil,
+				localHead = localHead and localHead.Position or nil,
+			},
+			centerRay = centerRay(CONFIG.aimMaxDist),
+			firing = safeCall(firing),
+			note = STATE.note,
+		}
+	end
+
+	local function emitTransitions(diagnostic)
+		local client = activeDebugClient
+		if not client or not client:IsActive() then return end
+		local current = {
+			weapon = tostring(diagnostic.weaponName or ""),
+			target = tostring(STATE.target or "-"),
+			blocker = tostring(diagnostic.gates and diagnostic.gates.blocker or "unknown"),
+			engaged = STATE.engaged == true,
+			shots = tonumber(STATE.shots) or 0,
+			trigHits = tonumber(STATE.trigHits) or 0,
+			aimMode = tostring(currentAimMode or ""),
+		}
+
+		if previousDebugState.weapon ~= current.weapon then client:Emit("weapon.changed", diagnostic) end
+		if previousDebugState.target ~= current.target then client:Emit("aim.target_changed", diagnostic) end
+		if previousDebugState.blocker ~= current.blocker then client:Emit("aim.blocker_changed", diagnostic) end
+		if previousDebugState.engaged ~= current.engaged then client:Emit("aim.engaged_changed", diagnostic) end
+		if previousDebugState.aimMode ~= current.aimMode then client:Emit("aim.mode_changed", diagnostic) end
+		if previousDebugState.shots ~= nil and current.shots > previousDebugState.shots then client:Emit("shot.observed", diagnostic) end
+		if previousDebugState.trigHits ~= nil and current.trigHits > previousDebugState.trigHits then client:Emit("trigger.fired", diagnostic) end
+		previousDebugState = current
+	end
+
+	local function setDebugStatus(attached, reason)
+		local export = ENV.__ARSENAL_DBG
+		if type(export) == "table" then
+			export.__ALT_DEBUG_STATUS = {
+				attached = attached == true,
+				reason = reason,
+				generation = GEN,
+				unixMs = DateTime.now().UnixTimestampMillis,
+			}
+		end
+	end
+
+	local function detachDebugClient(reason)
+		if activeDebugClient then pcall(activeDebugClient.Detach, activeDebugClient, reason or "debug-disabled") end
+		activeDebugClient = nil
+		debugProvider = nil
+		debugAttachError = nil
+		table.clear(previousDebugState)
+		cachedCandidateAudit = nil
+		lastAuditAt = -math.huge
+		setDebugStatus(false, reason or "debug-disabled")
+	end
+
+	local function attachDebugClient()
+		if ENV.__ARSENAL ~= GEN then return false, "arsenal-reloaded" end
+		local altair = ENV.Altair
+		if type(altair) ~= "table" then return false, "altair-unavailable" end
+		if type(altair.DebugEnabled) ~= "function" or not altair.DebugEnabled() then
+			setDebugStatus(false, "debug-disabled")
+			return false, "debug-disabled"
+		end
+		if type(altair.GetDebugClient) ~= "function" then
+			setDebugStatus(false, "debug-client-api-unavailable")
+			return false, "debug-client-api-unavailable"
+		end
+		if activeDebugClient and activeDebugClient:IsActive() then return true end
+
+		debugProvider = {
+			Description = "Arsenal runtime diagnostics for Altair recordings and MCP.",
+		}
+		function debugProvider:Sample()
+			local diagnostic = buildDiagnostic(false)
+			emitTransitions(diagnostic)
+			return diagnostic
+		end
+		function debugProvider:Snapshot()
+			return buildDiagnostic(true)
+		end
+
+		local client, attachError = altair.GetDebugClient("Arsenal", debugProvider, {
+			product = "Cloudz Softworks",
+			script = "Arsenal",
+			generation = GEN,
+			placeId = game.PlaceId,
+		})
+		activeDebugClient = client
+		debugAttachError = attachError
+		if not activeDebugClient then
+			setDebugStatus(false, tostring(attachError or "attach-failed"))
+			warn("Arsenal | Altair debug client attach failed: " .. tostring(attachError or "unknown"))
+			return false, attachError
+		end
+
+		setDebugStatus(true, nil)
+		activeDebugClient:Emit("integration.attached", {
+			generation = GEN,
+			debugContractVersion = altair.DebugContractVersion,
+		})
+		return true
+	end
+
+	-- Mark the existing export for Altair's generic legacy-export reader. The core
+	-- debugger does not know Arsenal semantics; the native provider above owns all
+	-- Arsenal-specific reasoning.
+	if type(ENV.__ARSENAL_DBG) == "table" then
+		ENV.__ARSENAL_DBG.__ALT_DEBUG_EXPORT = {
+			Name = "Arsenal",
+			Description = "Arsenal legacy debug export",
+			SampleKeys = { "STATE" },
+			SnapshotKeys = { "CONFIG" },
+			Metadata = {
+				product = "Cloudz Softworks",
+				script = "Arsenal",
+				generation = GEN,
+			},
+		}
+	end
+
+	local altair = ENV.Altair
+	if type(altair) == "table" and type(altair.OnDebugChanged) == "function" then
+		local connection = altair.OnDebugChanged(function(enabled)
+			if ENV.__ARSENAL ~= GEN then
+				detachDebugClient("arsenal-reloaded")
+				return
+			end
+			if enabled then attachDebugClient() else detachDebugClient("debug-disabled") end
+		end)
+		ENV.__ARSENAL_ALTAIR_DEBUG_CONNECTION = connection
+	end
+
+	-- Do not depend on the asynchronous debug-state notification for the initial
+	-- attachment. If Altair Debug Mode is already active, attach immediately; the
+	-- observer remains responsible for future enable/disable transitions.
+	attachDebugClient()
+end)()
 
 if TOUCH then
 	note("touch client detected")
