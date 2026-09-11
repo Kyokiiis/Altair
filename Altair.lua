@@ -155,6 +155,7 @@ local blinkState = {
 	queue = {},
 	running = false,
 	color = nil,
+	persistentColor = nil,
 }
 local spectating
 local closeModPrompt
@@ -162,7 +163,7 @@ local closeModPrompt
 -- Configurable Core Values
 local SECURITY_PROMPT_TIMEOUT = 60 -- seconds before an unanswered prompt denies by default
 local altairValues = {
-	altairVersion = "1.28",
+	altairVersion = "1.31",
 	altairName = "Altair",
 	releaseType = "Stable",
 	altairFolder = "Altair",
@@ -813,6 +814,67 @@ local altairSettings = {
 				current = "No Webhook",
 
 				id = "logplrjoinleaveurl",
+			},
+		},
+	},
+	{
+		name = "Developer",
+		description = "Development-only tooling for diagnosing Altair and custom scripts. This category is only shown when Altair Developer Tools is installed.",
+		color = Color3.fromRGB(126, 104, 220),
+		minimumLicense = "Free",
+		categorySettings = {
+			{
+				name = "Debug Mode",
+				description = "Loads Altair/Developer/AltairDevTools.lua. Disable it to unload every development watcher, recorder, bridge connection, and diagnostic resource.",
+				settingType = "Boolean",
+				current = false,
+				id = "debugmode",
+			},
+			{
+				name = "Record Session",
+				description = "Record a bounded diagnostic session. Turning this off stops the recording and exports it to Altair/Developer/Captures. This toggle is transient and never persists across Altair launches.",
+				settingType = "Boolean",
+				current = false,
+				persistent = false,
+				id = "devrecord",
+			},
+			{
+				name = "Run Self-Test",
+				description = "Run the Developer Tools integrity and capability checks. The switch automatically returns to off when the test finishes.",
+				settingType = "Boolean",
+				current = false,
+				persistent = false,
+				id = "devselftest",
+			},
+			{
+				name = "MCP Auto-Connect",
+				description = "Automatically connect Developer Tools to the local Altair MCP companion while Debug Mode is enabled.",
+				settingType = "Boolean",
+				current = true,
+				id = "devmcpauto",
+			},
+			{
+				name = "Stream Observation Events",
+				description = "Stream recorded observation events to the MCP companion while recording. Leave this off when you only need local capture files.",
+				settingType = "Boolean",
+				current = false,
+				id = "devstream",
+			},
+			{
+				name = "Recording Sample Rate",
+				description = "State samples per second used by the next recording. Event-driven changes are captured immediately regardless of this value.",
+				settingType = "Number",
+				current = 8,
+				values = { 1, 30 },
+				id = "devsamplehz",
+			},
+			{
+				name = "Event Buffer Capacity",
+				description = "Maximum number of observation events retained by the next recording's bounded circular buffer.",
+				settingType = "Number",
+				current = 5000,
+				values = { 250, 25000 },
+				id = "deveventcap",
 			},
 		},
 	},
@@ -1485,7 +1547,8 @@ do
 	track(runService.RenderStepped:Connect(function(dt)
 		if not UI.Parent or not bar:IsDescendantOf(UI) then return end
 		local rainbow = settingValue("Rainbow Mode", false)
-		if rainbow or enabled then
+		local persistentColor = blinkState.persistentColor
+		if rainbow or enabled or persistentColor then
 			hue = (os.clock() / 8) % 1
 			local color = rainbow and Color3.fromHSV(hue, 0.65, 0.8) or Color3.new(1,1,1)
 
@@ -1531,7 +1594,7 @@ do
                     end
                 end
             end
-			local smartBarColor = blinkState.color or (rainbow and color or Color3.new(1, 1, 1))
+			local smartBarColor = blinkState.color or persistentColor or (rainbow and color or Color3.new(1, 1, 1))
 			bar.Shadow.ImageColor3 = smartBarColor
 			bar.CircleGradient.ImageColor3 = smartBarColor
 			bar.UIStroke.Color = smartBarColor
@@ -1552,7 +1615,7 @@ do
 				end
 			end
 		end
-		enabled = rainbow
+		enabled = rainbow or blinkState.persistentColor ~= nil
 	end))
 end
 
@@ -1608,7 +1671,7 @@ local function BlinkSmartBar(blinkCount, color)
 					-- SmartBar's normal non-rainbow colour is white. If Rainbow Mode
 					-- was disabled while this blink was running, do not restore the
 					-- rainbow colour captured at blink start.
-					object[state[3]] = rainbow and state[4] or Color3.new(1, 1, 1)
+					object[state[3]] = blinkState.persistentColor or (rainbow and state[4] or Color3.new(1, 1, 1))
 				end
 			end
 		end
@@ -1663,9 +1726,15 @@ local function BlinkSmartBar(blinkCount, color)
 									and math.min(state[2], 0.8)
 									or state[2]
 
+								local restoreColor = blinkState.persistentColor
+								if not restoreColor then
+									restoreColor = settingValue("Rainbow Mode", false)
+										and Color3.fromHSV((os.clock() / 8) % 1, 0.65, 0.8)
+										or Color3.new(1, 1, 1)
+								end
 								tweenService:Create(object, tweenInfo, {
 									[state[1]] = transparency,
-									[state[3]] = state[4],
+									[state[3]] = restoreColor,
 								}):Play()
 							end
 						end
@@ -5457,7 +5526,7 @@ local function saveSettings()
 	local flat = {}
 	for _, category in ipairs(altairSettings) do
 		for _, setting in ipairs(category.categorySettings) do
-			if setting.current ~= nil then
+			if setting.persistent ~= false and setting.current ~= nil then
 				flat[setting.id] = setting.current
 			end
 		end
@@ -5481,6 +5550,7 @@ local function assembleSettings()
 		if success and type(stored) == "table" then
 			for _, category in ipairs(altairSettings) do
 				for _, setting in ipairs(category.categorySettings) do
+					if setting.persistent == false then continue end
 					-- Read the flat map, but stay compatible with files written by 1.27 and
 					-- earlier, which stored the full nested category tree.
 					local value = stored[setting.id]
@@ -5524,6 +5594,7 @@ local function assembleSettings()
 	end)
 
 	for _, category in altairSettings do
+		if category.hidden then continue end
 		local newCategory = settingsPanel.SettingTypes.Template:Clone()
 		newCategory.Name = category.name
 		newCategory.Title.Text = string.upper(category.name)
@@ -5599,6 +5670,7 @@ local function assembleSettings()
 				if settingType == "Boolean" then
 					local newSwitch = settingsPanel.SettingLists.Template.SwitchTemplate:Clone()
 					object = newSwitch
+					setting._uiObject = newSwitch
 					newSwitch.Name = setting.name
 					newSwitch.Parent = newList
 					newSwitch.Visible = true
@@ -5632,8 +5704,12 @@ local function assembleSettings()
 							end
 						end
 
+						local previousValue = setting.current
 						setting.current = not setting.current
 						saveSettings()
+						if type(setting.onChanged) == "function" then
+							task.spawn(setting.onChanged, setting.current, previousValue)
+						end
 						if setting.current == true then
 							Toast(setting.name.." has been enabled.")
 							tweenService:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Position = UDim2.new(1, -20, 0.5, 0) }):Play()
@@ -5706,22 +5782,6 @@ local function assembleSettings()
 							saveSettings()
 						end
 
-                        local inputValue = tonumber(newInput.InputFrame.InputBox.Text)
-
-						if inputValue then
-							local oldValue = setting.current
-
-							if setting.values then
-								setting.current = math.clamp(inputValue, setting.values[1], setting.values[2])
-							else
-								setting.current = inputValue
-							end
-							saveSettings()
-
-							if setting.current ~= oldValue then
-								Toast(setting.name.." Set to "..setting.current, category.color)
-							end
-						end
 
 						newInput.InputFrame.InputBox.Text = truncateForDisplay(setting.current)
 					end)
@@ -5770,12 +5830,19 @@ local function assembleSettings()
 						local inputValue = tonumber(newInput.InputFrame.InputBox.Text)
 
 						if inputValue then
-							if setting.values then
-								setting.current = math.clamp(inputValue, setting.values[1], setting.values[2])
-							else
-								setting.current = inputValue
+							local oldValue = setting.current
+							local nextValue = setting.values
+								and math.clamp(inputValue, setting.values[1], setting.values[2])
+								or inputValue
+
+							if nextValue ~= oldValue then
+								setting.current = nextValue
+								saveSettings()
+								if type(setting.onChanged) == "function" then
+									task.spawn(setting.onChanged, setting.current, oldValue)
+								end
+								Toast(setting.name .. " set to " .. tostring(setting.current), category.color)
 							end
-							saveSettings()
 						end
 
 						newInput.InputFrame.InputBox.Text = truncateForDisplay(setting.current)
@@ -5938,6 +6005,173 @@ local function initialiseAntiKick()
 end
 
 
+
+--------------------------------------------------------------------------------
+-- external developer tooling
+--------------------------------------------------------------------------------
+--
+-- The debugger is deliberately a separate package. Altair retains only the
+-- setting and this loader boundary so Debug Mode has effectively zero production
+-- cost: no WebSocket, no observers, no event buffer, no decompiler work, and no
+-- debug-only connections exist until the setting is enabled.
+local developerTools = (function()
+	local candidates = {
+		altairValues.altairFolder .. "/Developer/AltairDevTools.lua",
+		altairValues.altairFolder .. "/AltairDevTools.lua",
+		"AltairDevTools.lua",
+	}
+	local activeService
+	local generation = 0
+
+	local controller = {}
+	local stateSink
+	local configProvider
+
+	function controller:IsAvailable()
+		if type(env.__ALTAIR_DEVTOOLS_SOURCE) == "string" and env.__ALTAIR_DEVTOOLS_SOURCE ~= "" then
+			return type(loadstring) == "function"
+		end
+		if type(isfile) ~= "function" or type(loadfile) ~= "function" then return false end
+		for _, path in ipairs(candidates) do
+			local ok, exists = pcall(isfile, path)
+			if ok and exists then return true end
+		end
+		return false
+	end
+
+	function controller:SetStateSink(callback)
+		stateSink = type(callback) == "function" and callback or nil
+	end
+
+	function controller:SetConfigProvider(callback)
+		configProvider = type(callback) == "function" and callback or nil
+	end
+
+	local function compilePackage()
+		-- Source injection exists strictly as a development override. Normal Volt installs
+		-- use loadfile so Altair never reads or retains the debugger source in production.
+		if type(env.__ALTAIR_DEVTOOLS_SOURCE) == "string" and env.__ALTAIR_DEVTOOLS_SOURCE ~= "" then
+			if type(loadstring) ~= "function" then
+				return nil, "Volt loadstring is unavailable for the developer source override", "getgenv().__ALTAIR_DEVTOOLS_SOURCE"
+			end
+			local chunk, compileError = loadstring(env.__ALTAIR_DEVTOOLS_SOURCE, "@AltairDevTools")
+			return chunk, compileError, "getgenv().__ALTAIR_DEVTOOLS_SOURCE"
+		end
+
+		if type(isfile) ~= "function" or type(loadfile) ~= "function" then
+			return nil, "Volt isfile/loadfile APIs are unavailable", nil
+		end
+
+		for _, path in ipairs(candidates) do
+			local okExists, exists = pcall(isfile, path)
+			if okExists and exists then
+				local okLoad, chunk, compileError = pcall(loadfile, path)
+				if not okLoad then
+					return nil, tostring(chunk), path
+				end
+				if type(chunk) ~= "function" then
+					return nil, tostring(compileError or "Volt loadfile returned no compiled chunk"), path
+				end
+				return chunk, nil, path
+			end
+		end
+
+		return nil, "Altair/Developer/AltairDevTools.lua was not found", nil
+	end
+
+	function controller:Stop(reason)
+		local service = activeService
+			or env.__ALTAIR_DEVTOOLS_SERVICE
+			or (type(env.Altair) == "table" and env.Altair.Dev)
+
+		activeService = nil
+		if type(service) == "table" and type(service.Destroy) == "function" then
+			pcall(service.Destroy, service, reason or "debug-disabled")
+		end
+
+		if type(env.Altair) == "table" and env.Altair.Dev == service then
+			env.Altair.Dev = nil
+		end
+		if env.__ALTAIR_DEVTOOLS_SERVICE == service then
+			env.__ALTAIR_DEVTOOLS_SERVICE = nil
+		end
+	end
+
+	function controller:Start(expectedGeneration)
+		if activeService and type(activeService.GetStatus) == "function" then
+			return true
+		end
+
+		local chunk, compileError, sourceName = compilePackage()
+		if not chunk then
+			local title = sourceName and "Developer Tools failed to compile" or "Developer Tools unavailable"
+			local suffix = sourceName and "" or ". Place AltairDevTools.lua in Altair/Developer and try again."
+			queueNotification(title, tostring(compileError) .. suffix, 4483345875)
+			return false, compileError
+		end
+
+		local okChunk, bootstrap = pcall(chunk)
+		if not okChunk then
+			queueNotification("Developer Tools failed to load", tostring(bootstrap), 4483345875)
+			return false, bootstrap
+		end
+		if type(bootstrap) ~= "function" then
+			queueNotification("Developer Tools invalid", "AltairDevTools.lua did not return a bootstrap function.", 4483345875)
+			return false, "invalid developer tools package"
+		end
+
+		local initialConfig
+		if configProvider then
+			local okConfig, value = pcall(configProvider)
+			if okConfig and type(value) == "table" then initialConfig = value end
+		end
+
+		local okStart, service = pcall(bootstrap, {
+			Altair = env.Altair,
+			RootFolder = altairValues.altairFolder,
+			Version = altairValues.altairVersion,
+			Source = sourceName,
+			Config = initialConfig,
+			StateChanged = stateSink,
+		})
+		if not okStart or type(service) ~= "table" then
+			queueNotification("Developer Tools failed to start", tostring(service), 4483345875)
+			return false, service
+		end
+
+		-- Startup can yield while compiling/bootstrap work runs. If Debug Mode changed
+		-- during that window, destroy this now-stale service instead of publishing it.
+		if expectedGeneration ~= generation or settingValue("Debug Mode", false) ~= true then
+			if type(service.Destroy) == "function" then
+				pcall(service.Destroy, service, "stale-startup")
+			end
+			return false, "developer tools startup was superseded"
+		end
+
+		activeService = service
+		return true, service
+	end
+
+	function controller:Sync(enabled)
+		if enabled == nil then
+			enabled = settingValue("Debug Mode", false) == true
+		end
+
+		generation += 1
+		local currentGeneration = generation
+
+		if enabled then
+			self:Stop("replaced")
+			return self:Start(currentGeneration)
+		end
+
+		self:Stop("debug-disabled")
+		return true
+	end
+
+	return controller
+end)()
+
 -- Public Altair API for separately executed scripts.
 -- Existing keys are preserved so another script can attach its own Altair integrations.
 local altairAPI = type(env.Altair) == "table" and env.Altair or {}
@@ -5949,6 +6183,22 @@ altairAPI.BlinkSmartBar = BlinkSmartBar
 altairAPI.SupportsColoredSmartBarBlink = true
 altairAPI.SupportsQueuedSmartBarBlink = true
 altairAPI.ToastSupportsSkipBlink = true
+altairAPI.SetSmartBarPersistentColor = function(color)
+	blinkState.persistentColor = typeof(color) == "Color3" and color or nil
+	local activeColor = blinkState.color or blinkState.persistentColor
+	if not activeColor then
+		if settingValue("Rainbow Mode", false) then
+			activeColor = Color3.fromHSV((os.clock() / 8) % 1, 0.65, 0.8)
+		else
+			activeColor = Color3.new(1, 1, 1)
+		end
+	end
+	for _, object in ipairs({ UI.SmartBar.Shadow, UI.SmartBar.CircleGradient, UI.SmartBar.UIStroke, UI.SmartBar.Back.UIStroke }) do
+		if object and object.Parent then
+			if object:IsA("UIStroke") then object.Color = activeColor else object.ImageColor3 = activeColor end
+		end
+	end
+end
 
 altairAPI.OpenSmartBar = openSmartBar
 altairAPI.CloseSmartBar = closeSmartBar
@@ -6009,7 +6259,146 @@ local function start()
 
 	UI.Enabled = true
 
+	-- Keep the Developer category in the schema so its persisted preferences survive a
+	-- temporarily missing DevTools file, but do not render any developer controls unless
+	-- the external package is actually detected.
+	local developerAvailable = developerTools:IsAvailable()
+	local developerCategory
+	for _, category in ipairs(altairSettings) do
+		if category.name == "Developer" then
+			developerCategory = category
+			category.hidden = not developerAvailable
+			break
+		end
+	end
+
 	assembleSettings()
+
+	local function syncDeveloperBoolean(name, value)
+		local setting = checkSetting(name, "Developer")
+		if not setting then return end
+		setting.current = value == true
+		local switch = setting._uiObject
+		local indicator = switch and switch:FindFirstChild("Switch") and switch.Switch:FindFirstChild("Indicator")
+		if not indicator then return end
+		if setting.current then
+			indicator.Position = UDim2.new(1, -20, 0.5, 0)
+			indicator.UIStroke.Color = Color3.fromRGB(220, 220, 220)
+			indicator.UIStroke.Transparency = 0.5
+			indicator.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			indicator.BackgroundTransparency = 0.6
+		else
+			indicator.Position = UDim2.new(1, -40, 0.5, 0)
+			indicator.UIStroke.Color = Color3.fromRGB(255, 255, 255)
+			indicator.UIStroke.Transparency = 0.7
+			indicator.BackgroundColor3 = Color3.fromRGB(235, 235, 235)
+			indicator.BackgroundTransparency = 0.75
+		end
+	end
+
+	developerTools:SetConfigProvider(function()
+		return {
+			Bridge = { AutoConnect = settingValue("MCP Auto-Connect", true) == true },
+			Recorder = {
+				StreamEvents = settingValue("Stream Observation Events", false) == true,
+				SampleHz = settingValue("Recording Sample Rate", 8),
+				EventCapacity = settingValue("Event Buffer Capacity", 5000),
+			},
+		}
+	end)
+
+	developerTools:SetStateSink(function(state, value, details)
+		if state == "recording" then
+			syncDeveloperBoolean("Record Session", value == true)
+		end
+	end)
+
+	local debugSetting = checkSetting("Debug Mode", "Developer")
+	local recordSetting = checkSetting("Record Session", "Developer")
+	local selfTestSetting = checkSetting("Run Self-Test", "Developer")
+	local mcpSetting = checkSetting("MCP Auto-Connect", "Developer")
+	local streamSetting = checkSetting("Stream Observation Events", "Developer")
+	local sampleSetting = checkSetting("Recording Sample Rate", "Developer")
+	local capacitySetting = checkSetting("Event Buffer Capacity", "Developer")
+
+	local function configureDeveloperTools(patch)
+		local dev = type(env.Altair) == "table" and env.Altair.Dev or nil
+		if type(dev) == "table" and type(dev.Configure) == "function" then
+			local ok, err = pcall(dev.Configure, dev, patch)
+			if not ok then warn("Altair | Developer Tools configuration failed: " .. tostring(err)) end
+		end
+	end
+
+	if debugSetting then
+		debugSetting.onChanged = function()
+			local enabled = developerAvailable and settingValue("Debug Mode", false) == true
+			altairAPI.SetSmartBarPersistentColor(enabled and Color3.fromRGB(126, 104, 220) or nil)
+			developerTools:Sync(enabled)
+			if not enabled then syncDeveloperBoolean("Record Session", false) end
+		end
+	end
+
+	if recordSetting then
+		recordSetting.onChanged = function(enabled)
+			local dev = type(env.Altair) == "table" and env.Altair.Dev or nil
+			if enabled then
+				if not settingValue("Debug Mode", false) or type(dev) ~= "table" or type(dev.StartCapture) ~= "function" then
+					syncDeveloperBoolean("Record Session", false)
+					Toast("Enable Debug Mode before starting a recording.", Color3.fromRGB(126, 104, 220))
+					return
+				end
+				local ok, err = pcall(dev.StartCapture, dev)
+				if not ok then
+					syncDeveloperBoolean("Record Session", false)
+					queueNotification("Recording failed", tostring(err), 4483345875)
+				end
+			elseif type(dev) == "table" and type(dev.FinishCapture) == "function" then
+				local ok, result = pcall(dev.FinishCapture, dev)
+				if not ok then queueNotification("Recording export failed", tostring(result), 4483345875) end
+			end
+		end
+	end
+
+	if selfTestSetting then
+		selfTestSetting.onChanged = function(enabled)
+			if not enabled then return end
+			local dev = type(env.Altair) == "table" and env.Altair.Dev or nil
+			if type(dev) == "table" and type(dev.SelfTest) == "function" then
+				local ok, result = pcall(dev.SelfTest, dev)
+				local passed = ok and type(result) == "table" and result.ok == true
+				Toast(passed and "Developer Tools self-test passed." or "Developer Tools self-test failed.", Color3.fromRGB(126, 104, 220))
+			else
+				Toast("Enable Debug Mode before running the self-test.", Color3.fromRGB(126, 104, 220))
+			end
+			syncDeveloperBoolean("Run Self-Test", false)
+		end
+	end
+
+	if mcpSetting then
+		mcpSetting.onChanged = function(value)
+			configureDeveloperTools({ Bridge = { AutoConnect = value == true } })
+		end
+	end
+	if streamSetting then
+		streamSetting.onChanged = function(value)
+			configureDeveloperTools({ Recorder = { StreamEvents = value == true } })
+		end
+	end
+	if sampleSetting then
+		sampleSetting.onChanged = function(value)
+			configureDeveloperTools({ Recorder = { SampleHz = value } })
+		end
+	end
+	if capacitySetting then
+		capacitySetting.onChanged = function(value)
+			configureDeveloperTools({ Recorder = { EventCapacity = value } })
+		end
+	end
+
+	local debugEnabled = developerAvailable and settingValue("Debug Mode", false) == true
+	altairAPI.SetSmartBarPersistentColor(debugEnabled and Color3.fromRGB(126, 104, 220) or nil)
+	developerTools:Sync(debugEnabled)
+
 	ensureFrameProperties()
 	sortActions()
 	initialiseAntiKick()
@@ -6776,6 +7165,7 @@ local function runtime()
 	-- anonymous text; the per-frame connections, the blur, the FPS cap, the muted volume and any
 	-- CanCollide overrides were all left behind.
 	local function teardown()
+		developerTools:Stop("altair-teardown")
 		homeController.destroy()
 		if espContainer then
 			espContainer:Destroy()
@@ -7226,6 +7616,23 @@ local function runtime()
 
 		if not tickSuccess then
 			warn("Altair | Error in the update loop (recovering): " .. tostring(tickError))
+		end
+	end
+end
+
+-- Debug Mode owns the SmartBar colour across re-execution. Settings are normally
+-- hydrated later by start(), so read only the persisted debug bit here before the startup
+-- blink; no Developer Tools code is loaded by this check.
+do
+	if developerTools:IsAvailable() and type(isfile) == "function" and type(readfile) == "function" then
+		local okExists, exists = pcall(isfile, settingsPath())
+		if okExists and exists then
+			local okRead, stored = pcall(function()
+				return httpService:JSONDecode(readfile(settingsPath()))
+			end)
+			if okRead and type(stored) == "table" and stored.debugmode == true then
+				altairAPI.SetSmartBarPersistentColor(Color3.fromRGB(126, 104, 220))
+			end
 		end
 	end
 end
