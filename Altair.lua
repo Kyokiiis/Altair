@@ -3709,26 +3709,6 @@ end
 local homeBlur = Instance.new("BlurEffect")
 homeBlur.Name, homeBlur.Size, homeBlur.Parent = "AltairHomeBlur", 0, lighting
 -- Group fades leave every template's original transparency intact.
-local function canvasGroup(frame)
- if frame:IsA("CanvasGroup") then return frame end
- local group=Instance.new("CanvasGroup")
- for _,property in ipairs({"Name","Size","Position","AnchorPoint","BackgroundColor3","BackgroundTransparency","BorderSizePixel","Visible","ZIndex","LayoutOrder"}) do group[property]=frame[property] end
- for name,value in pairs(frame:GetAttributes()) do group:SetAttribute(name,value) end
- for _,child in ipairs(frame:GetChildren()) do child.Parent=group end
- -- A UIGradient on CanvasGroup tints its entire rendered contents.
- -- Keep the authored gradient on a separate background, behind the content.
- local gradient=group:FindFirstChildOfClass("UIGradient")
- if gradient then
-  local background=Instance.new("Frame")
-  background.Name="CardBackground" background.Size=UDim2.fromScale(1,1)
-  background.BackgroundColor3=group.BackgroundColor3 background.BackgroundTransparency=group.BackgroundTransparency
-  background.BorderSizePixel=0 background.ZIndex=0
-  local corner=group:FindFirstChildOfClass("UICorner") if corner then corner:Clone().Parent=background end
-  gradient.Parent=background background.Parent=group group.BackgroundTransparency=1
- end
- group.Parent=frame.Parent frame:Destroy()
- return group
-end
 UI.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
 homeContainer.Size=UDim2.fromScale(1,1)
 homeContainer.Position=UDim2.fromScale(.5,.5)
@@ -3738,20 +3718,18 @@ homeContainer.Dim.Size=UDim2.fromScale(1,1)
 homeContainer.Dim.Position=UDim2.fromOffset(0,0)
 homeContainer.Dim.Visible=true
 homeContainer.Dim.BackgroundTransparency=1
-local homeContent=Instance.new("CanvasGroup")
+local homeContent=Instance.new("Frame")
 homeContent.Name="Content" homeContent.Size=UDim2.fromOffset(1104,650)
 homeContent.AnchorPoint=Vector2.new(.5,.5) homeContent.Position=UDim2.fromScale(.5,.5)
-homeContent.BackgroundTransparency=1 homeContent.GroupTransparency=1 homeContent.ZIndex=20 homeContent.Parent=homeContainer
+homeContent.BackgroundTransparency=1 homeContent.ZIndex=20 homeContent.Parent=homeContainer
 homeContainer.Sidebar.Parent=homeContent homeContainer.Pages.Parent=homeContent
 homeContent.Sidebar.Position=UDim2.fromOffset(32,80) homeContent.Sidebar.AnchorPoint=Vector2.zero
 homeContent.Pages.Position=UDim2.fromOffset(32,130) homeContent.Pages.AnchorPoint=Vector2.zero
 for _,page in ipairs(homeContent.Pages:GetChildren()) do
- if page:IsA("Frame") then page=canvasGroup(page) end
  page.Size=page.Size+UDim2.fromOffset(24,24)
  local padding=Instance.new("UIPadding",page)
  padding.PaddingLeft=UDim.new(0,12) padding.PaddingRight=UDim.new(0,12)
  padding.PaddingTop=UDim.new(0,12) padding.PaddingBottom=UDim.new(0,12)
- if page:FindFirstChild("Details") then canvasGroup(page.Details) end
 end
 for _,object in ipairs(homeContent:GetDescendants()) do
  if object:IsA("Frame") then object.ClipsDescendants=false
@@ -4164,8 +4142,8 @@ local homeController = (function()
  local function selectDetails(panel,list,id)
   panel:SetAttribute('RestPosition',panel:GetAttribute('RestPosition') or panel.Position)
   local position=panel:GetAttribute('RestPosition')
-  panel.GroupTransparency=1 panel.Position=position-UDim2.fromOffset(28,0)
-  tweenService:Create(panel,TweenInfo.new(.6,Enum.EasingStyle.Quint),{GroupTransparency=0,Position=position}):Play()
+  panel.Position=position-UDim2.fromOffset(28,0)
+  tweenService:Create(panel,TweenInfo.new(.6,Enum.EasingStyle.Quint),{Position=position}):Play()
   for _,row in ipairs(list:GetChildren()) do if row:GetAttribute('RuntimeEntry') then
    local selected=row.Name=='Entry_'..tostring(id)
    local scale=row:FindFirstChild('SelectionScale') or Instance.new('UIScale',row) scale.Name='SelectionScale'
@@ -4210,17 +4188,27 @@ local homeController = (function()
   end end
   local function reveal()
    if not alive or version~=tabVersion then return end
-   for _,page in ipairs(pages:GetChildren()) do if page:IsA('CanvasGroup') then page.Visible=page.Name==name end end
-   local page=pages[name] page.Position=UDim2.fromOffset(-40,-12) page.GroupTransparency=1
-   tweenService:Create(page,TweenInfo.new(opened and .65 or 0,Enum.EasingStyle.Quint),{Position=UDim2.fromOffset(-12,-12),GroupTransparency=0}):Play()
+   for _,page in ipairs(pages:GetChildren()) do
+    if page:IsA('GuiObject') then page.Visible=page.Name==name end
+   end
+   local page=pages[name]
+   page.Position=UDim2.fromOffset(-40,-12)
+   tweenService:Create(page,TweenInfo.new(opened and .65 or 0,Enum.EasingStyle.Quint),{
+    Position=UDim2.fromOffset(-12,-12)
+   }):Play()
   end
   if opened then
-   for _,page in ipairs(pages:GetChildren()) do if page:IsA('CanvasGroup') and page.Visible then
-    tweenService:Create(page,TweenInfo.new(.25,Enum.EasingStyle.Quad),{GroupTransparency=1}):Play()
-    tweenService:Create(page,TweenInfo.new(.4,Enum.EasingStyle.Quint,Enum.EasingDirection.InOut),{Position=UDim2.fromOffset(-40,-12)}):Play()
-   end end
+   for _,page in ipairs(pages:GetChildren()) do
+    if page:IsA('GuiObject') and page.Visible then
+     tweenService:Create(page,TweenInfo.new(.4,Enum.EasingStyle.Quint,Enum.EasingDirection.InOut),{
+      Position=UDim2.fromOffset(-40,-12)
+     }):Play()
+    end
+   end
    task.delay(.4,reveal)
-  else reveal() end
+  else
+   reveal()
+  end
   if name=='Friends' then refreshFriends() elseif name=='Games' and gameFilter=='Favorites' then refreshFavorites() end
  end
  renderFriends=function()
@@ -4345,6 +4333,48 @@ local homeController = (function()
   refreshFriends()
  end
  local controller={}
+
+ -- Fade the authored UI properties directly instead of using CanvasGroup.
+ -- This preserves the fade while keeping text/icons crisp.
+ function controller.fadeOut(duration)
+  duration=duration or .28
+  local props=altairValues.transparencyProperties
+  for _,obj in ipairs(homeContent:GetDescendants()) do
+   local list=props[obj.ClassName]
+   if list then
+    local goal={}
+    for _,property in ipairs(list) do
+     local attr='AltairHomeFade_'..property
+     if obj:GetAttribute(attr)==nil then obj:SetAttribute(attr,obj[property]) end
+     goal[property]=1
+    end
+    tweenService:Create(obj,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goal):Play()
+   end
+  end
+ end
+
+ function controller.fadeIn(duration)
+  duration=duration or .38
+  local props=altairValues.transparencyProperties
+  for _,obj in ipairs(homeContent:GetDescendants()) do
+   local list=props[obj.ClassName]
+   if list then
+    local goal={}
+    local hasGoal=false
+    for _,property in ipairs(list) do
+     local saved=obj:GetAttribute('AltairHomeFade_'..property)
+     if saved~=nil then
+      goal[property]=saved
+      hasGoal=true
+     end
+    end
+    if hasGoal then
+     tweenService:Create(obj,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goal):Play()
+    end
+   end
+  end
+ end
+
  function controller.setOpened(value) opened=value end
  function controller.destroy()
   if not alive then return end
@@ -4401,6 +4431,19 @@ local homeController = (function()
  connect(userInputService.InputBegan,function(key,processed) if opened and not processed and not userInputService:GetFocusedTextBox() and key.KeyCode==Enum.KeyCode.Escape then closeHome() end end)
  connect(teleportService.TeleportInitFailed,function(p,_,message) if p==localPlayer then if alive then queueNotification('Home', 'Teleport failed: '..tostring(message), 4370336704) end end end)
  connect(UI.Destroying,controller.destroy)
+ do
+  local props=altairValues.transparencyProperties
+  for _,obj in ipairs(homeContent:GetDescendants()) do
+   local list=props[obj.ClassName]
+   if list then
+    for _,property in ipairs(list) do
+     local attr='AltairHomeFade_'..property
+     if obj:GetAttribute(attr)==nil then obj:SetAttribute(attr,obj[property]) end
+    end
+   end
+  end
+  controller.fadeOut(0)
+ end
  homeContainer.Visible=false showPage('Home') renderFriends() renderGames()
  task.spawn(refreshCurrentGame)
  controller.refreshCurrentGame=refreshCurrentGame
@@ -4425,9 +4468,9 @@ openHome = function()
  pcall(function() starterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat,false) end)
  pcall(function() starterGui:SetCore("ChatActive",false) end)
  homeController.setOpened(true)
- if not homeContainer.Visible then homeContent.Position=UDim2.new(.5,-45,.5,0) homeContent.GroupTransparency=1 end
+ if not homeContainer.Visible then homeContent.Position=UDim2.new(.5,-45,.5,0) end
  homeContainer.Visible=true
- tweenService:Create(homeContent,TweenInfo.new(.65,Enum.EasingStyle.Quint),{GroupTransparency=0}):Play()
+ homeController.fadeIn(.38)
  tweenService:Create(homeContent,TweenInfo.new(.8,Enum.EasingStyle.Quint),{Position=UDim2.fromScale(.5,.5)}):Play()
  tweenService:Create(homeContainer.Dim,TweenInfo.new(.5),{BackgroundTransparency=.5}):Play()
  tweenService:Create(homeBlur,TweenInfo.new(.8,Enum.EasingStyle.Quint),{Size=26}):Play()
@@ -4439,7 +4482,7 @@ closeHome = function(immediate)
  if not homeOpen and not immediate then return end
  homeOpen=false homeController.setOpened(false)
  if homeChatEnabled~=nil then pcall(function() starterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat,homeChatEnabled) end) homeChatEnabled=nil end
- tweenService:Create(homeContent,TweenInfo.new(immediate and 0 or .3),{GroupTransparency=1}):Play()
+ homeController.fadeOut(immediate and 0 or .28)
  local slide=tweenService:Create(homeContent,TweenInfo.new(immediate and 0 or .8,Enum.EasingStyle.Quint,Enum.EasingDirection.InOut),{Position=UDim2.new(.5,-45,.5,0)})
  tweenService:Create(homeContainer.Dim,TweenInfo.new(immediate and 0 or .3),{BackgroundTransparency=1}):Play()
  tweenService:Create(homeBlur,TweenInfo.new(immediate and 0 or .8,Enum.EasingStyle.Quint),{Size=0}):Play()
