@@ -54,8 +54,6 @@ local function optional(value)
 end
 
 local setFpsCap = optional(setfpscap)
-local getExecutorName = optional(identifyexecutor)
-local getCustomAsset = optional(getcustomasset)
 local getConnectionsFor = optional(getconnections)
 local hookMetamethod = optional(hookmetamethod)
 local getHiddenUI = optional(gethui)
@@ -86,7 +84,6 @@ local textChatService = getService("TextChatService")
 local marketplaceService = getService("MarketplaceService")
 local gameSettings = UserSettings():GetService("UserGameSettings")
 
-
 -- Variables
 local useStudio = runService:IsStudio()
 local connections = {}
@@ -100,9 +97,6 @@ local promptedDisconnected = false
 local smartBarOpen = false
 local debounce = false
 local searchingForPlayer = false
-local musicQueue = {}
-local playGeneration = 0 -- bumped to invalidate parked Ended:Wait coroutines in playNext
-local currentAudio
 local lowerName = localPlayer.Name:lower()
 local lowerDisplayName = localPlayer.DisplayName:lower()
 local placeId = game.PlaceId
@@ -156,8 +150,7 @@ local altairValues = {
 	detectedScript = nil,
 	detectionPromptOpen = false,
 	customScriptPromptOpen = false,
-	interfaceAsset = 114751137119690,
-
+	interfaceAsset = 138836088211906,
 
 	executors = {
 		"synapse x",
@@ -196,7 +189,6 @@ local altairValues = {
 		ImageButton = { "BackgroundTransparency", "ImageTransparency" },
 		ScrollingFrame = { "BackgroundTransparency", "ScrollBarImageTransparency" },
 	},
-	buttonPositions = { Character = UDim2.new(0.5, -30, 1, -29), Scripts = UDim2.new(0.5, -10, 1, -29), Playerlist = UDim2.new(0.5, 20, 1, -29) },
 	chatSpy = {
 		enabled = true,
 		visual = {
@@ -429,12 +421,7 @@ local altairValues = {
 			value = 16,
 			active = false,
 			callback = function(value)
-				local slider = altairValues.sliders[4]
-				if slider and slider.active then
-					camera.FieldOfView = value
-				else
-					tweenService:Create(camera, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), { FieldOfView = value }):Play()
-				end
+				tweenService:Create(camera, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), { FieldOfView = value }):Play()
 			end,
 		},
 	},
@@ -478,14 +465,6 @@ local altairSettings = {
 				current = false,
 
 				id = "hidetoggle",
-			},
-			{
-				name = "Now Playing Notifications",
-				description = "When active, Altair will notify you when the next song in your Music queue plays.",
-				settingType = "Boolean",
-				current = true,
-
-				id = "nowplaying",
 			},
 			{
 				name = "Friend Notifications",
@@ -915,10 +894,9 @@ local altairSettings = {
 }
 
 -- Generate random username
-local randomAdjective = altairValues.nameGeneration.adjectives[math.random(1, #altairValues.nameGeneration.adjectives)]
-local randomNoun = altairValues.nameGeneration.nouns[math.random(1, #altairValues.nameGeneration.nouns)]
-local randomNumber = math.random(100, 3999) -- You can customize the range
-local randomUsername = randomAdjective .. randomNoun .. randomNumber
+local randomUsername = altairValues.nameGeneration.adjectives[math.random(#altairValues.nameGeneration.adjectives)]
+	.. altairValues.nameGeneration.nouns[math.random(#altairValues.nameGeneration.nouns)]
+	.. math.random(100, 3999)
 
 -- Initialise Altair Client Interface
 local guiParent = getHiddenUI and getHiddenUI() or (useStudio and localPlayer:WaitForChild("PlayerGui")) or coreGui
@@ -957,6 +935,16 @@ end
 local UI = uiResult
 UI.Name = altairValues.altairName
 UI.Parent = guiParent
+
+-- Volt/CoreGui: use the full physical viewport, not Roblox top-bar / safe-area insets.
+-- Do this immediately so every later AbsolutePosition/AbsoluteSize read uses the
+-- same coordinate space as Rayfield Gen 2.
+if UI:IsA("ScreenGui") then
+	UI.IgnoreGuiInset = true
+	pcall(function() UI.ScreenInsets = Enum.ScreenInsets.None end)
+	pcall(function() UI.ClipToDeviceSafeArea = false end)
+end
+
 UI.Enabled = false
 
 -- Create Variables for Interface Elements
@@ -967,12 +955,10 @@ local closeSettings, closeScriptSearch
 local homeChatEnabled
 local characterPanelSize = characterPanel.Size
 local customScriptPrompt = UI.CustomScriptPrompt
-local securityPrompt = UI.SecurityPrompt
 local disconnectedPrompt = UI.Disconnected
 local gameDetectionPrompt = UI.GameDetection
 local homeContainer = UI.Home
 local moderatorDetectionPrompt = UI.ModeratorDetectionPrompt
-local musicPanel = UI.Music
 local notificationContainer = UI.Notifications
 local playerlistPanel = UI.Playerlist
 altairValues.playerlistUI = altairValues.playerlistUI or {}
@@ -982,7 +968,7 @@ local scriptSearch = UI.ScriptSearch
 local scriptsPanel = UI.Scripts
 local settingsPanel = UI.Settings
 local smartBar = UI.SmartBar
-local toggle = UI.Toggle
+local drag = UI.Drag
 local toastsContainer = UI.Toasts
 
 env.cachedInGameUI = {}
@@ -1012,55 +998,6 @@ end
 
 -- httpRequest
 local httpRequest = originalRequest
-
-local function loadWithTimeout(url, timeout)
-	assert(type(url) == "string", "Expected string, got " .. type(url))
-	timeout = timeout or 5
-	local requestCompleted = false
-	local success, result = false, nil
-
-	local requestThread = task.spawn(function()
-		local fetchSuccess, fetchResult = pcall(game.HttpGet, game, url)
-		if not fetchSuccess or #fetchResult == 0 then
-			if fetchSuccess and #fetchResult == 0 then
-				fetchResult = "Empty response"
-			end
-			success, result = false, fetchResult
-			requestCompleted = true
-			return
-		end
-
-		local execSuccess, execResult = pcall(function()
-			return loadstring(fetchResult)()
-		end)
-		success, result = execSuccess, execResult
-		requestCompleted = true
-	end)
-
-	local timeoutThread = task.delay(timeout, function()
-		if not requestCompleted then
-			warn("Altair | Request for " .. url .. " timed out after " .. tostring(timeout) .. " seconds")
-			task.cancel(requestThread)
-			result = "Request timed out"
-			requestCompleted = true
-		end
-	end)
-
-	while not requestCompleted do
-		task.wait()
-	end
-
-	if coroutine.status(timeoutThread) ~= "dead" then
-		task.cancel(timeoutThread)
-	end
-
-	if not success then
-		warn("Altair | Failed to process " .. tostring(url) .. ": " .. tostring(result))
-		return nil
-	end
-
-	return result
-end
 
 local function track(connection)
 	table.insert(connections, connection)
@@ -1156,7 +1093,6 @@ local function checkFolder()
 
 	for _, path in ipairs({
 		root,
-		root .. "/Music",
 		root .. "/Assets",
 		root .. "/Assets/Icons",
 		customRoot,
@@ -1165,10 +1101,6 @@ local function checkFolder()
 		if not isfolder(path) then
 			makefolder(path)
 		end
-	end
-
-	if writefile and isfile and not isfile(root .. "/Music/readme.txt") then
-		writefile(root .. "/Music/readme.txt", "Hey there! Place your MP3 or other audio files in this folder, and have the ability to play them through the Altair Music UI!")
 	end
 
 	if writefile and isfile and not isfile(customRoot .. "/README.txt") then
@@ -1222,19 +1154,17 @@ Reference them from a file in Altair/Custom Scripts with:
 end
 
 local function isPanel(name)
-	return not table.find({ "Home", "Music", "Settings" }, name)
-end
-
-local function storeOriginalText(element)
-	if originalTextValues[element] == nil then
-		originalTextValues[element] = element.Text
-	end
+	return name == "Character" or name == "Scripts" or name == "Playerlist"
 end
 
 local function undoAnonymousChanges()
+	local masked = altairValues.anonymousMaskedText
 	for element, originalText in pairs(originalTextValues) do
-		element.Text = originalText
+		if element.Parent and (not masked or element.Text == masked[element]) then
+			element.Text = originalText
+		end
 	end
+	if masked then table.clear(masked) end
 end
 
 local function isHighlightEnabledFor(playerName)
@@ -1519,7 +1449,6 @@ local function queueNotification(Title, Description, Image)
 		end
 	end)
 end
-
 
 function altairValues.playerAnomaly:headshot(player)
 	return "rbxthumb://type=AvatarHeadShot&id=" .. tostring(player.UserId) .. "&w=150&h=150"
@@ -1996,11 +1925,13 @@ function altairValues.chatModeration:observe(player, message)
 	)
 end
 
-
 -- Rainbow Mode
 do
 	local bar, hue, enabled = UI.SmartBar, 0, false
-	local toggleColor = toggle.ImageColor3
+	local dragVisual = drag:FindFirstChild("Drag")
+	local dragColor = dragVisual and (dragVisual:IsA("ImageLabel") or dragVisual:IsA("ImageButton"))
+		and dragVisual.ImageColor3
+		or (dragVisual and dragVisual:IsA("GuiObject") and dragVisual.BackgroundColor3)
 	local toastColors = setmetatable({}, {__mode = "k"})
 	local borderColors = setmetatable({}, { __mode = "k" })
 	local rainbowAccumulator = 0
@@ -2312,7 +2243,13 @@ do
 		bar.CircleGradient.ImageColor3 = smartBarColor
 		bar.UIStroke.Color = smartBarColor
 		bar.Back.UIStroke.Color = smartBarColor
-		toggle.ImageColor3 = rainbow and color or toggleColor
+		if dragVisual and dragColor then
+			if dragVisual:IsA("ImageLabel") or dragVisual:IsA("ImageButton") then
+				dragVisual.ImageColor3 = rainbow and color or dragColor
+			else
+				dragVisual.BackgroundColor3 = rainbow and color or dragColor
+			end
+		end
 
 		if rainbow then
 			for _, toast in ipairs(activeToasts) do
@@ -2335,7 +2272,6 @@ do
 		enabled = rainbow or persistentColor ~= nil
 	end))
 end
-
 
 local function BlinkSmartBar(blinkCount, color)
 	table.insert(blinkState.queue, {
@@ -2483,6 +2419,8 @@ local function Toast(content, color, font, skipBlink)
 
 	table.insert(activeToasts, 1, template)
 
+	if altairValues.smartBarLayout then altairValues.smartBarLayout:syncToasts() end
+
 	local startupSound = Instance.new("Sound")
 	startupSound.Parent, startupSound.SoundId, startupSound.Name, startupSound.Volume, startupSound.PlayOnRemove = UI, "rbxassetid://255881176", "Toast", 0.85, true
 	startupSound:Destroy()
@@ -2491,7 +2429,10 @@ local function Toast(content, color, font, skipBlink)
 		tweenService:Create(UI.SmartBar.CircleGradient, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {ImageTransparency = 0.7}):Play()
 	end
 
-	tweenService:Create(template.Title, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0.01 * (#activeToasts - 1), 0), TextTransparency = 0, TextStrokeTransparency = 0.3}):Play()
+	tweenService:Create(template.Title, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+		TextTransparency = 0,
+		TextStrokeTransparency = 0.3,
+	}):Play()
 
 	task.spawn(function()
 		local length = utf8.len(content) or #content
@@ -2518,7 +2459,10 @@ local function Toast(content, color, font, skipBlink)
 		template:SetAttribute("AltairExiting", true)
 		template.Title.MaxVisibleGraphemes = -1
 
-		tweenService:Create(template.Title, TweenInfo.new(2.1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, -0.5, 0), TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+		tweenService:Create(template.Title, TweenInfo.new(2.1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		}):Play()
 		task.wait(2.1)
 
 		for i, toast in ipairs(activeToasts) do
@@ -2532,9 +2476,6 @@ local function Toast(content, color, font, skipBlink)
 		end
 	end)
 end
-
---------------------------------------------------------------------------------
---------------------------------------------------------------------------------
 
 altairValues.scanCustomScripts = function()
 	altairValues.customScripts = {}
@@ -3283,159 +3224,6 @@ local function removeReverbs(timing)
 	end
 end
 
-local function playNext()
-	playGeneration += 1
-	local thisGen = playGeneration
-
-	while true do
-		if #musicQueue == 0 then
-			if currentAudio then
-				currentAudio.Playing = false
-				currentAudio.SoundId = ""
-			end
-			musicPanel.Playing.Text = "Not Playing"
-			return
-		end
-
-		if not currentAudio then
-			local newAudio = Instance.new("Sound")
-			newAudio.Parent = UI
-			newAudio.Name = "Audio"
-			currentAudio = newAudio
-		end
-
-		local entry = musicQueue[1]
-		local assetSuccess, asset = pcall(getCustomAsset, altairValues.altairFolder .. "/Music/" .. entry.sound)
-
-		if musicPanel.Queue.List:FindFirstChild(tostring(entry.instanceName)) then
-			musicPanel.Queue.List:FindFirstChild(tostring(entry.instanceName)):Destroy()
-		end
-
-		if not assetSuccess or not asset then
-			queueNotification("Unable to play file", entry.sound .. " could not be loaded and has been skipped.", 4370341699)
-			table.remove(musicQueue, 1)
-			continue
-		end
-
-		if settingValue("Now Playing Notifications") then
-			queueNotification("Now Playing", entry.sound, 4400695581)
-		end
-
-		currentAudio.SoundId = asset
-		musicPanel.Playing.Text = entry.sound
-		currentAudio:Play()
-		musicPanel.Menu.TogglePlaying.ImageRectOffset = currentAudio.Playing and Vector2.new(804, 124) or Vector2.new(764, 244)
-		currentAudio.Ended:Wait()
-
-		if thisGen ~= playGeneration then
-			return
-		end -- superseded by Next/skip; let the active call do the table.remove
-
-		table.remove(musicQueue, 1)
-	end
-end
-
-local function addToQueue(file)
-	if not (getCustomAsset and isfile) then
-		return
-	end
-	if not file or file == "" then
-		return
-	end
-	checkFolder()
-	if not isfile(altairValues.altairFolder .. "/Music/" .. file) then
-		queueNotification("Unable to locate file", "Please ensure that your audio file is in the Altair/Music folder and that you are including the file extension (e.g mp3 or ogg).", 4370341699)
-		return
-	end
-	musicPanel.AddBox.Input.Text = ""
-
-	local newAudio = musicPanel.Queue.List.Template:Clone()
-	newAudio.Parent = musicPanel.Queue.List
-	newAudio.Size = UDim2.new(0, 254, 0, 40)
-	newAudio.Close.ImageTransparency = 1
-	newAudio.Name = file
-	if string.len(file) > 26 then
-		newAudio.FileName.Text = string.sub(file, 1, 24) .. ".."
-	else
-		newAudio.FileName.Text = file
-	end
-	newAudio.Visible = true
-	newAudio.Duration.Text = ""
-
-	table.insert(musicQueue, { sound = file, instanceName = newAudio.Name })
-
-	local lengthSuccess, lengthAsset = pcall(getCustomAsset, altairValues.altairFolder .. "/Music/" .. file)
-	if lengthSuccess and lengthAsset then
-		local getLength = Instance.new("Sound")
-		getLength.Parent = workspace
-		getLength.SoundId = lengthAsset
-		getLength.Volume = 0
-		getLength:Play()
-		task.wait(0.05)
-		if newAudio.Parent then
-			newAudio.Duration.Text = tostring(math.round(getLength.TimeLength)) .. "s"
-		end
-		getLength:Stop()
-		getLength:Destroy()
-	end
-
-	newAudio.MouseEnter:Connect(function()
-		tweenService:Create(newAudio, TweenInfo.new(0.45, Enum.EasingStyle.Exponential), { BackgroundColor3 = Color3.fromRGB(100, 100, 100) }):Play()
-		tweenService:Create(newAudio.Close, TweenInfo.new(0.45, Enum.EasingStyle.Exponential), { ImageTransparency = 0 }):Play()
-		tweenService:Create(newAudio.Duration, TweenInfo.new(0.45, Enum.EasingStyle.Exponential), { TextTransparency = 1 }):Play()
-	end)
-
-	newAudio.MouseLeave:Connect(function()
-		tweenService:Create(newAudio.Close, TweenInfo.new(0.45, Enum.EasingStyle.Exponential), { ImageTransparency = 1 }):Play()
-		tweenService:Create(newAudio, TweenInfo.new(0.45, Enum.EasingStyle.Exponential), { BackgroundColor3 = Color3.fromRGB(0, 0, 0) }):Play()
-		tweenService:Create(newAudio.Duration, TweenInfo.new(0.45, Enum.EasingStyle.Exponential), { TextTransparency = 0.7 }):Play()
-	end)
-
-	newAudio.Close.MouseButton1Click:Connect(function()
-		local removedIndex
-		for i = 1, #musicQueue do
-			if musicQueue[i].instanceName == newAudio.Name then
-				removedIndex = i
-				break
-			end
-		end
-
-		if not removedIndex then
-			newAudio:Destroy()
-			return
-		end
-
-		local wasPlaying = removedIndex == 1 and currentAudio ~= nil and currentAudio.Playing
-
-		table.remove(musicQueue, removedIndex)
-		newAudio:Destroy()
-
-		if wasPlaying then
-			task.spawn(playNext)
-		end
-	end)
-
-	if #musicQueue == 1 then
-		playNext()
-	end
-end
-
-local function openMusic()
-	if homeOpen then closeHome() end
-	debounce = true
-	musicPanel.Visible = true
-	musicPanel.Queue.List.Template.Visible = false
-
-	debounce = false
-end
-
-local function closeMusic()
-	debounce = true
-	musicPanel.Visible = false
-
-	debounce = false
-end
-
 local function createReverb(timing)
 	for _, sound in ipairs(soundInstances) do
 		if not sound:FindFirstChild("AltairAudioProfile") then
@@ -3465,6 +3253,7 @@ altairValues.currentGroup = creatorType == Enum.CreatorType.Group and creatorId 
 
 local function updateSliderPadding()
 	for _, v in pairs(altairValues.sliders) do
+		-- Viewport changes can land before sortActions() has built the slider objects
 		if v.object then
 			v.padding = {
 				v.object.Track.AbsolutePosition.X,
@@ -3485,6 +3274,7 @@ local function updateSlider(data, setValue, forceValue, pointerX)
 		setValue = math.clamp(setValue, data.values[1], data.values[2])
 		inverse_interpolation = (setValue - data.values[1]) / (data.values[2] - data.values[1])
 	else
+		-- Measure the track during the drag, including while the panel is moving.
 		data.padding = { data.object.Track.AbsolutePosition.X, data.object.Track.AbsolutePosition.X + data.object.Track.AbsoluteSize.X }
 		pointerX = pointerX or userInputService:GetMouseLocation().X
 		local posX = math.clamp(pointerX, data.padding[1], data.padding[2])
@@ -3492,13 +3282,10 @@ local function updateSlider(data, setValue, forceValue, pointerX)
 		inverse_interpolation = span > 0 and (posX - data.padding[1]) / span or 0
 	end
 
+	-- Progress and Track are siblings; keep the fill eight pixels high and inside the track.
 	local track = data.object.Track
 	local progressSize = UDim2.new(track.Size.X.Scale * inverse_interpolation, track.Size.X.Offset * inverse_interpolation, track.Size.Y.Scale, track.Size.Y.Offset)
-	if data.active then
-		data.object.Progress.Size = progressSize
-	else
-		tweenService:Create(data.object.Progress, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { Size = progressSize }):Play()
-	end
+	tweenService:Create(data.object.Progress, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { Size = progressSize }):Play()
 
 	local precision = data.default % 1 ~= 0 and 10 or 1
 	local value = math.floor((data.values[1] + (data.values[2] - data.values[1]) * inverse_interpolation) * precision + 0.5) / precision
@@ -3508,6 +3295,8 @@ local function updateSlider(data, setValue, forceValue, pointerX)
 	end
 	data.value = value
 
+	-- Parenthesised: this used to read (callback and not setValue) or forceValue, so a forced
+	-- update on a slider without a callback called nil.
 	if data.callback and (not setValue or forceValue) then
 		data.callback(value)
 	end
@@ -3636,6 +3425,7 @@ local function sortActions()
 		newSlider:SetAttribute("RuntimeEntry", true)
 		newSlider.Parent = characterPanel.Interactions.Sliders
 		newSlider.LayoutOrder = index
+		-- Keep the template's neutral progress base, gradient, knob and glow colors.
 		newSlider.Information.Text = slider.name
 		newSlider.Visible = true
 
@@ -3745,17 +3535,562 @@ local function checkHighPing()
 	return false
 end
 
-local function checkTools()
-	task.wait(0.03)
-	local backpack = localPlayer:FindFirstChildOfClass("Backpack")
-	local character = localPlayer.Character
+altairValues.smartBarLayout = (function()
+	local controller = {
+		dragging = false,
+		dragMoved = false,
+		touchInput = nil,
+		contentSide = nil,
+		lastPointer = Vector2.zero,
+		startPointer = Vector2.zero,
+		lastRenderPointer = Vector2.zero,
+		grabOffset = Vector2.zero,
+		dragSide = 1,
+		barOffsetY = 0,
+		closedAtDrag = false,
+		idleAccumulator = 0,
+	}
 
-	return (backpack and backpack:FindFirstChildOfClass("Tool") ~= nil) or (character and character:FindFirstChildOfClass("Tool") ~= nil) or false
-end
+	local back = smartBar.Back
+	local time = back.Time
+	local buttons = back.Buttons
+	local dragVisual = drag:FindFirstChild("Drag")
+	local baseBackPosition = back.Position
+	local baseTimePosition = time.Position
+	local baseButtonsPosition = buttons.Position
+
+	local function centerOf(object)
+		return object.AbsolutePosition + object.AbsoluteSize * 0.5
+	end
+
+	local function moveCenter(object, target)
+		-- Preserve the rendered ScreenGui origin so the held group follows the pointer.
+		local delta = target - centerOf(object)
+		object.Position += UDim2.fromOffset(delta.X, delta.Y)
+	end
+
+	local function mirrorX(position)
+		return UDim2.new(1 - position.X.Scale, -position.X.Offset, position.Y.Scale, position.Y.Offset)
+	end
+
+	local function screenSize()
+		local size = UI:IsA("ScreenGui") and UI.AbsoluteSize or camera.ViewportSize
+		return size.X > 0 and size.Y > 0 and size or camera.ViewportSize
+	end
+
+	local function screenOriginY()
+		return UI:IsA("ScreenGui") and UI.AbsolutePosition.Y or 0
+	end
+
+	local function clampCenter(object, target, margin)
+		local viewport = screenSize()
+		local half = object.AbsoluteSize * 0.5
+		margin = margin or 8
+		return Vector2.new(
+			math.clamp(target.X, half.X + margin, math.max(half.X + margin, viewport.X - half.X - margin)),
+			math.clamp(target.Y, screenOriginY() + half.Y + margin, math.max(screenOriginY() + half.Y + margin, screenOriginY() + viewport.Y - half.Y - margin))
+		)
+	end
+
+	local function pointerPosition(input)
+		local position = input and input.Position or userInputService:GetMouseLocation()
+		return Vector2.new(position.X, position.Y)
+	end
+
+	local function panelSize(panel)
+		return panel.Name == "Character" and characterPanelSize
+			or (panel.Name == "Playerlist" and (altairValues.playerlistUI.panelSize or playerlistPanel.Size))
+			or UDim2.fromOffset(581, 246)
+	end
+
+	function controller:getDock()
+		return centerOf(smartBar).Y < screenSize().Y * 0.5 and "top" or "bottom"
+	end
+
+	function controller:getOpenPanel()
+		if self.activePanel and self.activePanel.Parent and self.activePanel.Visible then
+			return self.activePanel
+		end
+		for _, name in ipairs({ "Character", "Scripts", "Playerlist" }) do
+			local panel = UI:FindFirstChild(name)
+			if panel and panel.Visible then
+				return panel
+			end
+		end
+	end
+
+	function controller:getPanelPosition(panel, size)
+		size = size or panelSize(panel)
+		local dock = self:getDock()
+		local viewport = screenSize()
+		local barPos, barSize = smartBar.AbsolutePosition, smartBar.AbsoluteSize
+		local width, height = size.X.Offset, size.Y.Offset
+		local gap, margin = 12, 8
+		local x = barPos.X + barSize.X * 0.5 - width * 0.5
+		local y = dock == "top"
+			and barPos.Y + barSize.Y + gap
+			or barPos.Y - height - gap
+
+		x = math.clamp(x, margin, math.max(margin, viewport.X - width - margin))
+		y = math.clamp(y, margin, math.max(margin, viewport.Y - height - margin))
+
+		local anchor = panel.AnchorPoint
+		local currentAnchor = panel.AbsolutePosition + panel.AbsoluteSize * anchor
+		local targetAnchor = Vector2.new(x + width * anchor.X, y + height * anchor.Y)
+		local delta = targetAnchor - currentAnchor
+		return panel.Position + UDim2.fromOffset(delta.X, delta.Y)
+	end
+
+	function controller:syncContents(animate)
+		local viewport = screenSize()
+		local x = centerOf(smartBar).X
+		local midpoint = viewport.X * 0.5
+		local nextSide = self.contentSide
+
+		if not nextSide then
+			nextSide = x < midpoint and "left" or "right"
+		elseif nextSide == "left" and x > midpoint + 24 then
+			nextSide = "right"
+		elseif nextSide == "right" and x < midpoint - 24 then
+			nextSide = "left"
+		end
+
+		if nextSide == self.contentSide then
+			return
+		end
+		self.contentSide = nextSide
+
+		local mirrored = nextSide == "left"
+		local backTarget = mirrored and mirrorX(baseBackPosition) or baseBackPosition
+		local timeTarget = mirrored and mirrorX(baseTimePosition) or baseTimePosition
+		local buttonsTarget = mirrored and mirrorX(baseButtonsPosition) or baseButtonsPosition
+
+		if animate then
+			local info = TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+			tweenService:Create(back, info, { Position = backTarget }):Play()
+			tweenService:Create(time, info, { Position = timeTarget }):Play()
+			tweenService:Create(buttons, info, { Position = buttonsTarget }):Play()
+		else
+			back.Position, time.Position, buttons.Position = backTarget, timeTarget, buttonsTarget
+		end
+	end
+
+	local function positionAtRenderedCenter(object, target)
+		local delta = target - centerOf(object)
+		return object.Position + UDim2.fromOffset(delta.X, delta.Y)
+	end
+
+	local function positionPath()
+		return altairValues.altairFolder .. "/position.altair"
+	end
+
+	local function finiteFraction(value)
+		return type(value) == "number" and value == value and value >= 0 and value <= 1
+	end
+
+	function controller:savePosition()
+		if type(writefile) ~= "function" then return end
+		local viewport = screenSize()
+		if viewport.X <= 0 or viewport.Y <= 0 then return end
+		local originX = UI:IsA("ScreenGui") and UI.AbsolutePosition.X or 0
+		local center = centerOf(smartBarOpen and smartBar or drag)
+		local position = {
+			version = 1,
+			x = math.clamp((center.X - originX) / viewport.X, 0, 1),
+			y = math.clamp((center.Y - screenOriginY()) / viewport.Y, 0, 1),
+		}
+		local ok, err = pcall(function()
+			checkFolder()
+			writefile(positionPath(), httpService:JSONEncode(position))
+		end)
+		if not ok then warn("Altair | Unable to save position: " .. tostring(err)) end
+	end
+
+	function controller:restoreSavedPosition()
+		if type(readfile) ~= "function" then return false end
+		local ok, position = pcall(function()
+			if isfile and not isfile(positionPath()) then return nil end
+			return httpService:JSONDecode(readfile(positionPath()))
+		end)
+		if not ok or type(position) ~= "table" or position.version ~= 1
+			or not finiteFraction(position.x) or not finiteFraction(position.y) then
+			return false
+		end
+		local viewport = screenSize()
+		if viewport.X <= 0 or viewport.Y <= 0 then return false end
+		local originX = UI:IsA("ScreenGui") and UI.AbsolutePosition.X or 0
+		local target = Vector2.new(originX + position.x * viewport.X, screenOriginY() + position.y * viewport.Y)
+		smartBar.Size = UDim2.fromOffset(300, 60)
+		moveCenter(smartBar, clampCenter(smartBar, target, 8))
+		altairValues.smartBarPositionInitialized = true
+		return true
+	end
+
+	function controller:restoreSmartBarAtDrag()
+		smartBar.Position = positionAtRenderedCenter(smartBar, clampCenter(smartBar, centerOf(drag), 8))
+	end
+
+	function controller:cancelDragPositionTween()
+		local tween = self.dragPositionTween
+		self.dragPositionTween = nil
+		if tween then tween:Cancel() end
+	end
+
+	function controller:tweenDragCenter(target, info, size)
+		self:cancelDragPositionTween()
+		local goal = { Position = positionAtRenderedCenter(drag, target) }
+		if size then goal.Size = size end
+		local tween = tweenService:Create(drag, info, goal)
+		self.dragPositionTween = tween
+		tween.Completed:Once(function()
+			if self.dragPositionTween == tween then
+				self.dragPositionTween = nil
+				self:syncDrag()
+			end
+		end)
+		tween:Play()
+	end
+
+	function controller:getRestDragCenter()
+		local dock = self:getDock()
+		local viewport = screenSize()
+		local barPos, barSize = smartBar.AbsolutePosition, smartBar.AbsoluteSize
+		local half = drag.AbsoluteSize * 0.5
+		local gap = 4
+		local line = dragVisual and dragVisual:IsA("GuiObject") and dragVisual or drag
+		local lineTop = line.AbsolutePosition.Y - centerOf(drag).Y
+		local lineBottom = lineTop + line.AbsoluteSize.Y
+		local targetX = barPos.X + barSize.X * 0.5
+		local edge = dock == "bottom" and barPos.Y or (barPos.Y + barSize.Y)
+
+		for _, name in ipairs({ "Character", "Scripts", "Playerlist" }) do
+			local panel = UI:FindFirstChild(name)
+			if panel and panel.Visible then
+				if dock == "bottom" then
+					edge = math.min(edge, panel.AbsolutePosition.Y)
+				else
+					edge = math.max(edge, panel.AbsolutePosition.Y + panel.AbsoluteSize.Y)
+				end
+			end
+		end
+
+		local targetY = dock == "bottom"
+			and edge - gap - lineBottom
+			or edge + gap - lineTop
+
+		return Vector2.new(
+			math.clamp(targetX, half.X + 8, math.max(half.X + 8, viewport.X - half.X - 8)),
+			math.clamp(targetY, screenOriginY() + 8 - lineTop, math.max(screenOriginY() + 8 - lineTop, screenOriginY() + viewport.Y - 8 - lineBottom))
+		)
+	end
+
+	function controller:syncDrag()
+		drag.Visible = not settingValue("Hide Toggle Button")
+		drag.BackgroundTransparency = 1
+
+		if self.dragging or not smartBarOpen or self.dragPositionTween then
+			return
+		end
+
+		if dragVisual then dragVisual.Rotation = 0 end
+		-- Absolute coordinates include the ScreenGui origin; preserve that conversion.
+		drag.Position = positionAtRenderedCenter(drag, self:getRestDragCenter())
+	end
+
+	function controller:syncToasts(dragCenter)
+		if not (toastsContainer and toastsContainer.Parent and drag.Parent) then
+			return
+		end
+
+		local viewport = screenSize()
+		local originX = UI:IsA("ScreenGui") and UI.AbsolutePosition.X or 0
+		local margin, gap = 8, 8
+		local topEdge, bottomEdge = screenOriginY() + margin, screenOriginY() + viewport.Y - margin
+		local toastPos, toastSize = toastsContainer.AbsolutePosition, toastsContainer.AbsoluteSize
+		local dragSize = drag.AbsoluteSize
+		dragCenter = dragCenter or centerOf(drag)
+		local above = dragCenter.Y - dragSize.Y * 0.5 - gap - toastSize.Y
+		local below = dragCenter.Y + dragSize.Y * 0.5 + gap
+		local bottomDock
+		if self.dragging then
+			bottomDock = self.dragSide > 0
+		else
+			bottomDock = self:getDock() == "bottom"
+		end
+		-- Prefer the usual side, then use the other side if it has enough room.
+		if bottomDock and above < topEdge and below + toastSize.Y <= bottomEdge then
+			bottomDock = false
+		elseif not bottomDock and below + toastSize.Y > bottomEdge and above >= topEdge then
+			bottomDock = true
+		end
+
+		local layout = toastsContainer:FindFirstChildOfClass("UIListLayout")
+		if layout then
+			layout.VerticalAlignment = bottomDock and Enum.VerticalAlignment.Bottom or Enum.VerticalAlignment.Top
+		end
+		-- Match toast text to the SmartBar's horizontal third of the screen.
+		local barX = smartBarOpen and centerOf(smartBar).X or dragCenter.X
+		local xRatio = (barX - originX) / math.max(viewport.X, 1)
+		local alignment = xRatio < 1 / 3 and Enum.TextXAlignment.Left
+			or (xRatio > 2 / 3 and Enum.TextXAlignment.Right or Enum.TextXAlignment.Center)
+		-- Include the hidden template so new toasts inherit the current alignment.
+		for _, toast in ipairs(toastsContainer:GetChildren()) do
+			local title = toast:FindFirstChild("Title")
+			if title and title:IsA("TextLabel") and title.TextXAlignment ~= alignment then
+				title.TextXAlignment = alignment
+			end
+		end
+		local targetLeft = math.clamp(dragCenter.X - toastSize.X * 0.5,
+			originX + margin, math.max(originX + margin, originX + viewport.X - toastSize.X - margin))
+		local targetTop = math.clamp(bottomDock and above or below,
+			topEdge, math.max(topEdge, bottomEdge - toastSize.Y))
+		toastsContainer.Position += UDim2.fromOffset(targetLeft - toastPos.X, targetTop - toastPos.Y)
+	end
+
+	function controller:syncPanels(dt)
+		if not self.dragging then
+			return
+		end
+
+		local alpha = 1 - math.pow(1e-8, dt)
+		for _, name in ipairs({ "Character", "Scripts", "Playerlist" }) do
+			local panel = UI:FindFirstChild(name)
+			if panel and panel.Visible then
+				panel.Position = panel.Position:Lerp(self:getPanelPosition(panel, panelSize(panel)), alpha)
+				if altairValues.syncPanelPointer then
+					altairValues.syncPanelPointer(panel, buttons:FindFirstChild(name))
+				end
+			end
+		end
+	end
+
+	function controller:sync(dt, animateContents)
+		self:syncContents(animateContents)
+		self:syncPanels(dt or 1 / 60)
+		self:syncDrag()
+		self:syncToasts()
+	end
+
+	local function dragLineOffsets()
+		local line = dragVisual and dragVisual:IsA("GuiObject") and dragVisual or drag
+		local top = line.AbsolutePosition.Y - centerOf(drag).Y
+		return top, top + line.AbsoluteSize.Y
+	end
+
+	function controller:clampDragTarget(target)
+		local viewport = screenSize()
+		local originY = screenOriginY()
+		-- Evaluate the requested center BEFORE clamping, so either zone stays reachable.
+		if target.Y <= originY + viewport.Y * 0.22 then
+			self.dragSide = -1
+		elseif target.Y >= originY + viewport.Y * 0.50 then
+			self.dragSide = 1
+		end
+
+		local lineTop, lineBottom = dragLineOffsets()
+		local halfBar = smartBar.AbsoluteSize.Y * 0.5
+		local barOffset = self.dragSide < 0
+			and lineTop - 4 - halfBar
+			or lineBottom + 4 + halfBar
+		-- Bounds of the visible line and SmartBar relative to the Drag center.
+		-- Above: SmartBar's top sets minY. Below: its bottom sets maxY.
+		local minY = originY + 8 - math.min(lineTop, barOffset - halfBar)
+		local maxY = originY + viewport.Y - 8 - math.max(lineBottom, barOffset + halfBar)
+		local halfDragX = drag.AbsoluteSize.X * 0.5
+		-- If the screen cannot fit the group, retain the gap and minimize overflow.
+		local y = minY <= maxY and math.clamp(target.Y, minY, maxY) or (minY + maxY) * 0.5
+		return Vector2.new(
+			math.clamp(target.X, halfDragX + 8, math.max(halfDragX + 8, viewport.X - halfDragX - 8)),
+			y
+		), barOffset
+	end
+
+	function controller:moveSmartBar(dragCenter, dt, barOffset)
+		local viewport = screenSize()
+		local half = smartBar.AbsoluteSize * 0.5
+		local middle = viewport.X * 0.5
+		local x = math.abs(dragCenter.X - middle) <= 36 and middle or dragCenter.X
+		self.barOffsetY = barOffset
+		-- Use the same rendered-line geometry as the target clamp; no competing Y clamp.
+		moveCenter(smartBar, Vector2.new(
+			math.clamp(x, half.X + 8, math.max(half.X + 8, viewport.X - half.X - 8)),
+			dragCenter.Y + barOffset
+		))
+	end
+
+	function controller:setDragVisual(width, transparency, duration)
+		if not dragVisual or not dragVisual:IsA("GuiObject") then
+			return
+		end
+		local goal = { Size = UDim2.fromOffset(width, 4) }
+		if dragVisual:IsA("ImageLabel") or dragVisual:IsA("ImageButton") then
+			goal.ImageTransparency = transparency
+		else
+			goal.BackgroundTransparency = transparency
+		end
+		tweenService:Create(dragVisual, TweenInfo.new(duration or 0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), goal):Play()
+	end
+
+	function controller:bind(toggleSmartBar)
+		local barCenter, dragCenter = centerOf(smartBar), centerOf(drag)
+		smartBar.AnchorPoint = Vector2.new(0.5, 0.5)
+		drag.AnchorPoint = Vector2.new(0.5, 0.5)
+		moveCenter(smartBar, clampCenter(smartBar, barCenter, 8))
+		moveCenter(drag, clampCenter(drag, dragCenter, 8))
+
+		drag.Size = UDim2.fromOffset(150, 20)
+		drag.BackgroundTransparency = 1
+		drag.Visible = true
+
+		if dragVisual then
+			dragVisual.Visible = true
+			dragVisual.AnchorPoint = Vector2.new(0.5, 0.5)
+			dragVisual.Position = UDim2.fromScale(0.5, 0.5)
+			dragVisual.BorderSizePixel = 0
+		end
+
+		local interact = drag.Interact
+		interact.Visible = true
+		interact.Active = true
+		interact.BackgroundTransparency = 1
+		if interact:IsA("TextButton") or interact:IsA("TextLabel") or interact:IsA("TextBox") then
+			interact.TextTransparency = 1
+		end
+		if interact:IsA("ImageButton") or interact:IsA("ImageLabel") then
+			interact.ImageTransparency = 1
+		end
+
+		self:setDragVisual(100, 0.15, 0)
+
+		track(drag:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+			if not self.dragging then self:syncToasts() end
+		end))
+
+		track(drag.Interact.MouseEnter:Connect(function()
+			if not self.dragging then
+				tweenService:Create(drag, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+					Size = UDim2.fromOffset(165, 22),
+				}):Play()
+				self:setDragVisual(120, 0, 0.25)
+			end
+		end))
+
+		track(drag.Interact.MouseLeave:Connect(function()
+			if not self.dragging then
+				tweenService:Create(drag, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+					Size = UDim2.fromOffset(150, 20),
+				}):Play()
+				self:setDragVisual(100, 0.15, 0.25)
+			end
+		end))
+
+		track(drag.Interact.InputBegan:Connect(function(input)
+			local inputType = input.UserInputType
+			if inputType ~= Enum.UserInputType.MouseButton1 and inputType ~= Enum.UserInputType.Touch then
+				return
+			end
+
+			self:cancelDragPositionTween()
+			self.dragging = true
+			self.dragMoved = false
+			self.touchInput = inputType == Enum.UserInputType.Touch and input or nil
+			self.lastPointer = pointerPosition(self.touchInput and input or nil)
+			self.startPointer = self.lastPointer
+			self.lastRenderPointer = self.lastPointer
+			self.grabOffset = centerOf(drag) - self.lastPointer
+			self.dragSide = self:getDock() == "top" and -1 or 1
+			self.barOffsetY = centerOf(smartBar).Y - centerOf(drag).Y
+			if self.onDragBegin then self:onDragBegin() end
+			local target, barOffset = self:clampDragTarget(self.lastPointer + self.grabOffset)
+			moveCenter(drag, target)
+			self:moveSmartBar(target, 0, barOffset)
+			tweenService:Create(drag, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+				Size = UDim2.fromOffset(175, 24),
+			}):Play()
+			self:setDragVisual(110, 0, 0.25)
+		end))
+
+		track(userInputService.InputChanged:Connect(function(input)
+			if not self.dragging then return end
+			if self.touchInput then
+				if input == self.touchInput then self.lastPointer = pointerPosition(input) end
+			elseif input.UserInputType == Enum.UserInputType.MouseMovement then
+				self.lastPointer = pointerPosition(input)
+			end
+		end))
+
+		local function finish(input)
+			if not self.dragging then
+				return
+			end
+			if input and self.touchInput and input ~= self.touchInput then
+				return
+			end
+
+			self.dragging = false
+			self.touchInput = nil
+			tweenService:Create(drag, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+				Size = UDim2.fromOffset(150, 20),
+			}):Play()
+			self:setDragVisual(100, 0.15, 0.3)
+			self:sync(1 / 60, true)
+			if self.dragMoved then self:savePosition() end
+
+			if not self.dragMoved and toggleSmartBar then
+				toggleSmartBar()
+			end
+		end
+
+		track(userInputService.InputEnded:Connect(function(input)
+			local inputType = input.UserInputType
+			if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
+				finish(input)
+			end
+		end))
+		track(userInputService.WindowFocusReleased:Connect(function()
+			finish()
+		end))
+
+		track(runService.RenderStepped:Connect(function(dt)
+			if not UI.Parent then
+				return
+			end
+
+			if self.dragging then
+				local pointer = self.touchInput and self.lastPointer or pointerPosition()
+				if (pointer - self.startPointer).Magnitude > 6 then
+					self.dragMoved = true
+				end
+
+				self.lastRenderPointer = pointer
+
+				local dragCenter, barOffset = self:clampDragTarget(pointer + self.grabOffset)
+				moveCenter(drag, dragCenter)
+				self:moveSmartBar(dragCenter, dt, barOffset)
+				self:syncContents(true)
+				self:syncPanels(dt)
+				self:syncToasts(dragCenter)
+			else
+				self.idleAccumulator += dt
+				if self.idleAccumulator >= 1 / 30 then
+					self.idleAccumulator = 0
+					self:sync(dt, false)
+				end
+			end
+		end))
+	end
+
+	function controller:panelSize(panel)
+		return panelSize(panel)
+	end
+
+	return controller
+end)()
 
 local updateBackpackLayout
 do
-	local entries, activePanel, refresh, toastOffset = {}, nil, 0, 30
+	local entries, activePanel, refresh = {}, nil, 0
+
 	local function visible(v)
 		if not v.Parent then return false end
 		while v do
@@ -3764,19 +4099,27 @@ do
 		end
 		return true
 	end
+
 	local function parentHeight(v)
 		local parent = v.Parent
 		while parent and not parent:IsA("GuiBase2d") do parent = parent.Parent end
 		return math.max(1, parent and parent.AbsoluteSize.Y or camera.ViewportSize.Y)
 	end
+
 	local function scan()
 		local found = {}
-		for _, root in ipairs({coreGui, localPlayer:FindFirstChildOfClass("PlayerGui")}) do
+		for _, root in ipairs({ coreGui, localPlayer:FindFirstChildOfClass("PlayerGui") }) do
 			for _, v in ipairs(root:GetDescendants()) do
 				local name = v.Name:lower()
-				if v:IsA("GuiObject") and not v:IsDescendantOf(UI) and (name:find("backpack", 1, true) or name:find("hotbar", 1, true)) and visible(v) then found[v] = true end
+				if v:IsA("GuiObject") and not v:IsDescendantOf(UI)
+					and (name:find("backpack", 1, true) or name:find("hotbar", 1, true))
+					and visible(v)
+				then
+					found[v] = true
+				end
 			end
 		end
+
 		local roots = {}
 		for v in pairs(found) do
 			local parent, nested = v.Parent, false
@@ -3786,24 +4129,29 @@ do
 			end
 			if not nested then roots[v] = true end
 		end
+
 		for v, entry in pairs(entries) do
 			if not roots[v] then
 				if v.Parent and entry.shift > 0 then v.Position = entry.position end
 				entries[v] = nil
 			end
 		end
+
 		for v in pairs(roots) do
 			if not entries[v] then
 				local coreBackpack = v:IsDescendantOf(coreGui) and v.Name == "Backpack" and v.Parent.Name == "RobloxGui"
-				entries[v] = {position = coreBackpack and UDim2.new(0,0,0,0) or v.Position, shift = 0, core = coreBackpack}
+				entries[v] = { position = coreBackpack and UDim2.new() or v.Position, shift = 0, core = coreBackpack }
 			elseif not smartBarOpen and entries[v].shift == 0 and not entries[v].core then
 				entries[v].position = v.Position
 			end
-			local bounds, hasHotbar = nil, false
+
+			local bounds, hasHotbar
 			for _, candidate in ipairs(v:GetDescendants()) do
 				if candidate:IsA("GuiObject") and candidate.Name:lower():find("hotbar", 1, true) then
 					hasHotbar = true
-					if visible(candidate) and candidate.AbsoluteSize.Y > 0 and (not bounds or candidate.AbsoluteSize.Y < bounds.AbsoluteSize.Y) then bounds = candidate end
+					if visible(candidate) and candidate.AbsoluteSize.Y > 0 and (not bounds or candidate.AbsoluteSize.Y < bounds.AbsoluteSize.Y) then
+						bounds = candidate
+					end
 				end
 			end
 			if not hasHotbar then bounds = v end
@@ -3815,24 +4163,31 @@ do
 			end
 		end
 	end
+
 	updateBackpackLayout = function(panel)
 		activePanel, refresh = panel, 0
 	end
-	local layoutAccumulator = 0
+
+	local accumulator = 0
 	local connection = track(runService.RenderStepped:Connect(function(dt)
 		if not UI.Parent then return end
-		layoutAccumulator += dt
-		if layoutAccumulator < 1 / 30 then return end
-		dt = layoutAccumulator
-		layoutAccumulator = 0
+		accumulator += dt
+		if accumulator < 1 / 30 then return end
+		dt, accumulator = accumulator, 0
+
 		refresh -= dt
-		if refresh <= 0 then scan() refresh = 2 end
-		local ceiling = smartBarOpen and smartBar.AbsolutePosition.Y or nil
-		if smartBarOpen and activePanel and activePanel.Parent and activePanel.Visible then ceiling = math.min(ceiling, activePanel.AbsolutePosition.Y) end
-		for _, panel in ipairs({musicPanel, settingsPanel, scriptSearch}) do
-			if panel.Parent and visible(panel) then ceiling = math.min(ceiling or math.huge, panel.AbsolutePosition.Y) end
+		if refresh <= 0 then
+			scan()
+			refresh = 2
 		end
-		local hotbarTop, alpha = nil, 1 - math.exp(-14 * dt)
+
+		local bottomDock = smartBarOpen and altairValues.smartBarLayout:getDock() == "bottom"
+		local ceiling = bottomDock and smartBar.AbsolutePosition.Y or nil
+		if ceiling and activePanel and activePanel.Parent and activePanel.Visible then
+			ceiling = math.min(ceiling, activePanel.AbsolutePosition.Y)
+		end
+
+		local alpha = 1 - math.exp(-14 * dt)
 		for v, entry in pairs(entries) do
 			local bounds = entry.bounds
 			if v.Parent and bounds.Parent and visible(bounds) and bounds.AbsoluteSize.Y > 0 then
@@ -3843,38 +4198,164 @@ do
 				entry.shift += (target - entry.shift) * alpha
 				if math.abs(entry.shift - target) < 0.1 then entry.shift = target end
 				if ceiling or entry.shift > 0 or displacement ~= 0 then
-					v.Position = entry.shift == 0 and entry.position or entry.position - UDim2.new(0,0,entry.shift / height,0)
+					v.Position = entry.shift == 0 and entry.position or entry.position - UDim2.new(0, 0, entry.shift / height, 0)
 				end
-				hotbarTop = math.min(hotbarTop or math.huge, restingTop - entry.shift)
 			end
 		end
-		local measured
-		for _, toast in ipairs(activeToasts) do
-			local title = toast.Parent and not toast:GetAttribute("AltairExiting") and toast:FindFirstChild("Title")
-			if title and title:IsA("TextLabel") and title.Visible and title.AbsoluteSize.Y > 0 then
-				local textHeight = math.min(title.AbsoluteSize.Y, math.max(title.TextBounds.Y, title.TextSize))
-				local extra = title.TextYAlignment == Enum.TextYAlignment.Top and textHeight or title.TextYAlignment == Enum.TextYAlignment.Bottom and title.AbsoluteSize.Y or (title.AbsoluteSize.Y + textHeight) / 2
-				local bottom = title.AbsolutePosition.Y - toastsContainer.AbsolutePosition.Y + extra
-				measured = math.max(measured or -math.huge, bottom)
-			end
-		end
-		if measured then toastOffset = measured end
-
-		local toggleVisible = toggle.Parent and visible(toggle) and toggle.AbsoluteSize.Y > 0
-		local boundary = toggleVisible and toggle.AbsolutePosition.Y or hotbarTop or ceiling
-		local targetTop = boundary and boundary - 14 - toastOffset or UI.AbsolutePosition.Y + UI.AbsoluteSize.Y - 28
-		targetTop = math.max(UI.AbsolutePosition.Y + 8, targetTop)
-		local delta = targetTop - toastsContainer.AbsolutePosition.Y
-		toastsContainer.Position += UDim2.new(0,0,delta * ((toggleVisible or hotbarTop) and 1 or alpha) / parentHeight(toastsContainer),0)
 	end))
+
 	UI.Destroying:Connect(function()
 		connection:Disconnect()
-		for v, entry in pairs(entries) do if v.Parent and entry.shift > 0 then v.Position = entry.position end end
+		for v, entry in pairs(entries) do
+			if v.Parent and entry.shift > 0 then v.Position = entry.position end
+		end
 	end)
 end
 
+local function getPanelButtonGeometry(panel, button)
+	if not (panel and button and panel.Parent and button.Parent) then
+		return nil, nil
+	end
+
+	local buttonSize = button.AbsoluteSize
+	if buttonSize.X <= 0 or buttonSize.Y <= 0 then
+		return button.Size, panel.Position
+	end
+
+	local anchor = panel.AnchorPoint
+	local currentAnchor = panel.AbsolutePosition + Vector2.new(
+		panel.AbsoluteSize.X * anchor.X,
+		panel.AbsoluteSize.Y * anchor.Y
+	)
+	local targetAnchor = button.AbsolutePosition + Vector2.new(
+		buttonSize.X * anchor.X,
+		buttonSize.Y * anchor.Y
+	)
+	local delta = targetAnchor - currentAnchor
+
+	return UDim2.fromOffset(buttonSize.X, buttonSize.Y),
+		panel.Position + UDim2.fromOffset(delta.X, delta.Y)
+end
+
+altairValues.panelPointerConnections = altairValues.panelPointerConnections or {}
+
+altairValues.getPanelPointer = function(panel)
+	if not panel then
+		return nil
+	end
+
+	local pointer = panel:FindFirstChild("Pointer")
+	if not pointer and panel ~= characterPanel then
+		local source = characterPanel:FindFirstChild("Pointer")
+		if source then
+			pointer = source:Clone()
+			pointer.Name = "Pointer"
+			pointer.Parent = panel
+		end
+	end
+
+	if pointer and pointer:IsA("GuiObject") then
+		pointer.Visible = true
+		pointer.Size = UDim2.fromOffset(12, 12)
+		pointer.AnchorPoint = Vector2.new(0.5, 0.5)
+		pointer.Rotation = 45
+		pointer.BorderSizePixel = 0
+		pointer.BackgroundColor3 = panel.BackgroundColor3
+		pointer.BackgroundTransparency = panel.BackgroundTransparency
+
+		local stroke = pointer:FindFirstChildOfClass("UIStroke")
+		if stroke then stroke.Transparency = 1 end
+		local gradient = pointer:FindFirstChildOfClass("UIGradient")
+		if gradient then gradient.Enabled = false end
+		local corner = pointer:FindFirstChildOfClass("UICorner")
+		if corner then corner.CornerRadius = UDim.new(0, 1) end
+
+		return pointer
+	end
+
+	return nil
+end
+
+altairValues.syncPanelPointer = function(panel, button)
+	local pointer = altairValues.getPanelPointer(panel)
+	if not (pointer and button and button:IsA("GuiObject")) then
+		return nil
+	end
+
+	local dock = altairValues.smartBarLayout:getDock()
+	local panelPos, panelSize = panel.AbsolutePosition, panel.AbsoluteSize
+	local buttonCenter = button.AbsolutePosition + button.AbsoluteSize * 0.5
+	local edgePadding = 18
+
+	pointer.AnchorPoint = Vector2.new(0.5, 0.5)
+	pointer.Rotation = 45
+
+	local x = math.clamp(buttonCenter.X - panelPos.X, edgePadding, math.max(edgePadding, panelSize.X - edgePadding))
+	pointer.Position = UDim2.fromOffset(x, dock == "top" and 0 or panelSize.Y)
+
+	pointer.Visible = true
+	return pointer
+end
+
+altairValues.setPanelPointerVisible = function(panel, button, visible, duration)
+	local pointer = altairValues.syncPanelPointer(panel, button)
+	if not pointer then
+		return
+	end
+
+	local goal = {}
+	if pointer:IsA("ImageLabel") or pointer:IsA("ImageButton") then
+		goal.ImageTransparency = visible and 0 or 1
+	elseif pointer:IsA("Frame") or pointer:IsA("ScrollingFrame") then
+		goal.BackgroundTransparency = visible and panel.BackgroundTransparency or 1
+	else
+		pcall(function()
+			goal.BackgroundTransparency = visible and 0 or 1
+		end)
+	end
+
+	if next(goal) then
+		tweenService:Create(
+			pointer,
+			TweenInfo.new(duration or 0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+			goal
+		):Play()
+	end
+end
+
+altairValues.bindPanelPointer = function(panel, button)
+	if not (panel and button and button:IsA("GuiObject")) then
+		return
+	end
+
+	if altairValues.panelPointerConnections[panel] then
+		altairValues.syncPanelPointer(panel, button)
+		return
+	end
+
+	local pointer = altairValues.getPanelPointer(panel)
+	if not pointer then
+		return
+	end
+
+	local function sync()
+		if panel.Parent and button.Parent then
+			altairValues.syncPanelPointer(panel, button)
+		end
+	end
+
+	altairValues.panelPointerConnections[panel] = {
+		track(button:GetPropertyChangedSignal("AbsolutePosition"):Connect(sync)),
+		track(button:GetPropertyChangedSignal("AbsoluteSize"):Connect(sync)),
+		track(panel:GetPropertyChangedSignal("AbsolutePosition"):Connect(sync)),
+		track(panel:GetPropertyChangedSignal("AbsoluteSize"):Connect(sync)),
+	}
+
+	sync()
+end
+
 local function closePanel(panelName, openingOther)
-	local button = smartBar.Buttons:FindFirstChild(panelName)
+	local button = smartBar.Back.Buttons:FindFirstChild(panelName)
 	local panel = UI:FindFirstChild(panelName)
 
 	if not isPanel(panelName) then
@@ -3889,6 +4370,10 @@ local function closePanel(panelName, openingOther)
 	local panelSize = panel.Name == "Character" and characterPanelSize
 		or (panel.Name == "Playerlist" and (altairValues.playerlistUI.panelSize or playerlistPanel.Size))
 		or UDim2.fromOffset(581, 246)
+
+	local buttonSize, buttonPosition = getPanelButtonGeometry(panel, button)
+	buttonSize = buttonSize or button.Size
+	buttonPosition = buttonPosition or panel.Position
 
 	if panel.Name == "Playerlist" and altairValues.playerlistUI.prepareClose then
 		altairValues.playerlistUI:prepareClose()
@@ -3910,7 +4395,6 @@ local function closePanel(panelName, openingOther)
 	if not openingOther then
 		if panel.Name == "Character" then -- Character Panel Animation
 			tweenService:Create(characterPanel.Subtitle, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-			tweenService:Create(characterPanel.Pointer, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
 			tweenService:Create(characterPanel.Interactions.PropertiesTitle, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
 			tweenService:Create(characterPanel.Interactions.ActionsTitle, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
 			for _, divider in ipairs({ characterPanel.Interactions.HeaderDivider, characterPanel.Interactions.ActionsDivider, characterPanel.Interactions.PropertiesDivider }) do
@@ -4003,37 +4487,45 @@ local function closePanel(panelName, openingOther)
 			tweenService:Create(playerlistPanel.Interactions.List, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { ScrollBarImageTransparency = 1 }):Play()
 		end
 
+		altairValues.setPanelPointerVisible(panel, button, false, 0.2)
 		tweenService:Create(panel.Icon, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
 		tweenService:Create(panel.Title, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
 		tweenService:Create(panel.UIStroke, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
 		task.wait(0.03)
 
 		tweenService:Create(panel, TweenInfo.new(0.75, Enum.EasingStyle.Exponential, Enum.EasingDirection.InOut), { BackgroundTransparency = 1 }):Play()
-		tweenService:Create(panel, TweenInfo.new(1.1, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), { Size = button.Size }):Play()
-		tweenService:Create(panel, TweenInfo.new(0.65, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), { Position = altairValues.buttonPositions[panelName] }):Play()
-		tweenService:Create(toggle, TweenInfo.new(0.6, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), { Position = UDim2.new(0.5, 0, 1, -70) }):Play()
+		tweenService:Create(panel, TweenInfo.new(1.1, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), { Size = buttonSize }):Play()
+		tweenService:Create(panel, TweenInfo.new(0.65, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), { Position = buttonPosition }):Play()
 	end
 
 	-- Animate interactive elements
 	if openingOther then
-		tweenService:Create(panel, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { Position = UDim2.new(0.5, 350, 1, -90) }):Play()
+		local offsetY = altairValues.smartBarLayout:getDock() == "top" and -45 or 45
+		tweenService:Create(panel, TweenInfo.new(0.45, Enum.EasingStyle.Quint), {
+			Position = panel.Position + UDim2.fromOffset(0, offsetY),
+		}):Play()
 		wipeTransparency(panel, 1, true, true, 0.3)
 	end
 
 	task.wait(0.5)
 	panel.Size = panelSize
 	panel.Visible = false
+	if not openingOther and altairValues.smartBarLayout.activePanel == panel then
+		altairValues.smartBarLayout.activePanel = nil
+	end
 	if not openingOther then updateBackpackLayout() end
+	altairValues.smartBarLayout:sync(1 / 60, false)
 
 	debounce = false
 end
 
 local function openPanel(panelName)
 	if homeOpen then closeHome() end
+	if settingsPanel.Visible then closeSettings() end
 	if debounce then
 		return
 	end
-	local button = smartBar.Buttons:FindFirstChild(panelName)
+	local button = smartBar.Back.Buttons:FindFirstChild(panelName)
 	local panel = UI:FindFirstChild(panelName)
 
 	if not isPanel(panelName) then
@@ -4046,7 +4538,7 @@ local function openPanel(panelName)
 	debounce = true
 
 	for _, otherPanel in ipairs(UI:GetChildren()) do
-		if smartBar.Buttons:FindFirstChild(otherPanel.Name) then
+		if smartBar.Back.Buttons:FindFirstChild(otherPanel.Name) then
 			if isPanel(otherPanel.Name) and otherPanel.Visible then
 				task.spawn(closePanel, otherPanel.Name, true)
 				task.wait()
@@ -4058,27 +4550,35 @@ local function openPanel(panelName)
 		or (panel.Name == "Playerlist" and (altairValues.playerlistUI.panelSize or playerlistPanel.Size))
 		or UDim2.fromOffset(581, 246)
 
-	panel.Size = button.Size
-	panel.Position = altairValues.buttonPositions[panelName]
-
+	-- Playerlist reset writes its full authored panel size. Do that first, then
+	-- collapse the shell exactly like Character/Scripts before the opening tween.
 	if panel.Name == "Playerlist" and altairValues.playerlistUI.reset then
 		altairValues.playerlistUI.rowsOpening = true
 		altairValues.playerlistUI:reset(true)
 	end
 
+	local buttonSize, buttonPosition = getPanelButtonGeometry(panel, button)
+	panel.Size = buttonSize or button.Size
+	panel.Position = buttonPosition or panel.Position
+
 	wipeTransparency(panel, 1, true)
 
 	panel.Visible = true
+	altairValues.smartBarLayout.activePanel = panel
+	altairValues.bindPanelPointer(panel, button)
+	altairValues.syncPanelPointer(panel, button)
 
 	updateBackpackLayout(panel)
-	tweenService:Create(toggle, TweenInfo.new(0.65, Enum.EasingStyle.Quint), { Position = UDim2.new(0.5, 0, 1, -(panelSize.Y.Offset + 91)) }):Play()
 
 	tweenService:Create(panel, TweenInfo.new(0.1, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.1 }):Play()
 	tweenService:Create(panel, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), { Size = panelSize }):Play()
-	tweenService:Create(panel, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = UDim2.new(0.5, 0, 1, -90) }):Play()
+	tweenService:Create(panel, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {
+		Position = altairValues.smartBarLayout:getPanelPosition(panel, panelSize),
+	}):Play()
 
 	task.wait(0.4)
 
+	altairValues.setPanelPointerVisible(panel, button, true, 0.45)
 	tweenService:Create(panel.Icon, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
 	task.wait(0.05)
 	tweenService:Create(panel.Title, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
@@ -4089,7 +4589,6 @@ local function openPanel(panelName)
 	if panel.Name == "Character" then -- Character Panel Animation
 		tweenService:Create(characterPanel.UIStroke, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { Transparency = 0.7 }):Play()
 		tweenService:Create(characterPanel.Subtitle, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-		tweenService:Create(characterPanel.Pointer, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
 		tweenService:Create(characterPanel.Interactions.PropertiesTitle, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 		tweenService:Create(characterPanel.Interactions.ActionsTitle, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 		tweenService:Create(characterPanel.Interactions.HeaderDivider, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.7 }):Play()
@@ -4283,6 +4782,17 @@ local function openPanel(panelName)
 	debounce = false
 end
 
+altairValues.smartBarLayout.onDragBegin = function(self)
+	for _, panelName in ipairs({ "Character", "Scripts", "Playerlist" }) do
+		local panel = UI:FindFirstChild(panelName)
+		if panel and panel.Visible then
+			self.activePanel = nil
+			task.spawn(closePanel, panelName, true)
+			break
+		end
+	end
+end
+
 local function rejoin()
 	queueNotification("Rejoining Session", "We're queueing a rejoin to this session, give us a moment.", 4400696294)
 
@@ -4342,6 +4852,17 @@ end
 
 local function ensureFrameProperties()
 	UI.Enabled = true
+
+	for _, panelName in ipairs({ "Character", "Scripts", "Playerlist" }) do
+		local panel = UI:FindFirstChild(panelName)
+		if panel then
+			local pointer = altairValues.getPanelPointer(panel)
+			if pointer then
+				pointer.Visible = true
+			end
+		end
+	end
+
 	characterPanel.Visible = false
 	customScriptPrompt.Visible = false
 	disconnectedPrompt.Visible = false
@@ -4360,22 +4881,15 @@ local function ensureFrameProperties()
 	gameDetectionPrompt.Visible = false
 	homeContainer.Visible = false
 	moderatorDetectionPrompt.Visible = false
-	musicPanel.Visible = false
 	notificationContainer.Visible = true
 	playerlistPanel.Visible = false
 	scriptSearch.Visible = false
 	scriptsPanel.Visible = false
 	settingsPanel.Visible = false
 	smartBar.Visible = false
-	musicPanel.Playing.Text = "Not Playing"
-	if not getCustomAsset then
-		smartBar.Buttons.Music.Visible = false
-	end
 	toastsContainer.Visible = true
 	makeDraggable(settingsPanel)
-	makeDraggable(musicPanel)
 end
-
 
 moderatorDetectionPrompt.Leave.Leave.MouseButton1Click:Connect(function()
 	if closeModPrompt then
@@ -5900,13 +6414,11 @@ local function UpdateHome() homeController.tick() end
 openHome = function()
  if homeOpen or not UI.Parent then return end
  homeOpen=true homeFov=homeFov or camera.FieldOfView
- tweenService:Create(toggle,TweenInfo.new(.6,Enum.EasingStyle.Quint,Enum.EasingDirection.InOut),{Position=UDim2.new(.5,0,1,-70)}):Play()
  for _,panel in ipairs(UI:GetChildren()) do
-  if panel:IsA("GuiObject") and panel.Visible and smartBar.Buttons:FindFirstChild(panel.Name) and isPanel(panel.Name) then
+  if panel:IsA("GuiObject") and panel.Visible and smartBar.Back.Buttons:FindFirstChild(panel.Name) and isPanel(panel.Name) then
    task.spawn(closePanel,panel.Name,true)
   end
  end
- if musicPanel.Visible then task.spawn(closeMusic) end
  if settingsPanel.Visible then task.spawn(closeSettings) end
  if scriptSearch.Visible then task.spawn(closeScriptSearch) end
  pcall(function() homeChatEnabled=starterGui:GetCoreGuiEnabled(Enum.CoreGuiType.Chat) end)
@@ -6121,7 +6633,6 @@ local function readAllowlist()
 	return decoded
 end
 
-
 local function securityDetection(title, content, link, gradient, actions)
 	if not checkAltair() then
 		return
@@ -6134,7 +6645,7 @@ local function securityDetection(title, content, link, gradient, actions)
 		return true
 	end
 
-	local newSecurityPrompt = securityPrompt:Clone()
+	local newSecurityPrompt = UI.SecurityPrompt:Clone()
 
 	newSecurityPrompt.Parent = UI
 	newSecurityPrompt.Name = link
@@ -6309,7 +6820,6 @@ if originalSetClipboard then
 	end
 end
 
-
 local function searchScriptBlox(query)
 	local response
 
@@ -6379,108 +6889,166 @@ local function openSmartBar()
 	smartBarOpen = true
 	updateBackpackLayout()
 
-	-- Set Values for frame properties
-	 smartBar.Back.BackgroundTransparency = 1
+	smartBar.Back.BackgroundTransparency = 1
 	smartBar.Back.UIStroke.Transparency = 1
 	smartBar.BackgroundTransparency = 1
-	smartBar.Time.TextTransparency = 1
-    smartBar.Time.AMPM.TextTransparency = 1
+	smartBar.Back.Time.TextTransparency = 1
+	smartBar.Back.Time.AMPM.TextTransparency = 1
 	smartBar.UIStroke.Enabled = true
 	smartBar.UIStroke.Thickness = 1
 	smartBar.UIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	smartBar.UIStroke.Transparency = 1
 	smartBar.Shadow.ImageTransparency = 1
+	smartBar.Size = UDim2.fromOffset(300, 60)
+
+	if not altairValues.smartBarPositionInitialized then
+		local viewport = UI:IsA("ScreenGui") and UI.AbsoluteSize or camera.ViewportSize
+		local half = smartBar.AbsoluteSize * 0.5
+		smartBar.AnchorPoint = Vector2.new(0.5, 0.5)
+		smartBar.Position = UDim2.fromOffset(viewport.X * 0.5, viewport.Y - half.Y - 8)
+		altairValues.smartBarPositionInitialized = true
+	end
+
+	-- If Drag was occupying the closed SmartBar position, reopen the SmartBar
+	-- exactly there before sending Drag back to its normal resting location.
+	if altairValues.smartBarLayout.closedAtDrag then
+		altairValues.smartBarLayout:restoreSmartBarAtDrag()
+		altairValues.smartBarLayout.closedAtDrag = false
+	end
+
 	smartBar.Visible = true
-	smartBar.Position = UDim2.new(0.5, 0, 1.05, 0)
-	smartBar.Size = UDim2.new(0, 450, 0, 60)
-	toggle.Rotation = 180
-	toggle.Visible = not settingValue("Hide Toggle Button")
+	drag.Visible = not settingValue("Hide Toggle Button")
 
-	if checkTools() then
-		toggle.Position = UDim2.new(0.5,0,1,-68)
-	else
-		toggle.Position = UDim2.new(0.5, 0, 1, -5)
+	for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
+		if button:IsA("GuiObject") then
+			if button.Name == "Placeholder" then
+				button.Visible = true
+				button.BackgroundTransparency = 1
+				button.Size = UDim2.fromOffset(34, 34)
+				continue
+			end
+
+			local gradient = button:FindFirstChildOfClass("UIGradient")
+			local stroke = button:FindFirstChildOfClass("UIStroke")
+			local strokeGradient = stroke and stroke:FindFirstChildOfClass("UIGradient")
+			local icon = button:FindFirstChild("Icon")
+
+			if gradient then gradient.Rotation = -120 end
+			if strokeGradient then strokeGradient.Rotation = -120 end
+			button.Size = UDim2.fromOffset(34, 34)
+			button.BackgroundTransparency = 1
+			if stroke then stroke.Transparency = 1 end
+			if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then icon.ImageTransparency = 1 end
+		end
 	end
 
-	for _, button in ipairs(smartBar.Buttons:GetChildren()) do
-		button.UIGradient.Rotation = -120
-		button.UIStroke.UIGradient.Rotation = -120
-		button.Size = UDim2.new(0,30,0,30)
-		button.Position = UDim2.new(button.Position.X.Scale, 0, 1.3, 0)
-		button.BackgroundTransparency = 1
-		button.UIStroke.Transparency = 1
-		button.Icon.ImageTransparency = 1
+	altairValues.smartBarLayout:syncContents(false)
+	altairValues.smartBarLayout:syncToasts()
+
+	-- Drag leaves the closed SmartBar position and returns to its authored
+	-- above/below resting position.
+	do
+		local target = altairValues.smartBarLayout:getRestDragCenter()
+		altairValues.smartBarLayout:tweenDragCenter(target,
+			TweenInfo.new(0.42, Enum.EasingStyle.Back, Enum.EasingDirection.Out))
 	end
 
-	tweenService:Create(toggle, TweenInfo.new(0.82, Enum.EasingStyle.Quint), { Rotation = 0 }):Play()
-	tweenService:Create(smartBar, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Position = UDim2.new(0.5, 0, 1, -12) }):Play()
-	tweenService:Create(toggle, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Position = UDim2.new(0.5, 0, 1, -70) }):Play()
-	tweenService:Create(smartBar, TweenInfo.new(0.6, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 450, 0, 60) }):Play()
 	tweenService:Create(smartBar, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.1 }):Play()
-	coroutine.wrap(function()
-		wait(0.5)
-		tweenService:Create(smartBar.Shadow, TweenInfo.new(3, Enum.EasingStyle.Quint), {ImageTransparency = 0.9}):Play()
-	end)()
-	tweenService:Create(smartBar.Time, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
-    tweenService:Create(smartBar.Time.AMPM, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {TextTransparency = 0}):Play()
-	tweenService:Create(smartBar.UIStroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {Transparency = 0.85}):Play()
-	tweenService:Create(toggle, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {ImageTransparency = 0}):Play()
+	tweenService:Create(smartBar.Shadow, TweenInfo.new(1.2, Enum.EasingStyle.Quint), { ImageTransparency = 0.9 }):Play()
+	tweenService:Create(smartBar.Back.Time, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
+	tweenService:Create(smartBar.Back.Time.AMPM, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
+	tweenService:Create(smartBar.UIStroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Transparency = 0.85 }):Play()
 
-	for _, button in ipairs(smartBar.Buttons:GetChildren()) do
-		tweenService:Create(button.UIStroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Transparency = 0 }):Play()
-		tweenService:Create(button, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 36, 0, 36) }):Play()
-		tweenService:Create(button.UIGradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play()
-		tweenService:Create(button.UIStroke.UIGradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play()
-		tweenService:Create(button, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), { Position = UDim2.new(button.Position.X.Scale, 0, 0.5, 0) }):Play()
-		tweenService:Create(button, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-		tweenService:Create(button.Icon, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
-		task.wait(0.03)
+	for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
+		if button:IsA("GuiObject") and button.Name ~= "Placeholder" then
+			local gradient = button:FindFirstChildOfClass("UIGradient")
+			local stroke = button:FindFirstChildOfClass("UIStroke")
+			local strokeGradient = stroke and stroke:FindFirstChildOfClass("UIGradient")
+			local icon = button:FindFirstChild("Icon")
+
+			if stroke then tweenService:Create(stroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Transparency = 0 }):Play() end
+			tweenService:Create(button, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {
+				Size = UDim2.fromOffset(34, 34),
+				BackgroundTransparency = 0,
+			}):Play()
+			if gradient then tweenService:Create(gradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play() end
+			if strokeGradient then tweenService:Create(strokeGradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play() end
+			if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then
+				tweenService:Create(icon, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
+			end
+			task.wait(0.03)
+		end
 	end
 
-	wait(0.5)
-    tweenService:Create(smartBar.Back, TweenInfo.new(1, Enum.EasingStyle.Quint), {BackgroundTransparency = 0.1}):Play()
-	wait(1.5)
-	tweenService:Create(smartBar.Back.UIStroke, TweenInfo.new(1, Enum.EasingStyle.Quint), {Transparency = 0.8}):Play()
-	end
+	tweenService:Create(smartBar.Back, TweenInfo.new(1, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.1 }):Play()
+	tweenService:Create(smartBar.Back.UIStroke, TweenInfo.new(1, Enum.EasingStyle.Quint), { Transparency = 0.8 }):Play()
+	altairValues.smartBarLayout:syncContents(true)
+	altairValues.smartBarLayout:syncToasts()
+end
 
 local function closeSmartBar()
 	smartBarOpen = false
 	updateBackpackLayout()
 
 	for _, otherPanel in ipairs(UI:GetChildren()) do
-		if smartBar.Buttons:FindFirstChild(otherPanel.Name) then
-			if isPanel(otherPanel.Name) and otherPanel.Visible then
-				task.spawn(closePanel, otherPanel.Name, true)
-				task.wait()
+		if smartBar.Back.Buttons:FindFirstChild(otherPanel.Name) and isPanel(otherPanel.Name) and otherPanel.Visible then
+			task.spawn(closePanel, otherPanel.Name, true)
+			task.wait()
+		end
+	end
+
+	tweenService:Create(smartBar.Back.Time, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
+	tweenService:Create(smartBar.Back.Time.AMPM, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
+
+	for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
+		if button:IsA("GuiObject") and button.Name ~= "Placeholder" then
+			local stroke = button:FindFirstChildOfClass("UIStroke")
+			local icon = button:FindFirstChild("Icon")
+			if stroke then tweenService:Create(stroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play() end
+			tweenService:Create(button, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {
+				Size = UDim2.fromOffset(30, 30),
+				BackgroundTransparency = 1,
+			}):Play()
+			if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then
+				tweenService:Create(icon, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
 			end
 		end
 	end
 
-	tweenService:Create(smartBar.Time, TweenInfo.new(0.4, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-	tweenService:Create(smartBar.Time.AMPM, TweenInfo.new(0.4, Enum.EasingStyle.Quint), {TextTransparency = 1}):Play()
-	for _, Button in ipairs(smartBar.Buttons:GetChildren()) do
-		tweenService:Create(Button.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
-		tweenService:Create(Button, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 30, 0, 30) }):Play()
-		tweenService:Create(Button, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-		tweenService:Create(Button.Icon, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
+	local viewport = camera.ViewportSize
+	local barCenter = smartBar.AbsolutePosition + smartBar.AbsoluteSize * 0.5
+
+	-- When closed, Drag replaces the SmartBar at its last location.
+	drag.Visible = not settingValue("Hide Toggle Button")
+	altairValues.smartBarLayout.closedAtDrag = true
+
+	local yRatio = viewport.Y > 0 and barCenter.Y / viewport.Y or 0.5
+	local closeOffset = yRatio >= 0.72 and 18 or (yRatio <= 0.28 and -18 or 0)
+	local closeInfo = TweenInfo.new(0.34, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut)
+	altairValues.smartBarLayout:tweenDragCenter(barCenter + Vector2.new(0, closeOffset),
+		closeInfo, UDim2.fromOffset(150, 20))
+	local shellGoal = {
+		BackgroundTransparency = 1,
+		Size = UDim2.fromOffset(280, 54),
+	}
+	if closeOffset ~= 0 then
+		shellGoal.Position = smartBar.Position + UDim2.fromOffset(0, closeOffset)
 	end
 
-	tweenService:Create(smartBar.Back.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {Transparency = 1}):Play()
-    tweenService:Create(smartBar.Back, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {BackgroundTransparency = 1}):Play()
-	tweenService:Create(smartBar, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {BackgroundTransparency = 1}):Play()
-	tweenService:Create(smartBar.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {Transparency = 1}):Play()
-	tweenService:Create(smartBar.Shadow, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {ImageTransparency = 1}):Play()
-	tweenService:Create(smartBar, TweenInfo.new(0.5, Enum.EasingStyle.Back), {Size = UDim2.new(0,450,0,60)}):Play()
-	tweenService:Create(smartBar, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {Position = UDim2.new(0.5, 0,2, 73)}):Play()
+	tweenService:Create(smartBar.Back.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
+	tweenService:Create(smartBar.Back, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
+	tweenService:Create(smartBar, closeInfo, shellGoal):Play()
+	tweenService:Create(smartBar.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
+	tweenService:Create(smartBar.Shadow, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
 
-	-- If tools, move the toggle
-	if checkTools() then
-		tweenService:Create(toggle, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), { Position = UDim2.new(0.5, 0, 1, -68) }):Play()
-		tweenService:Create(toggle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Rotation = 180 }):Play()
-	else
-		tweenService:Create(toggle, TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), { Position = UDim2.new(0.5, 0, 1, -5) }):Play()
-		tweenService:Create(toggle, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Rotation = 180 }):Play()
-	end
+	task.delay(0.35, function()
+		if not smartBarOpen and smartBar.Parent then
+			smartBar.Visible = false
+			smartBar.Size = UDim2.fromOffset(300, 60)
+			altairValues.smartBarLayout:restoreSmartBarAtDrag()
+			altairValues.smartBarLayout:syncToasts()
+		end
+	end)
 end
 
 local function windowFocusChanged(value)
@@ -6615,7 +7183,6 @@ local function sortPlayers()
 		frame.LayoutOrder = index
 	end
 end
-
 
 local function restoreCamera()
 	spectating = nil
@@ -6867,6 +7434,7 @@ function altairValues.playerlistUI:init()
 		if child:IsA("GuiObject") and child:GetAttribute("AltairRuntimePlayer") ~= true then
 			if child.Name == "Placeholder" then
 				child.Visible = true
+				child.BackgroundTransparency = 1
 			elseif child ~= self.template then
 				child.Visible = false
 			end
@@ -6927,7 +7495,6 @@ function altairValues.playerlistUI:init()
 	) then
 		self.subtitleTextTransparency = self.subtitle.TextTransparency
 	end
-
 
 	self.decorations = {}
 
@@ -7380,6 +7947,7 @@ function altairValues.playerlistUI:_setRuntimeRowMode(selected)
 					or UDim2.new(1, -26, 0, 34)
 			elseif row.Name == "Placeholder" then
 				row.Visible = true
+				row.BackgroundTransparency = 1
 			end
 		end
 	end
@@ -7408,7 +7976,6 @@ function altairValues.playerlistUI:select(player)
 
 	self:_populate(player)
 	self:_highlightSelected()
-
 
 	if not firstSelection then
 		return
@@ -7976,8 +8543,6 @@ local function createPlayer(player)
 	end
 	if altairValues.applyPlayerlistBase then altairValues.applyPlayerlistBase(newPlayer) end
 
-
-
 	if playerlistPanel.Visible and newPlayer.Visible then
 		newPlayer.BackgroundTransparency = 1
 
@@ -8134,6 +8699,13 @@ end
 
 local function openSettings()
 	if homeOpen then closeHome() end
+	for _, panelName in ipairs({ "Character", "Scripts", "Playerlist" }) do
+		local panel = UI:FindFirstChild(panelName)
+		if panel and panel.Visible then
+			closePanel(panelName, true)
+			break
+		end
+	end
 	debounce = true
 
 	settingsPanel.BackgroundTransparency = 1
@@ -8294,9 +8866,43 @@ local function assembleSettings()
 
 	saveSettings() -- write back, picking up any settings added since the file was created
 
+	local function licenseLocked(tier)
+		return (tier == "Pro" and not Pro) or (tier == "Essential" and not (Pro or Essential))
+	end
+
+	local function denyLocked(setting)
+		local tier = setting.minimumLicense
+		if not licenseLocked(tier) then return false end
+		queueNotification("This feature is locked", "You must be " .. tier .. " or higher to use " .. setting.name .. ". ", 4483345875)
+		return true
+	end
+
+	local function bindInputResize(item, box)
+		item.InputFrame.Size = UDim2.new(0, box.TextBounds.X + 24, 0, 30)
+		box:GetPropertyChangedSignal("Text"):Connect(function()
+			tweenService:Create(item.InputFrame, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+				Size = UDim2.new(0, box.TextBounds.X + 24, 0, 30),
+			}):Play()
+		end)
+	end
+
+	local function makeValueInput(list, setting, placeholder)
+		local item = settingsPanel.SettingLists.Template.InputTemplate:Clone()
+		local box = item.InputFrame.InputBox
+		item.Name, item.Parent, item.Visible = setting.name, list, true
+		item.Title.Text = setting.name
+		box.PlaceholderText = setting.placeholder or placeholder
+		box.Text, box.TextWrapped = truncateForDisplay(setting.current), false
+		bindInputResize(item, box)
+		box.Focused:Connect(function() box.Text = tostring(setting.current) end)
+		return item, box
+	end
+
 	settingsPanel.Back.MouseButton1Click:Connect(function()
-		tweenService:Create(settingsPanel.Back, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
-		tweenService:Create(settingsPanel.Back, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = UDim2.new(0.002, 0, 0.052, 0) }):Play()
+		tweenService:Create(settingsPanel.Back, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {
+			ImageTransparency = 1,
+			Position = UDim2.new(0.002, 0, 0.052, 0),
+		}):Play()
 		tweenService:Create(settingsPanel.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = UDim2.new(0.045, 0, 0.057, 0) }):Play()
 		tweenService:Create(settingsPanel.UIGradient, TweenInfo.new(1, Enum.EasingStyle.Exponential), { Offset = Vector2.new(0, 1.3) }):Play()
 		settingsPanel.Title.Text = "Settings"
@@ -8354,7 +8960,6 @@ local function assembleSettings()
 				tweenService:Create(settingsPanel.Back, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = UDim2.new(0.041, 0, 0.052, 0) }):Play()
 				tweenService:Create(settingsPanel.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = UDim2.new(0.091, 0, 0.057, 0) }):Play()
 			else
-				-- error
 				closeSettings()
 			end
 		end)
@@ -8377,7 +8982,7 @@ local function assembleSettings()
 			if not setting.hidden then
 				local settingType = setting.settingType
 				local minimumLicense = setting.minimumLicense
-				local object = nil
+				local object
 
 				if settingType == "Boolean" then
 					local newSwitch = settingsPanel.SettingLists.Template.SwitchTemplate:Clone()
@@ -8388,33 +8993,22 @@ local function assembleSettings()
 					newSwitch.Visible = true
 					newSwitch.Title.Text = setting.name
 
-					if setting.current == true then
+					if setting.current then
 						newSwitch.Switch.Indicator.Position = UDim2.new(1, -20, 0.5, 0)
 						newSwitch.Switch.Indicator.UIStroke.Color = Color3.fromRGB(220, 220, 220)
 						newSwitch.Switch.Indicator.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 						newSwitch.Switch.Indicator.BackgroundTransparency = 0.6
 					end
 
-					if minimumLicense then
-						if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-							newSwitch.Switch.Indicator.Position = UDim2.new(1, -40, 0.5, 0)
-							newSwitch.Switch.Indicator.UIStroke.Color = Color3.fromRGB(255, 255, 255)
-							newSwitch.Switch.Indicator.BackgroundColor3 = Color3.fromRGB(235, 235, 235)
-							newSwitch.Switch.Indicator.BackgroundTransparency = 0.75
-						end
+					if licenseLocked(minimumLicense) then
+						newSwitch.Switch.Indicator.Position = UDim2.new(1, -40, 0.5, 0)
+						newSwitch.Switch.Indicator.UIStroke.Color = Color3.fromRGB(255, 255, 255)
+						newSwitch.Switch.Indicator.BackgroundColor3 = Color3.fromRGB(235, 235, 235)
+						newSwitch.Switch.Indicator.BackgroundTransparency = 0.75
 					end
 
 					newSwitch.Interact.MouseButton1Click:Connect(function()
-						if minimumLicense then
-							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification(
-									"This feature is locked",
-									"You must be " .. minimumLicense .. " or higher to use " .. setting.name .. ". ",
-									4483345875
-								)
-								return
-							end
-						end
+						if denyLocked(setting) then return end
 
 						local previousValue = setting.current
 						setting.current = not setting.current
@@ -8422,148 +9016,70 @@ local function assembleSettings()
 						if type(setting.onChanged) == "function" then
 							task.spawn(setting.onChanged, setting.current, previousValue)
 						end
-						if setting.current == true then
-							Toast(setting.name.." has been enabled.")
-							tweenService:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.5, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Position = UDim2.new(1, -20, 0.5, 0) }):Play()
-							tweenService:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Size = UDim2.new(0, 12, 0, 12) }):Play()
-							tweenService
-								:Create(newSwitch.Switch.Indicator.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Color = Color3.fromRGB(200, 200, 200) })
-								:Play()
-							tweenService
-								:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.8, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { BackgroundColor3 = Color3.fromRGB(255, 255, 255) })
-								:Play()
-							tweenService:Create(newSwitch.Switch.Indicator.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Transparency = 0.5 }):Play()
-							tweenService:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { BackgroundTransparency = 0.6 }):Play()
-							task.wait(0.05)
-							tweenService:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Size = UDim2.new(0, 17, 0, 17) }):Play()
-						else
-							Toast(setting.name.." has been disabled.")
-							tweenService:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Position = UDim2.new(1, -40, 0.5, 0) }):Play()
-							tweenService:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Size = UDim2.new(0, 12, 0, 12) }):Play()
-							tweenService
-								:Create(newSwitch.Switch.Indicator.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Color = Color3.fromRGB(255, 255, 255) })
-								:Play()
-							tweenService:Create(newSwitch.Switch.Indicator.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Transparency = 0.7 }):Play()
-							tweenService
-								:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.8, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { BackgroundColor3 = Color3.fromRGB(235, 235, 235) })
-								:Play()
-							tweenService:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { BackgroundTransparency = 0.75 }):Play()
-							task.wait(0.05)
-							tweenService:Create(newSwitch.Switch.Indicator, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), { Size = UDim2.new(0, 17, 0, 17) }):Play()
-						end
+
+						local enabled = setting.current
+						local indicator = newSwitch.Switch.Indicator
+						Toast(setting.name .. (enabled and " has been enabled." or " has been disabled."))
+						tweenService:Create(indicator, TweenInfo.new(enabled and 0.5 or 0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+							Position = UDim2.new(1, enabled and -20 or -40, 0.5, 0),
+						}):Play()
+						tweenService:Create(indicator, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+							Size = UDim2.new(0, 12, 0, 12),
+						}):Play()
+						tweenService:Create(indicator.UIStroke, TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+							Color = enabled and Color3.fromRGB(200, 200, 200) or Color3.fromRGB(255, 255, 255),
+							Transparency = enabled and 0.5 or 0.7,
+						}):Play()
+						tweenService:Create(indicator, TweenInfo.new(0.8, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+							BackgroundColor3 = enabled and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(235, 235, 235),
+						}):Play()
+						tweenService:Create(indicator, TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+							BackgroundTransparency = enabled and 0.6 or 0.75,
+						}):Play()
+						task.wait(0.05)
+						tweenService:Create(indicator, TweenInfo.new(enabled and 0.45 or 0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+							Size = UDim2.new(0, 17, 0, 17),
+						}):Play()
 					end)
 				elseif settingType == "Input" then
-					local newInput = settingsPanel.SettingLists.Template.InputTemplate:Clone()
+					local newInput, box = makeValueInput(newList, setting, "input")
 					object = newInput
 
-					newInput.Name = setting.name
-					newInput.InputFrame.InputBox.PlaceholderText = setting.placeholder or "input"
-					newInput.Parent = newList
-
-					newInput.InputFrame.InputBox.Text = truncateForDisplay(setting.current)
-
-					newInput.Visible = true
-					newInput.Title.Text = setting.name
-					newInput.InputFrame.InputBox.TextWrapped = false
-					newInput.InputFrame.Size = UDim2.new(0, newInput.InputFrame.InputBox.TextBounds.X + 24, 0, 30)
-
-					newInput.InputFrame.InputBox.Focused:Connect(function()
-						newInput.InputFrame.InputBox.Text = tostring(setting.current)
-					end)
-
-					newInput.InputFrame.InputBox.FocusLost:Connect(function()
-						if minimumLicense then
-							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification(
-									"This feature is locked",
-									"You must be " .. minimumLicense .. " or higher to use " .. setting.name .. ". ",
-									4483345875
-								)
-								newInput.InputFrame.InputBox.Text = truncateForDisplay(setting.current)
-								return
-							end
+					box.FocusLost:Connect(function()
+						if denyLocked(setting) then
+							box.Text = truncateForDisplay(setting.current)
+							return
 						end
-
-						local entered = newInput.InputFrame.InputBox.Text
-						if entered ~= nil and entered ~= "" then
-							setting.current = entered
+						if box.Text ~= "" then
+							setting.current = box.Text
 							saveSettings()
 						end
-
-
-						newInput.InputFrame.InputBox.Text = truncateForDisplay(setting.current)
-					end)
-
-					newInput.InputFrame.InputBox:GetPropertyChangedSignal("Text"):Connect(function()
-						tweenService
-							:Create(
-								newInput.InputFrame,
-								TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-								{ Size = UDim2.new(0, newInput.InputFrame.InputBox.TextBounds.X + 24, 0, 30) }
-							)
-							:Play()
+						box.Text = truncateForDisplay(setting.current)
 					end)
 				elseif settingType == "Number" then
-					local newInput = settingsPanel.SettingLists.Template.InputTemplate:Clone()
+					local newInput, box = makeValueInput(newList, setting, "number")
 					object = newInput
 
-					newInput.Name = setting.name
-					newInput.InputFrame.InputBox.PlaceholderText = setting.placeholder or "number"
-					newInput.Parent = newList
-
-					newInput.InputFrame.InputBox.Text = truncateForDisplay(setting.current)
-
-					newInput.Visible = true
-					newInput.Title.Text = setting.name
-					newInput.InputFrame.InputBox.TextWrapped = false
-					newInput.InputFrame.Size = UDim2.new(0, newInput.InputFrame.InputBox.TextBounds.X + 24, 0, 30)
-
-					newInput.InputFrame.InputBox.Focused:Connect(function()
-						newInput.InputFrame.InputBox.Text = tostring(setting.current)
-					end)
-
-					newInput.InputFrame.InputBox.FocusLost:Connect(function()
-						if minimumLicense then
-							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification(
-									"This feature is locked",
-									"You must be " .. minimumLicense .. " or higher to use " .. setting.name .. ". ",
-									4483345875
-								)
-								newInput.InputFrame.InputBox.Text = truncateForDisplay(setting.current)
-								return
-							end
+					box.FocusLost:Connect(function()
+						if denyLocked(setting) then
+							box.Text = truncateForDisplay(setting.current)
+							return
 						end
 
-						local inputValue = tonumber(newInput.InputFrame.InputBox.Text)
-
+						local inputValue = tonumber(box.Text)
 						if inputValue then
 							local oldValue = setting.current
-							local nextValue = setting.values
-								and math.clamp(inputValue, setting.values[1], setting.values[2])
-								or inputValue
-
+							local nextValue = setting.values and math.clamp(inputValue, setting.values[1], setting.values[2]) or inputValue
 							if nextValue ~= oldValue then
 								setting.current = nextValue
 								saveSettings()
 								if type(setting.onChanged) == "function" then
-									task.spawn(setting.onChanged, setting.current, oldValue)
+									task.spawn(setting.onChanged, nextValue, oldValue)
 								end
-								Toast(setting.name .. " set to " .. tostring(setting.current), category.color)
+								Toast(setting.name .. " set to " .. tostring(nextValue), category.color)
 							end
 						end
-
-						newInput.InputFrame.InputBox.Text = truncateForDisplay(setting.current)
-					end)
-
-					newInput.InputFrame.InputBox:GetPropertyChangedSignal("Text"):Connect(function()
-						tweenService
-							:Create(
-								newInput.InputFrame,
-								TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-								{ Size = UDim2.new(0, newInput.InputFrame.InputBox.TextBounds.X + 24, 0, 30) }
-							)
-							:Play()
+						box.Text = truncateForDisplay(setting.current)
 					end)
 				elseif settingType == "Key" then
 					local newKeybind = settingsPanel.SettingLists.Template.InputTemplate:Clone()
@@ -8576,7 +9092,7 @@ local function assembleSettings()
 					newKeybind.Visible = true
 					newKeybind.Title.Text = setting.name
 					newKeybind.InputFrame.InputBox.TextWrapped = false
-					newKeybind.InputFrame.Size = UDim2.new(0, newKeybind.InputFrame.InputBox.TextBounds.X + 24, 0, 30)
+					bindInputResize(newKeybind, newKeybind.InputFrame.InputBox)
 
 					newKeybind.InputFrame.InputBox.FocusLost:Connect(function()
 						local capture = checkingForKey
@@ -8585,16 +9101,9 @@ local function assembleSettings()
 							checkingForKey = nil
 						end
 
-						if minimumLicense then
-							if (minimumLicense == "Pro" and not Pro) or (minimumLicense == "Essential" and not (Pro or Essential)) then
-								queueNotification(
-									"This feature is locked",
-									"You must be " .. minimumLicense .. " or higher to use " .. setting.name .. ". ",
-									4483345875
-								)
-								newKeybind.InputFrame.InputBox.Text = setting.current or "No Keybind"
-								return
-							end
+						if denyLocked(setting) then
+							newKeybind.InputFrame.InputBox.Text = setting.current or "No Keybind"
+							return
 						end
 
 						if newKeybind.InputFrame.InputBox.Text == nil or newKeybind.InputFrame.InputBox.Text == "" then
@@ -8608,22 +9117,12 @@ local function assembleSettings()
 						newKeybind.InputFrame.InputBox.Text = ""
 					end)
 
-					newKeybind.InputFrame.InputBox:GetPropertyChangedSignal("Text"):Connect(function()
-						tweenService
-							:Create(
-								newKeybind.InputFrame,
-								TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-								{ Size = UDim2.new(0, newKeybind.InputFrame.InputBox.TextBounds.X + 24, 0, 30) }
-							)
-							:Play()
-					end)
 				end
 
 				if object then
 					if setting.description then
 						object.Description.Visible = true
 						object.Description.TextWrapped = true
-						object.Description.Size = UDim2.new(0, 333, 5, 0)
 						object.Description.Size = UDim2.new(0, 333, 0, 999)
 						object.Description.Text = setting.description
 						object.Description.Size = UDim2.new(0, 333, 0, object.Description.TextBounds.Y + 10)
@@ -8711,10 +9210,6 @@ local function initialiseAntiKick()
 	end
 end
 
-
-
---------------------------------------------------------------------------------
---------------------------------------------------------------------------------
 local developerTools = (function()
 	local candidates = {
 		altairValues.altairFolder .. "/Developer/AltairDevTools.lua",
@@ -8933,8 +9428,6 @@ altairAPI.OpenSmartBar = openSmartBar
 altairAPI.CloseSmartBar = closeSmartBar
 altairAPI.OpenPanel = openPanel
 altairAPI.ClosePanel = closePanel
-altairAPI.OpenMusic = openMusic
-altairAPI.CloseMusic = closeMusic
 altairAPI.OpenScriptSearch = openScriptSearch
 altairAPI.SearchScripts = searchScriptBlox
 
@@ -9180,10 +9673,12 @@ local function start()
 	initialiseAntiKick()
 	checkLastVersion()
 
-	smartBar.Time.Text = os.date("%I:%M"):gsub("^0", "")
-    smartBar.Time.AMPM.Text = os.date("%p")
+	smartBar.Back.Time.Text = os.date("%I:%M"):gsub("^0", "")
+    smartBar.Back.Time.AMPM.Text = os.date("%p")
 
-	toggle.Visible = not settingValue("Hide Toggle Button")
+	drag.Visible = not settingValue("Hide Toggle Button")
+
+	altairValues.smartBarLayout:restoreSavedPosition()
 
 	if not settingValue("Load Hidden") then
 		if settingValue("Startup Sound Effect") then
@@ -9226,6 +9721,12 @@ local function start()
 end
 
 -- Altair Events
+
+-- Drag can be clicked to toggle the SmartBar, or dragged to reposition it.
+altairValues.smartBarLayout:bind(function()
+	if smartBarOpen then closeSmartBar() else openSmartBar() end
+end)
+
 
 local startSuccess, startError = pcall(start)
 if not startSuccess then
@@ -9271,14 +9772,6 @@ do
 	end
 end
 
-toggle.MouseButton1Click:Connect(function()
-	if smartBarOpen then
-		closeSmartBar()
-	else
-		openSmartBar()
-	end
-end)
-
 characterPanel.Interactions.Reset.MouseButton1Click:Connect(function()
 	resetSliders()
 
@@ -9299,7 +9792,6 @@ characterPanel.Interactions.Reset.MouseLeave:Connect(function()
 	end
 	tweenService:Create(characterPanel.Interactions.Reset, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0.7 }):Play()
 end)
-
 
 playerSearch:GetPropertyChangedSignal("Text"):Connect(function()
 	local query = string.lower(playerSearch.Text)
@@ -9367,38 +9859,6 @@ characterPanel.Interactions.Rejoin.MouseLeave:Connect(function()
 	tweenService:Create(characterPanel.Interactions.Rejoin.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0.5 }):Play()
 end)
 
-musicPanel.Add.Interact.MouseButton1Click:Connect(function()
-	musicPanel.AddBox.Input:ReleaseFocus()
-	addToQueue(musicPanel.AddBox.Input.Text)
-end)
-
-musicPanel.Menu.TogglePlaying.MouseButton1Click:Connect(function()
-	if currentAudio then
-		currentAudio.Playing = not currentAudio.Playing
-		musicPanel.Menu.TogglePlaying.ImageRectOffset = currentAudio.Playing and Vector2.new(804, 124) or Vector2.new(764, 244)
-	end
-end)
-
-musicPanel.Menu.Next.MouseButton1Click:Connect(function()
-	if currentAudio then
-		if #musicQueue == 0 then
-			currentAudio.Playing = false
-			currentAudio.SoundId = ""
-			return
-		end
-
-		if musicPanel.Queue.List:FindFirstChild(tostring(musicQueue[1].instanceName)) then
-			musicPanel.Queue.List:FindFirstChild(tostring(musicQueue[1].instanceName)):Destroy()
-		end
-
-		musicPanel.Menu.TogglePlaying.ImageRectOffset = currentAudio.Playing and Vector2.new(804, 124) or Vector2.new(764, 244)
-
-		table.remove(musicQueue, 1)
-
-		playNext()
-	end
-end)
-
 characterPanel.Interactions.Rejoin.Interact.MouseButton1Click:Connect(rejoin)
 characterPanel.Interactions.Serverhop.Interact.MouseButton1Click:Connect(serverhop)
 
@@ -9445,18 +9905,7 @@ for _, button in ipairs(scriptsPanel.Interactions.Selection:GetChildren()) do
 	end)
 end
 
-smartBar.Buttons.Music.Interact.MouseButton1Click:Connect(function()
-	if debounce then
-		return
-	end
-	if musicPanel.Visible then
-		closeMusic()
-	else
-		openMusic()
-	end
-end)
-
-smartBar.Buttons.Home.Interact.MouseButton1Click:Connect(function()
+smartBar.Back.Buttons.Home.Interact.MouseButton1Click:Connect(function()
 	if debounce then
 		return
 	end
@@ -9467,10 +9916,7 @@ smartBar.Buttons.Home.Interact.MouseButton1Click:Connect(function()
 	end
 end)
 
-smartBar.Buttons.Settings.Interact.MouseButton1Click:Connect(function()
-	if debounce then
-		return
-	end
+smartBar.Back.Buttons.Settings.Interact.MouseButton1Click:Connect(function()
 	if settingsPanel.Visible then
 		closeSettings()
 	else
@@ -9478,13 +9924,13 @@ smartBar.Buttons.Settings.Interact.MouseButton1Click:Connect(function()
 	end
 end)
 
-for _, button in ipairs(smartBar.Buttons:GetChildren()) do
- if button.Name~="Home" and button:FindFirstChild("Interact") then
+for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
+ if button:IsA("GuiObject") and button.Name ~= "Placeholder" and button.Name~="Home" and button:FindFirstChild("Interact") then
   track(button.Interact.MouseButton1Click:Connect(function()
    if homeOpen then closeHome() end
   end))
  end
-	if UI:FindFirstChild(button.Name) and button:FindFirstChild("Interact") then
+	if button:IsA("GuiObject") and button.Name ~= "Placeholder" and UI:FindFirstChild(button.Name) and button:FindFirstChild("Interact") then
 		button.Interact.MouseButton1Click:Connect(function()
 			if isPanel(button.Name) then
 				if not debounce and UI:FindFirstChild(button.Name).Visible then
@@ -9498,7 +9944,7 @@ for _, button in ipairs(smartBar.Buttons:GetChildren()) do
 			tweenService:Create(button, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.6 }):Play()
 			tweenService:Create(button.Icon, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { ImageTransparency = 0.6 }):Play()
 			task.wait(0.15)
-			tweenService:Create(button, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 36, 0, 36) }):Play()
+			tweenService:Create(button, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { Size = UDim2.fromOffset(34, 34) }):Play()
 			tweenService:Create(button, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
 			tweenService:Create(button.Icon, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { ImageTransparency = 0.02 }):Play()
 		end)
@@ -9555,8 +10001,8 @@ track(userInputService.InputBegan:Connect(function(input, processed)
 		return
 	end
 
-	local inputType = input.UserInputType.Name
-	if inputType ~= "Keyboard" and string.find(inputType, "Gamepad", 1, true) ~= 1 then
+	local inputTypeName = input.UserInputType.Name
+	if inputTypeName ~= "Keyboard" and string.find(inputTypeName, "Gamepad", 1, true) ~= 1 then
 		return
 	end
 
@@ -9615,6 +10061,7 @@ track(userInputService.InputEnded:Connect(function(input)
 		return
 	end
 
+	-- Touch releases end a drag too; MouseButton1 alone left sliders stuck active on mobile
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 		for _, slider in pairs(altairValues.sliders) do
 			slider.active = false
@@ -9903,7 +10350,7 @@ local function runtime()
 	local function registerDescendant(instance)
 		if instance:IsA("Sound") then
 			registerSound(instance)
-		elseif instance:IsA("TextLabel") or instance:IsA("TextButton") then
+		elseif instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
 			registerText(instance)
 		end
 	end
@@ -10120,6 +10567,7 @@ local function runtime()
 	end))
 
 	-- Anonymous Client throttle/transition state
+	altairValues.anonymousMaskedText = altairValues.anonymousMaskedText or {}
 	local anonymousAccumulator = 0
 	local spatialAccumulator = 0
 	local anonymousWasEnabled = false
@@ -10175,13 +10623,23 @@ local function runtime()
 					local text = cachedText[i]
 					if not text or not text.Parent then
 						trackedText[text] = nil
+						altairValues.anonymousMaskedText[text] = nil
+						originalTextValues[text] = nil
 						table.remove(cachedText, i)
-					elseif originalTextValues[text] == nil then
+					else
 						local raw = text.Text
-						local lowerText = string.lower(raw)
-						if string.find(lowerText, lowerName, 1, true) or string.find(lowerText, lowerDisplayName, 1, true) then
-							storeOriginalText(text)
-							text.Text = replacePlain(replacePlain(raw, lowerName, randomUsername), lowerDisplayName, randomUsername)
+						local lastMasked = altairValues.anonymousMaskedText[text]
+						if raw ~= lastMasked then
+							local lowerText = string.lower(raw)
+							if string.find(lowerText, lowerName, 1, true) or string.find(lowerText, lowerDisplayName, 1, true) then
+								originalTextValues[text] = raw
+								local masked = replacePlain(replacePlain(raw, lowerName, randomUsername), lowerDisplayName, randomUsername)
+								altairValues.anonymousMaskedText[text] = masked
+								text.Text = masked
+							else
+								originalTextValues[text] = nil
+								altairValues.anonymousMaskedText[text] = nil
+							end
 						end
 					end
 				end
@@ -10216,6 +10674,8 @@ local function runtime()
 			descendantRemovingConn = game.DescendantRemoving:Connect(function(instance)
 				trackedSounds[instance] = nil
 				trackedText[instance] = nil
+				altairValues.anonymousMaskedText[instance] = nil
+				originalTextValues[instance] = nil
 			end)
 		elseif not wanted and descendantRemovingConn then
 			descendantRemovingConn:Disconnect()
@@ -10239,8 +10699,8 @@ local function runtime()
 		end
 
 		local tickSuccess, tickError = pcall(function()
-			smartBar.Time.Text = os.date("%I:%M"):gsub("^0", "")
-			smartBar.Time.AMPM.Text = os.date("%p")
+			smartBar.Back.Time.Text = os.date("%I:%M"):gsub("^0", "")
+			smartBar.Back.Time.AMPM.Text = os.date("%p")
 			UpdateHome()
 
 			local anonymousNow, spatialNow = anonymousWanted(), spatialShieldWanted()
@@ -10266,9 +10726,9 @@ local function runtime()
 				end
 			end
 
-			local toggleVisible = not settingValue("Hide Toggle Button")
-			if toggle.Visible ~= toggleVisible then
-				toggle.Visible = toggleVisible
+			local dragVisible = not settingValue("Hide Toggle Button")
+			if drag.Visible ~= dragVisible then
+				drag.Visible = dragVisible
 			end
 
 			local promptGui = coreGui:FindFirstChild("RobloxPromptGui")
@@ -10399,7 +10859,7 @@ local function runtime()
 	end
 end
 
-do
+(function()
 	if developerTools:IsAvailable() and type(isfile) == "function" and type(readfile) == "function" then
 		local okExists, exists = pcall(isfile, settingsPath())
 		if okExists and exists then
@@ -10411,7 +10871,7 @@ do
 			end
 		end
 	end
-end
+end)()
 
 BlinkSmartBar(2)
 task.wait(2)
