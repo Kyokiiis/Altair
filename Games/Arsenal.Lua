@@ -155,7 +155,7 @@ local CONFIG = {
 	aimAir     = "Always", -- Always | Only grounded | Only airborne
 
 	aimFov     = 120,
-	aimSmooth  = 15,      -- CFrame:Lerp alpha as a percentage; 15 = source's 0.15
+	aimSmooth  = 15, -- Higher = slower; 15 preserves the original default speed.
 
 	aimKillMs  = 250,
 	aimCircle  = true,
@@ -1223,7 +1223,7 @@ end
 -- RecoilControl, ReloadTime and Speed%.
 --
 -- "Is this thing a gun" comes from CONTENT: a Weapons folder entry with an Ammo
--- above one and a FireRate shoots. The 173 entries in ReplicatedStorage.Melees
+-- above zero and a positive FireRate shoots, including one-round guns. The 173 entries in ReplicatedStorage.Melees
 -- have a `Type` of Knife and no Ammo at all, so they answer no without a single
 -- name being matched.
 
@@ -1238,6 +1238,12 @@ local function weaponInfo()
 	local cached = weaponCache[name]
 	if cached ~= nil then return cached or nil, name end
 
+	if not WeaponsFolder or not WeaponsFolder.Parent then
+		WeaponsFolder = ReplicatedStorage:FindFirstChild("Weapons")
+	end
+	if not MeleesFolder or not MeleesFolder.Parent then
+		MeleesFolder = ReplicatedStorage:FindFirstChild("Melees")
+	end
 	local folder = WeaponsFolder and WeaponsFolder:FindFirstChild(name)
 	if not folder then
 		if MeleesFolder and MeleesFolder:FindFirstChild(name) then
@@ -1248,7 +1254,7 @@ local function weaponInfo()
 			weaponCache[name] = melee
 			return melee, name
 		end
-		weaponCache[name] = false
+		-- Retry unknown entries next time; weapon data can arrive after the level.
 		return nil, name
 	end
 
@@ -1273,8 +1279,11 @@ local function weaponInfo()
 		auto    = autoValue ~= nil and autoValue.Value == true,
 		melee   = false,
 	}
-	info.gun = info.ammo > 1 and info.rate > 0
-	weaponCache[name] = info
+	info.gun = info.ammo > 0 and info.rate > 0
+	-- Do not permanently cache a partially replicated firearm stat block.
+	if folder:FindFirstChild("Ammo") and folder:FindFirstChild("FireRate") then
+		weaponCache[name] = info
+	end
 	return info, name
 end
 
@@ -1314,24 +1323,46 @@ local function clearRandomPart()
 	randomPartFor, randomPartMode = nil, nil
 end
 
+-- Read the same state Gen2 uses for its hide/show and minimise controls.
+-- A separate keyboard-only flag misses header buttons and ignored animation clicks.
+STATE.menuWindow = nil
+STATE.menuPauseGeneration = 0
+function STATE.menuIsOpen()
+	local open = STATE.menuWindow ~= nil and not STATE.menuWindow.unloaded
+		and not STATE.menuWindow.hidden and not STATE.menuWindow.minimised
+	if open ~= STATE.panelOpen then
+		STATE.panelOpen = open
+		STATE.menuPauseGeneration = STATE.menuPauseGeneration + 1
+	end
+	return open
+end
+
+function STATE.triggerCanRun()
+	local open = STATE.menuIsOpen()
+	return ENV.__ARSENAL == GEN and CONFIG.trig
+		and not (CONFIG.aimPauseUI and open)
+end
+
 local function aimActive()
 	if not CONFIG.aim then return false end
-	if CONFIG.aimPauseUI and STATE.panelOpen then return false end
+	if CONFIG.aimPauseUI and STATE.menuIsOpen() then return false end
 	return true
 end
 
 local function aimNumbers(dt)
 	aimFovNow = CONFIG.aimFov
-	local base = math.clamp(CONFIG.aimSmooth / 100, 0.01, 1)
+	-- Inverse response: higher smoothness makes each step smaller.
+	-- Preserve the default 15 setting's original 0.15 movement fraction.
+	local base = 2.25 / math.clamp(CONFIG.aimSmooth, 5, 100)
 
 	if CONFIG.aimMethod == "Improved" and dt then
-		local frameScale = math.clamp(dt * 60, 0.5, 1.5)
+		local frameScale = math.clamp(dt * 60, 0, 1.5)
 		local compensated = 1 - ((1 - base) ^ frameScale)
 
 		-- The first version of this method could feel like a snap on slow frames.
 		-- Keep the consistency benefit, but never let one frame become more than
 		-- 25% stronger than the user's configured base strength.
-		return CONFIG.aimFov, math.clamp(compensated, 0.01, math.min(1, base * 1.25))
+		return CONFIG.aimFov, math.clamp(compensated, 0, math.min(1, base * 1.25))
 	end
 
 	return CONFIG.aimFov, base
@@ -1738,38 +1769,47 @@ STATE.clickHow = type(click) == "function" and "mouse1click"
 	or (VIM and "VirtualInputManager")
 	or "none"
 
+function STATE.waitForTriggerHold(seconds)
+	local deadline = os.clock() + seconds
+	repeat
+		if not STATE.triggerCanRun() then return end
+		task.wait()
+	until os.clock() >= deadline
+end
+
 local function pullTrigger()
+	if not STATE.triggerCanRun() then return false end
 	local hold = CONFIG.trigMode == "Hold"
 	local fired = false
 
 	-- Hold mode prefers a real press/release pair.
 	if hold and type(press) == "function" and type(release) == "function" then
 		if tryInput(press) then
-			task.wait(CONFIG.trigHoldMs / 1000)
+			STATE.waitForTriggerHold(CONFIG.trigHoldMs / 1000)
 			fired = tryInput(release)
 			if fired then STATE.clickHow = "mouse1press" end
 		end
 	end
 
 	-- Click mode uses Volt's mouse1click first.
-	if not fired and not hold and type(click) == "function" then
+	if not fired and STATE.triggerCanRun() and not hold and type(click) == "function" then
 		fired = tryInput(click)
 		if fired then STATE.clickHow = "mouse1click" end
 	end
 
 	-- If mouse1click exists but fails at runtime, fall back instead of killing
 	-- this trigger pass.
-	if not fired and type(press) == "function" and type(release) == "function" then
+	if not fired and STATE.triggerCanRun() and type(press) == "function" and type(release) == "function" then
 		if tryInput(press) then
-			task.wait(hold and (CONFIG.trigHoldMs / 1000) or 0.02)
+			STATE.waitForTriggerHold(hold and (CONFIG.trigHoldMs / 1000) or 0.02)
 			fired = tryInput(release)
 			if fired then STATE.clickHow = "mouse1press" end
 		end
 	end
 
-	if not fired and VIM then
+	if not fired and STATE.triggerCanRun() and VIM then
 		if vimButton(true) then
-			task.wait(hold and (CONFIG.trigHoldMs / 1000) or 0.02)
+			STATE.waitForTriggerHold(hold and (CONFIG.trigHoldMs / 1000) or 0.02)
 			fired = vimButton(false)
 			if fired then STATE.clickHow = "VirtualInputManager" end
 		end
@@ -1850,9 +1890,7 @@ end
 local trigShots = 0
 
 local function trigActive()
-	if not CONFIG.trig then return false end
-	if CONFIG.aimPauseUI and STATE.panelOpen then return false end
-	return true
+	return STATE.triggerCanRun()
 end
 
 task.spawn(function()
@@ -1882,6 +1920,7 @@ task.spawn(function()
 				return
 			end
 
+			local pauseGeneration = STATE.menuPauseGeneration
 			local lo = math.min(CONFIG.trigDelayMin, CONFIG.trigDelayMax)
 			local hi = math.max(CONFIG.trigDelayMin, CONFIG.trigDelayMax)
 			if hi > 0 then
@@ -1890,6 +1929,8 @@ task.spawn(function()
 
 			-- Re-check after reaction delay so a target that left the crosshair
 			-- does not receive a stale synthetic click.
+			if not trigActive() or not triggerGunGate() then return end
+			if CONFIG.aimPauseUI and pauseGeneration ~= STATE.menuPauseGeneration then return end
 			if not underCrosshair() then return end
 
 			if pullTrigger() then
@@ -2041,6 +2082,7 @@ RunService:BindToRenderStep("SeluxArsenalAim", Enum.RenderPriority.Camera.Value 
 			return
 		end
 		local ok, err = pcall(function()
+			STATE.menuIsOpen()
 			shotClock()
 			aimPass(dt)
 			rcsPass(dt)
@@ -2138,6 +2180,93 @@ local function enumFromKey(name)
 	return name
 end
 
+UI.featureNotes = {
+	ESP = {
+		["Box"] = "Draws a box around each player, following their position and pose.",
+		["Filled box"] = "Adds a translucent fill inside the player box.",
+		["Name"] = "Shows the player name above their box.",
+		["Health bar"] = "Shows remaining health beside the box; green is healthy and red is low.",
+		["Health number"] = "Shows remaining health as a number.",
+		["Level"] = "Shows the current weapon-ladder level, not the account level.",
+		["Weapon"] = "Shows the weapon assigned to the player's current ladder level.",
+		["Distance"] = "Shows how far the player is from your camera.",
+		["Kills / streak"] = "Shows the player's kill and streak counters.",
+		["Head dot"] = "Marks the head hitbox position.",
+		["Skeleton"] = "Draws lines between the player's body joints.",
+		["Tracer"] = "Draws a line from the bottom centre of your screen to each player.",
+		["Off screen arrows"] = "Points toward enemies outside the visible screen, including behind you.",
+		["Targets"] = "Auto follows the game mode. Everyone treats all players as enemies. Team check excludes your team.",
+		["Wall check"] = "Dims players behind walls to 55% brightness; it does not hide them.",
+		["Draw team mates"] = "Also draws ESP for teammates when team checks are active.",
+		["Mark the leader"] = "Adds a star to the player with the highest weapon-ladder level.",
+		["Max distance"] = "Maximum ESP range in studs. Higher values show more distant players.",
+		["Text size"] = "Text height in pixels. Higher values make labels larger.",
+		["Font"] = "Chooses the font used for ESP labels.",
+		["Text outline"] = "Adds an outline to make labels easier to read against the scene.",
+		["Shrink with distance"] = "Makes distant players' labels smaller.",
+		["FOV circle"] = "Chooses the colour of the aim FOV circle.",
+		["Chams"] = "Highlights player bodies using the selected style and colour.",
+		["Style"] = "Fill/Solid colour the body; Outline shows edges; Glow/Ghost alter intensity. Wall styles are hidden behind walls.",
+		["Rainbow"] = "Cycles highlight colours; overrides health and custom colours.",
+		["Colour by health"] = "Colours highlights green to red as health falls. Rainbow takes priority.",
+		["Own cham colour"] = "Uses your chosen colour when Rainbow and Colour by health are off.",
+		["Cham colour"] = "Colour used when Own cham colour is enabled.",
+	},
+	AIM = {
+		["Aim enabled"] = "Moves your camera toward an eligible enemy automatically while enabled.",
+		["Pause aim + triggerbot while Arsenal is open"] = "Pauses both while this menu is expanded; hiding or minimising it resumes enabled features.",
+		["Pick target by"] = "Crosshair: nearest to screen centre. Closest: shortest distance. Lowest HP/level: lowest health/weapon level among eligible enemies.",
+		["Sticky target"] = "Keeps the current enemy until they die, leave the allowed range, or fail your target checks.",
+		["Visible only"] = "Requires a clear line of sight to the selected body part.",
+		["Firearms only"] = "Runs aim only with a recognised firearm, including single-shot guns. Pauses with melee weapons.",
+		["Ground condition"] = "Always works in either state. Only grounded/airborne checks whether YOUR character is on the ground.",
+		["Max distance"] = "Maximum target distance in studs. Higher values allow farther enemies.",
+		["Distance-based headshots"] = "Overrides body selection: torso within 5m, head from 5m to the selected range, then random/manual selection.",
+		["Guaranteed headshot range (m)"] = "Upper distance for aiming at the head. Within 5m uses torso; beyond this range uses random/manual selection. Hits are not guaranteed.",
+		["Randomize head / torso"] = "Chooses head or torso once per acquired target, unless distance-based targeting overrides it.",
+		["Headshot chance %"] = "Chance to choose the head when random targeting is active. Higher means more head selections; the rest use torso.",
+		["Aim at"] = "Manual fallback: Head = head hitbox; Torso = upper body; Hitbox = body hitbox; Nearest = supported body part closest to crosshair.",
+		["Aim method"] = "Classic moves a fixed fraction each frame and acquires within 135% of FOV. Improved adjusts for frame time, acquires inside FOV, and retains sticky targets out to 145% (Classic: 135%). Slow-frame steps are capped.",
+		["Draw FOV"] = "Shows the target-selection circle without changing aim behaviour.",
+		["Circle FOV"] = "Radius in pixels. Higher values allow targets farther from the crosshair. Classic acquires up to 35% beyond the drawn circle.",
+		["Smoothness"] = "Higher = slower, smoother camera movement; lower = faster, sharper aim. 15 keeps the original default speed. 100 is the smoothest.",
+		["Delay after kill (ms)"] = "Wait before selecting another target after the tracked target dies. Higher values wait longer.",
+		["PANIC KEY"] = "Immediately disables aim, triggerbot and recoil control.",
+	},
+	TRIGGER = {
+		["Trigger enabled"] = "Automatically fires at eligible enemies under the crosshair, using your delay and firing settings.",
+		["Fire mode"] = "Click sends a brief click. Hold keeps the fire button down for Hold time, then releases it.",
+		["Hold time (ms)"] = "How long Hold mode keeps fire pressed. Higher values hold longer; automatic guns may fire several shots.",
+		["INSTANT"] = "Sets reaction delay to 0ms, refire lockout to 20ms and firing chance to 100%.",
+		["FAST"] = "Sets reaction delay to 15-45ms, refire lockout to 60ms and firing chance to 100%.",
+		["NATURAL"] = "Sets reaction delay to 40-110ms, refire lockout to 90ms and firing chance to 98%.",
+		["Head only"] = "Fires only when a supported head hitbox is under the crosshair.",
+		["Firearms only"] = "Blocks recognised melee weapons; allows single-shot guns. Unknown weapon data does not block triggerbot.",
+		["FOV (pixels)"] = "0 requires a direct crosshair hit. Higher values allow a small screen-centre targeting area.",
+		["Max distance"] = "Maximum trigger range in studs. Higher values allow farther enemies.",
+		["Reaction min (ms)"] = "Lower end of the random wait before firing. Higher delays react more slowly.",
+		["Reaction max (ms)"] = "Upper end of the random wait before firing. The target and menu state are checked again before the shot.",
+		["Refire lockout (ms)"] = "Minimum wait after a trigger action before trying again. Higher values fire less often; weapon fire rate still applies.",
+		["Hit chance %"] = "Chance to attempt a trigger action, not a guarantee that a bullet hits. Higher values skip fewer attempts.",
+		["Shots per hold"] = "Maximum trigger actions per enabled session; 0 is unlimited. Disabling or menu-pausing triggerbot resets the counter. A Hold action can fire multiple bullets.",
+	},
+	RECOIL = {
+		["RCS enabled"] = "Estimates recoil separately from mouse movement and corrects camera kick while firing. Yields when aim is steering the camera.",
+		["Pitch %"] = "Percentage of estimated vertical recoil corrected. Higher values counter more upward/downward kick.",
+		["Yaw %"] = "Percentage of estimated horizontal recoil corrected. Higher values counter more sideways kick.",
+		["Start at shot"] = "Estimated shot number at which correction begins. Higher values leave more initial shots uncorrected.",
+		["Max correction (deg)"] = "Maximum correction per axis per frame in degrees. Higher values permit stronger corrections.",
+	},
+	HITBOX = {
+		["Hitbox expander"] = "Enlarges the selected player parts locally. Server acceptance of hits on expanded parts is unverified.",
+		["Size (studs)"] = "Sets each selected part to a cube of this size in studs. Higher values make the modified parts larger.",
+		["Which part"] = "Chooses the body hitbox, head hitbox, visible head, or both body and head hitboxes to enlarge.",
+		["Transparency %"] = "How invisible the modified parts are: 0 is opaque, 100 is fully invisible.",
+		["Enemies only"] = "Limits resizing to enemies. Turning this off includes other players on your team.",
+		["RESTORE EVERY PART NOW"] = "Immediately restores modified parts. Turn the expander off to keep them restored.",
+	},
+}
+
 function UI.Window(options)
 	local ray = Arsenal:CreateWindow({
 		name = (options.title or "") .. (options.accentTitle or ""),
@@ -2151,6 +2280,9 @@ function UI.Window(options)
 			customFolder = "Arsenal",
 		},
 	})
+
+	STATE.menuWindow = ray
+	STATE.menuIsOpen()
 
 	local wrapper = {
 		ray = ray,
@@ -2252,7 +2384,7 @@ function UI.Window(options)
 			function card:Toggle(name, value, callback, description)
 				return self.tab:CreateToggle({
 					name = name,
-					description = description,
+					description = (UI.featureNotes[self.page.name] or {})[name] or description,
 					flag = rayFlag(self.page.name, self.name, name),
 					value = value and true or false,
 					callback = callback,
@@ -2262,7 +2394,7 @@ function UI.Window(options)
 			function card:Dropdown(name, options, value, callback, description)
 				return self.tab:CreateDropdown({
 					name = name,
-					description = description,
+					description = (UI.featureNotes[self.page.name] or {})[name] or description,
 					flag = rayFlag(self.page.name, self.name, name),
 					options = options,
 					value = value,
@@ -2273,7 +2405,7 @@ function UI.Window(options)
 			function card:Slider(name, min, max, value, callback, description)
 				return self.tab:CreateSlider({
 					name = name,
-					description = description,
+					description = (UI.featureNotes[self.page.name] or {})[name] or description,
 					flag = rayFlag(self.page.name, self.name, name),
 					range = { min, max },
 					increment = 1,
@@ -2287,7 +2419,7 @@ function UI.Window(options)
 			function card:Colour(name, value, callback, description)
 				return self.tab:CreateColorPicker({
 					name = name,
-					description = description,
+					description = (UI.featureNotes[self.page.name] or {})[name] or description,
 					flag = rayFlag(self.page.name, self.name, name),
 					color = value,
 					callback = function(color)
@@ -2299,6 +2431,7 @@ function UI.Window(options)
 			function card:Button(name, callback)
 				return self.tab:CreateButton({
 					name = name,
+					description = (UI.featureNotes[self.page.name] or {})[name],
 					callback = callback,
 				})
 			end
@@ -2312,7 +2445,7 @@ function UI.Window(options)
 			function card:Keybind(name, value, onChanged, description)
 				return self.tab:CreateKeybind({
 					name = name,
-					description = description,
+					description = (UI.featureNotes[self.page.name] or {})[name] or description,
 					flag = rayFlag(self.page.name, self.name, name),
 					value = enumFromKey(value),
 					callback = function() end,
@@ -2390,12 +2523,8 @@ function UI.Window(options)
 	wrapper.toggleConnection = UserInputService.InputBegan:Connect(function(input, typing)
 		if typing or ENV.__ARSENAL ~= GEN then return end
 		if input.KeyCode == Enum.KeyCode.RightShift then
-			wrapper.root.Visible = not wrapper.root.Visible
-			if wrapper.root.Visible then
-				ray:Show()
-			else
-				ray:Hide()
-			end
+			ray:ToggleHide()
+			wrapper.root.Visible = STATE.menuIsOpen()
 		end
 	end)
 
@@ -2550,7 +2679,7 @@ aimActivation:Toggle("Pause aim + triggerbot while Arsenal is open", CONFIG.aimP
 	if CONFIG.aimPauseUI == v then return end
 
 	CONFIG.aimPauseUI = v
-	altairToast(v and "Aim + triggerbot paused." or "Aim + triggerbot resumed.")
+	altairToast(v and "Menu pause enabled." or "Menu pause disabled.")
 end, "pauses both features while the Arsenal UI is visible", UI.theme.good)
 
 -- Target selection ---------------------------------------------------
@@ -3133,7 +3262,7 @@ do
 
 		value = value:match("^%s*(.-)%s*$")
 		if value ~= "" and value ~= "Nobody" then
-			return value
+			return value, obj
 		end
 	end
 
@@ -3141,23 +3270,26 @@ do
 		task.wait(0.2)
 
 		-- Persistent winner frame first.
-		local name = getWinnerText(frame:FindFirstChild("PlayerName", true))
+		local name, nameObject = getWinnerText(frame:FindFirstChild("PlayerName", true))
 
 		-- Temporary podium clone fallback.
 		if not name then
 			local win1 = frame:FindFirstChild("Win1", true)
-			name = getWinnerText(win1 and win1:FindFirstChild("Username", true))
+			name, nameObject = getWinnerText(win1 and win1:FindFirstChild("Username", true))
 		end
 
 		if not name then return end
-		if name == lastName and os.clock() - lastToast < 5 then return end
+		local normalized = name:gsub("^@", ""):lower()
+		local won = normalized == plr.Name:lower() or normalized == plr.DisplayName:lower()
+		local matched, isLocal = altairCall("IsLocalPlayerName", name, nameObject)
+		if matched and type(isLocal) == "boolean" then won = isLocal end
 
-		lastName = name
+		-- Alias changes during one result must not award a second session win.
+		local winnerKey = won and ("user:" .. tostring(plr.UserId)) or normalized
+		if winnerKey == lastName and os.clock() - lastToast < 5 then return end
+		lastName = winnerKey
 		lastToast = os.clock()
 		STATE.lastWinner = name
-
-		local normalized = name:gsub("^@", ""):lower()
-		local won = normalized == plr.Name:lower() or name:lower() == plr.DisplayName:lower()
 
 		if won then
 			STATE.sessionWins += 1
@@ -3180,21 +3312,8 @@ task.spawn(function()
 	local previousVisible
 
 	while ENV.__ARSENAL == GEN do
-		local visible
-
-		pcall(function()
-			if win and win.ray and type(win.ray.IsVisible) == "function" then
-				visible = win.ray:IsVisible()
-			elseif type(Arsenal.IsVisible) == "function" then
-				visible = Arsenal:IsVisible()
-			end
-		end)
-
-		if type(visible) ~= "boolean" then
-			visible = win and win.root and win.root.Visible == true or false
-		end
-
-		STATE.panelOpen = visible
+		local visible = STATE.menuIsOpen()
+		win.root.Visible = visible
 
 		if previousVisible ~= nil
 			and visible ~= previousVisible

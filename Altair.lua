@@ -459,8 +459,8 @@ local altairSettings = {
 				id = "Rainbowmode",
 			},
 			{
-				name = "Hide Toggle Button",
-				description = "This will remove the option to open the smartBar with the toggle button.",
+				name = "Hide Bar",
+				description = "This will remove the Drag Bar from the interface.",
 				settingType = "Boolean",
 				current = false,
 
@@ -893,10 +893,51 @@ local altairSettings = {
 	},
 }
 
--- Generate random username
-local randomUsername = altairValues.nameGeneration.adjectives[math.random(#altairValues.nameGeneration.adjectives)]
-	.. altairValues.nameGeneration.nouns[math.random(#altairValues.nameGeneration.nouns)]
-	.. math.random(100, 3999)
+-- Keep one natural-looking, distinct username/display-name pair for this session.
+local randomUsername, randomDisplayName = (function()
+	local names = { "Alex", "Avery", "Casey", "Drew", "Ellis", "Jamie", "Jules", "Kai", "Milo", "Morgan", "Noel", "Quinn", "Reese", "Riley", "Robin", "Rowan", "Sam", "Taylor", "Theo", "Luca", "Remy", "Sage", "Nico", "Finn", "Arlo", "Jesse", "Sky", "Blair", "River", "Ash", "Rey", "Cameron" }
+	local words = { "cedar", "comet", "cove", "dusk", "echo", "fern", "finch", "frost", "grove", "harbor", "haze", "iris", "ivory", "jade", "juniper", "kestrel", "lagoon", "lark", "maple", "meadow", "moss", "nova", "orbit", "otter", "pebble", "pine", "raven", "reef", "ripple", "rover", "slate", "sparrow", "spruce", "stone", "summit", "tide", "timber", "vale", "willow", "wren", "aero", "cloud", "cobalt", "coral", "drift", "ember", "falcon", "flora", "glacier", "indigo", "lunar", "marble", "ocean", "olive", "opal", "panda", "pixel", "plum", "quartz", "satin", "solar", "sora", "sprout", "velvet" }
+	local modifiers = { "quiet", "little", "sleepy", "soft", "small", "late", "lost", "mellow", "cozy", "blue", "silver", "warm", "wild", "still", "slow", "bright", "hidden", "wandering", "distant", "daily", "cloudy", "lucky", "gentle", "golden" }
+	local surnames = { "Reed", "Lane", "Brooks", "Hayes", "Wells", "Blake", "Gray", "Cole", "Parker", "Reid", "West", "Hart", "Miles", "Hayden", "Stone", "Vale" }
+	local starts = { "ka", "lu", "mi", "no", "ra", "se", "vi", "za", "a", "el", "ne", "ri", "so", "ta", "va", "yo" }
+	local endings = { "ren", "lo", "ri", "ven", "ra", "lin", "no", "va", "len", "ro", "mi", "sei", "rin", "la", "vi", "on" }
+	local function pick(list) return list[math.random(#list)] end
+	local function title(word) return word:sub(1, 1):upper() .. word:sub(2) end
+	local used = {}
+	for _, player in ipairs(players:GetPlayers()) do
+		used[player.Name:lower()] = true
+		used[player.DisplayName:lower()] = true
+	end
+	local function generate()
+		local first, word, second = pick(names), pick(words), pick(words)
+		local style = math.random(10)
+		local username
+		if style == 1 then username = first .. pick(surnames)
+		elseif style == 2 then username = pick(modifiers) .. title(word)
+		elseif style == 3 then username = word .. title(second)
+		elseif style == 4 then username = word .. tostring(math.random(10, 999))
+		elseif style == 5 then username = first .. "_" .. word
+		elseif style == 6 then username = pick(starts) .. pick(endings) .. pick(endings)
+		elseif style == 7 then username = "its" .. first
+		elseif style == 8 then username = word .. "_" .. second
+		elseif style == 9 then username = first:sub(1, 1) .. pick(surnames) .. tostring(math.random(10, 99))
+		else username = pick(modifiers) .. title(word) .. tostring(math.random(2, 99)) end
+		if math.random(3) ~= 1 then username = username:lower() end
+		local displayStyle = math.random(6)
+		local displayName
+		if displayStyle == 1 then displayName = first
+		elseif displayStyle == 2 then displayName = title(word)
+		elseif displayStyle == 3 then displayName = title(pick(words))
+		elseif displayStyle == 4 then displayName = pick(names) .. " " .. pick(surnames):sub(1, 1) .. "."
+		elseif displayStyle == 5 then displayName = pick(modifiers) .. " " .. pick(words)
+		else displayName = title(pick(starts) .. pick(endings)) end
+		return username, displayName
+	end
+	local username, displayName
+	repeat username, displayName = generate()
+	until username:lower() ~= displayName:lower() and not used[username:lower()] and not used[displayName:lower()]
+	return username, displayName
+end)()
 
 -- Initialise Altair Client Interface
 local guiParent = getHiddenUI and getHiddenUI() or (useStudio and localPlayer:WaitForChild("PlayerGui")) or coreGui
@@ -3658,6 +3699,7 @@ altairValues.smartBarLayout = (function()
 		if nextSide == self.contentSide then
 			return
 		end
+		local hadSide = self.contentSide ~= nil
 		self.contentSide = nextSide
 
 		local mirrored = nextSide == "left"
@@ -3665,7 +3707,7 @@ altairValues.smartBarLayout = (function()
 		local timeTarget = mirrored and mirrorX(baseTimePosition) or baseTimePosition
 		local buttonsTarget = mirrored and mirrorX(baseButtonsPosition) or baseButtonsPosition
 
-		if animate then
+		if animate or hadSide then
 			local info = TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 			tweenService:Create(back, info, { Position = backTarget }):Play()
 			tweenService:Create(time, info, { Position = timeTarget }):Play()
@@ -3693,7 +3735,7 @@ altairValues.smartBarLayout = (function()
 		local viewport = screenSize()
 		if viewport.X <= 0 or viewport.Y <= 0 then return end
 		local originX = UI:IsA("ScreenGui") and UI.AbsolutePosition.X or 0
-		local center = centerOf(smartBarOpen and smartBar or drag)
+		local center = centerOf(smartBar)
 		local position = {
 			version = 1,
 			x = math.clamp((center.X - originX) / viewport.X, 0, 1),
@@ -3724,6 +3766,17 @@ altairValues.smartBarLayout = (function()
 		moveCenter(smartBar, clampCenter(smartBar, target, 8))
 		altairValues.smartBarPositionInitialized = true
 		return true
+	end
+
+	function controller:getClosedDragCenter()
+		local barCenter = centerOf(smartBar)
+		local line = dragVisual and dragVisual:IsA("GuiObject") and dragVisual or drag
+		local lineTop = line.AbsolutePosition.Y - centerOf(drag).Y
+		local lineBottom = lineTop + line.AbsoluteSize.Y
+		local upperHalf = barCenter.Y < screenOriginY() + screenSize().Y * 0.5
+		local y = upperHalf and (smartBar.AbsolutePosition.Y - lineTop)
+			or (smartBar.AbsolutePosition.Y + smartBar.AbsoluteSize.Y - lineBottom)
+		return Vector2.new(barCenter.X, y)
 	end
 
 	function controller:restoreSmartBarAtDrag()
@@ -3785,7 +3838,7 @@ altairValues.smartBarLayout = (function()
 	end
 
 	function controller:syncDrag()
-		drag.Visible = not settingValue("Hide Toggle Button")
+		drag.Visible = not settingValue("Hide Bar")
 		drag.BackgroundTransparency = 1
 
 		if self.dragging or not smartBarOpen or self.dragPositionTween then
@@ -3877,7 +3930,7 @@ altairValues.smartBarLayout = (function()
 		return top, top + line.AbsoluteSize.Y
 	end
 
-	function controller:clampDragTarget(target)
+	function controller:clampDragTarget(target, dt)
 		local viewport = screenSize()
 		local originY = screenOriginY()
 		-- Evaluate the requested center BEFORE clamping, so either zone stays reachable.
@@ -3889,9 +3942,26 @@ altairValues.smartBarLayout = (function()
 
 		local lineTop, lineBottom = dragLineOffsets()
 		local halfBar = smartBar.AbsoluteSize.Y * 0.5
-		local barOffset = self.dragSide < 0
+		local wantedOffset = self.dragSide < 0
 			and lineTop - 4 - halfBar
 			or lineBottom + 4 + halfBar
+		local barOffset
+		if not smartBarOpen then
+			-- Keep the closed line on the outer edge while dragging the hidden bar.
+			barOffset = self.dragSide < 0 and (lineTop + halfBar) or (lineBottom - halfBar)
+			self.animatedDragSide = nil
+		else
+			if self.animatedDragSide ~= self.dragSide then
+				self.animatedDragSide = self.dragSide
+				self.sideOffsetStart = self.barOffsetY
+				self.sideOffsetElapsed = 0
+			end
+			self.sideOffsetElapsed = math.min((self.sideOffsetElapsed or 0) + (dt or 1 / 60), 0.28)
+			local progress = self.sideOffsetElapsed / 0.28
+			local eased = progress * progress * (3 - 2 * progress)
+			barOffset = self.sideOffsetStart + (wantedOffset - self.sideOffsetStart) * eased
+		end
+		self.barOffsetY = barOffset
 		-- Bounds of the visible line and SmartBar relative to the Drag center.
 		-- Above: SmartBar's top sets minY. Below: its bottom sets maxY.
 		local minY = originY + 8 - math.min(lineTop, barOffset - halfBar)
@@ -3906,6 +3976,7 @@ altairValues.smartBarLayout = (function()
 	end
 
 	function controller:moveSmartBar(dragCenter, dt, barOffset)
+		altairValues.smartBarPositionInitialized = true
 		local viewport = screenSize()
 		local half = smartBar.AbsoluteSize * 0.5
 		local middle = viewport.X * 0.5
@@ -3960,13 +4031,14 @@ altairValues.smartBarLayout = (function()
 			interact.ImageTransparency = 1
 		end
 
-		self:setDragVisual(100, 0.15, 0)
+		self:setDragVisual(100, 0.45, 0)
 
 		track(drag:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
 			if not self.dragging then self:syncToasts() end
 		end))
 
 		track(drag.Interact.MouseEnter:Connect(function()
+			self.dragHovered = true
 			if not self.dragging then
 				tweenService:Create(drag, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 					Size = UDim2.fromOffset(165, 22),
@@ -3976,11 +4048,12 @@ altairValues.smartBarLayout = (function()
 		end))
 
 		track(drag.Interact.MouseLeave:Connect(function()
+			self.dragHovered = false
 			if not self.dragging then
 				tweenService:Create(drag, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 					Size = UDim2.fromOffset(150, 20),
 				}):Play()
-				self:setDragVisual(100, 0.15, 0.25)
+				self:setDragVisual(100, 0.45, 0.25)
 			end
 		end))
 
@@ -4001,9 +4074,7 @@ altairValues.smartBarLayout = (function()
 			self.dragSide = self:getDock() == "top" and -1 or 1
 			self.barOffsetY = centerOf(smartBar).Y - centerOf(drag).Y
 			if self.onDragBegin then self:onDragBegin() end
-			local target, barOffset = self:clampDragTarget(self.lastPointer + self.grabOffset)
-			moveCenter(drag, target)
-			self:moveSmartBar(target, 0, barOffset)
+			self.animatedDragSide = nil
 			tweenService:Create(drag, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 				Size = UDim2.fromOffset(175, 24),
 			}):Play()
@@ -4032,7 +4103,7 @@ altairValues.smartBarLayout = (function()
 			tweenService:Create(drag, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 				Size = UDim2.fromOffset(150, 20),
 			}):Play()
-			self:setDragVisual(100, 0.15, 0.3)
+			self:setDragVisual(100, self.dragHovered and 0 or 0.45, 0.3)
 			self:sync(1 / 60, true)
 			if self.dragMoved then self:savePosition() end
 
@@ -4064,12 +4135,14 @@ altairValues.smartBarLayout = (function()
 
 				self.lastRenderPointer = pointer
 
-				local dragCenter, barOffset = self:clampDragTarget(pointer + self.grabOffset)
-				moveCenter(drag, dragCenter)
-				self:moveSmartBar(dragCenter, dt, barOffset)
-				self:syncContents(true)
-				self:syncPanels(dt)
-				self:syncToasts(dragCenter)
+				if self.dragMoved then
+					local dragCenter, barOffset = self:clampDragTarget(pointer + self.grabOffset, dt)
+					moveCenter(drag, dragCenter)
+					self:moveSmartBar(dragCenter, dt, barOffset)
+					self:syncContents(true)
+					self:syncPanels(dt)
+					self:syncToasts(dragCenter)
+				end
 			else
 				self.idleAccumulator += dt
 				if self.idleAccumulator >= 1 / 30 then
@@ -4804,38 +4877,157 @@ local function rejoin()
 	end
 end
 
-local function serverhop()
-	local highestPlayers = 0
-	local target
-
-	local success, response = pcall(function()
-		return httpService:JSONDecode(game:HttpGetAsync("https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"))
-	end)
-
-	if not success or not response or not response.data then
-		return queueNotification("Unable to find servers", "Altair couldn't reach the Roblox server list, this is usually rate limiting. Try again in a moment.", 4370317928)
-	end
-
-	for _, v in ipairs(response.data) do
-		if type(v) == "table" and v.maxPlayers > v.playing and v.id ~= jobId then
-			if v.playing > highestPlayers then
-				highestPlayers = v.playing
-				target = v.id
+altairValues.serverHop = (function()
+	local controller = { busy = false, generation = 0, attempt = 0 }
+	local historyKey = "AltairServerHop_" .. tostring(placeId)
+	local historyPath = altairValues.altairFolder .. "/serverhop-" .. tostring(placeId) .. ".altair"
+	local history
+	pcall(function() history = teleportService:GetTeleportSetting(historyKey) end)
+	if type(history) ~= "table" or history.version ~= 1 then
+		pcall(function()
+			if readfile and (not isfile or isfile(historyPath)) then
+				history = httpService:JSONDecode(readfile(historyPath))
 			end
+		end)
+	end
+	if type(history) == "table" and history.version == 1 then
+		controller.previous = history.current == jobId and history.previous or history.current
+		if type(controller.previous) ~= "string" then controller.previous = nil end
+	end
+	-- Record arrivals, not attempted destinations, so failed hops never become history.
+	history = { version = 1, current = jobId, previous = controller.previous }
+	pcall(function() teleportService:SetTeleportSetting(historyKey, history) end)
+	if writefile then pcall(function()
+		checkFolder()
+		writefile(historyPath, httpService:JSONEncode(history))
+	end) end
+
+	local function positive(value)
+		return type(value) == "number" and value == value and value > 0 and value < math.huge
+	end
+
+	function controller:collect()
+		local candidates, legacy, seen, cursors = {}, {}, { [jobId] = true }, {}
+		if self.previous then seen[self.previous] = true end
+		local cursor
+		local received = false
+		-- Follow the available pages with a bounded retry budget; no background scans.
+		for page = 1, 20 do
+			local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&excludeFullGames=true&limit=100"
+			if cursor then url ..= "&cursor=" .. httpService:UrlEncode(cursor) end
+			local response
+			for retry = 1, 3 do
+				local ok, data = pcall(function() return httpService:JSONDecode(game:HttpGetAsync(url)) end)
+				if ok and type(data) == "table" and type(data.data) == "table" then
+					response = data
+					break
+				end
+				if retry < 3 then task.wait(0.5 * retry) end
+			end
+			if not response and page == 1 then
+				-- Retry the original server-list request before giving up on discovery.
+				local ok, data = pcall(function()
+					return httpService:JSONDecode(game:HttpGetAsync("https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"))
+				end)
+				if ok and type(data) == "table" and type(data.data) == "table" then response = data end
+			end
+			if not response then break end
+			received = true
+			for _, server in ipairs(response.data) do
+				if type(server) == "table" and type(server.id) == "string" and server.id ~= ""
+					and not seen[server.id] and positive(server.maxPlayers)
+					and type(server.playing) == "number" and server.playing >= 0 and server.playing < server.maxPlayers then
+					seen[server.id] = true
+					local candidate = { id = server.id, ping = positive(server.ping) and server.ping or nil,
+						fps = positive(server.fps) and server.fps or 0, playing = server.playing }
+					table.insert(legacy, candidate)
+					if candidate.ping then table.insert(candidates, candidate) end
+				end
+			end
+			cursor = response.nextPageCursor
+			if type(cursor) ~= "string" or cursor == "" or cursors[cursor] then break end
+			cursors[cursor] = true
+			if page < 20 then task.wait(0.25) end
 		end
+		table.sort(candidates, function(a, b)
+			if a.ping ~= b.ping then return a.ping < b.ping end
+			if a.fps ~= b.fps then return a.fps > b.fps end
+			if a.playing ~= b.playing then return a.playing > b.playing end
+			return a.id < b.id
+		end)
+		self.usingLegacy = #candidates == 0 and #legacy > 0
+		if self.usingLegacy then
+			-- Original preference: highest population among joinable eligible servers.
+			table.sort(legacy, function(a, b)
+				if a.playing ~= b.playing then return a.playing > b.playing end
+				return a.id < b.id
+			end)
+			candidates = legacy
+		end
+		return candidates, received
 	end
 
-	if not target then
-		return queueNotification("No Servers Found", "We couldn't find another server, this may be the only server.", 4370317928)
+	function controller:tryNext(generation)
+		if generation ~= self.generation or not self.busy or not checkAltair() then return end
+		self.attempt += 1
+		local server = self.candidates[self.attempt]
+		if not server or self.attempt > 3 then
+			self.busy, self.waiting, self.target = false, false, nil
+			queueNotification("Teleport Failed", "The selected servers could not accept the hop. Try again in a moment.", 4370317928)
+			return
+		end
+		self.target, self.waiting = server.id, true
+		local attempt = self.attempt
+		local message = self.usingLegacy and "Connection ranking is unavailable. Using the original Serverhop selection."
+			or ("Joining the best available listed connection (" .. tostring(math.floor(server.ping or 0)) .. " ms reported ping).")
+		queueNotification("Teleporting", message, 4335479121)
+		task.wait(1)
+		local ok = pcall(teleportService.TeleportToPlaceInstance, teleportService, placeId, server.id, localPlayer)
+		if not ok and self.waiting and self.attempt == attempt then
+			self.waiting = false
+			task.defer(function() self:tryNext(generation) end)
+			return
+		end
+		-- Do not start a second teleport merely because departure is taking time.
+		task.delay(30, function()
+			if self.generation == generation and self.attempt == attempt and self.waiting then
+				self.busy, self.waiting, self.target = false, false, nil
+			end
+		end)
 	end
 
-	queueNotification("Teleporting", "We're now moving you to the new session, this may take a few seconds.", 4335479121)
-	task.wait(0.3)
+	track(teleportService.TeleportInitFailed:Connect(function(player, _, _, failedPlace, options)
+		if player ~= localPlayer or failedPlace ~= placeId or not controller.waiting then return end
+		local failedId
+		if options then pcall(function() failedId = options.ServerInstanceId end) end
+		if failedId and failedId ~= "" and failedId ~= controller.target then return end
+		controller.waiting = false
+		local generation = controller.generation
+		task.defer(function() controller:tryNext(generation) end)
+	end))
 
-	local hopped = pcall(teleportService.TeleportToPlaceInstance, teleportService, placeId, target)
-	if not hopped then
-		queueNotification("Teleport Failed", "Roblox refused the teleport to that server. Try again in a moment.", 4370317928)
+	function controller:start()
+		if self.busy then return end
+		self.busy = true
+		self.generation += 1
+		self.attempt = 0
+		queueNotification("Finding a server", "Checking available connections and excluding your current and previous server.", 4335479121)
+		local ok, candidates, received = pcall(function() return self:collect() end)
+		if not ok or not received or #candidates == 0 then
+			self.busy = false
+			queueNotification("No suitable server", (not ok or not received)
+				and "Roblox's server list is unavailable. Try again shortly."
+				or "No other joinable server was listed. Altair will not send you back to the current or previous server.", 4370317928)
+			return
+		end
+		self.candidates = candidates
+		self:tryNext(self.generation)
 	end
+	return controller
+end)()
+
+local function serverhop()
+	altairValues.serverHop:start()
 end
 
 local function leaveExperience()
@@ -6885,7 +7077,25 @@ local function searchScriptBlox(query)
 		tweenService:Create(scriptSearch.List, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ScrollBarImageTransparency = 0 }):Play()
 	end
 end
+-- Each toggle owns its animation steps; older coroutines/callbacks cannot resume it.
+local smartBarTransition = { generation = 0, tweens = {} }
+
+function smartBarTransition:begin()
+	self.generation += 1
+	for _, tween in ipairs(self.tweens) do tween:Cancel() end
+	table.clear(self.tweens)
+	altairValues.smartBarLayout:cancelDragPositionTween()
+	return self.generation
+end
+
+function smartBarTransition:create(object, info, goal)
+	local tween = tweenService:Create(object, info, goal)
+	table.insert(self.tweens, tween)
+	return tween
+end
+
 local function openSmartBar()
+	local transition = smartBarTransition:begin()
 	smartBarOpen = true
 	updateBackpackLayout()
 
@@ -6909,15 +7119,10 @@ local function openSmartBar()
 		altairValues.smartBarPositionInitialized = true
 	end
 
-	-- If Drag was occupying the closed SmartBar position, reopen the SmartBar
-	-- exactly there before sending Drag back to its normal resting location.
-	if altairValues.smartBarLayout.closedAtDrag then
-		altairValues.smartBarLayout:restoreSmartBarAtDrag()
-		altairValues.smartBarLayout.closedAtDrag = false
-	end
+	altairValues.smartBarLayout.closedAtDrag = false
 
 	smartBar.Visible = true
-	drag.Visible = not settingValue("Hide Toggle Button")
+	drag.Visible = not settingValue("Hide Bar")
 
 	for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 		if button:IsA("GuiObject") then
@@ -6953,11 +7158,11 @@ local function openSmartBar()
 			TweenInfo.new(0.42, Enum.EasingStyle.Back, Enum.EasingDirection.Out))
 	end
 
-	tweenService:Create(smartBar, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.1 }):Play()
-	tweenService:Create(smartBar.Shadow, TweenInfo.new(1.2, Enum.EasingStyle.Quint), { ImageTransparency = 0.9 }):Play()
-	tweenService:Create(smartBar.Back.Time, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	tweenService:Create(smartBar.Back.Time.AMPM, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	tweenService:Create(smartBar.UIStroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Transparency = 0.85 }):Play()
+	smartBarTransition:create(smartBar, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.1 }):Play()
+	smartBarTransition:create(smartBar.Shadow, TweenInfo.new(1.2, Enum.EasingStyle.Quint), { ImageTransparency = 0.9 }):Play()
+	smartBarTransition:create(smartBar.Back.Time, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
+	smartBarTransition:create(smartBar.Back.Time.AMPM, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
+	smartBarTransition:create(smartBar.UIStroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Transparency = 0.85 }):Play()
 
 	for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 		if button:IsA("GuiObject") and button.Name ~= "Placeholder" then
@@ -6966,27 +7171,29 @@ local function openSmartBar()
 			local strokeGradient = stroke and stroke:FindFirstChildOfClass("UIGradient")
 			local icon = button:FindFirstChild("Icon")
 
-			if stroke then tweenService:Create(stroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Transparency = 0 }):Play() end
-			tweenService:Create(button, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {
+			if stroke then smartBarTransition:create(stroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Transparency = 0 }):Play() end
+			smartBarTransition:create(button, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {
 				Size = UDim2.fromOffset(34, 34),
 				BackgroundTransparency = 0,
 			}):Play()
-			if gradient then tweenService:Create(gradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play() end
-			if strokeGradient then tweenService:Create(strokeGradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play() end
+			if gradient then smartBarTransition:create(gradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play() end
+			if strokeGradient then smartBarTransition:create(strokeGradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play() end
 			if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then
-				tweenService:Create(icon, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
+				smartBarTransition:create(icon, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
 			end
 			task.wait(0.03)
+			if transition ~= smartBarTransition.generation then return end
 		end
 	end
 
-	tweenService:Create(smartBar.Back, TweenInfo.new(1, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.1 }):Play()
-	tweenService:Create(smartBar.Back.UIStroke, TweenInfo.new(1, Enum.EasingStyle.Quint), { Transparency = 0.8 }):Play()
+	smartBarTransition:create(smartBar.Back, TweenInfo.new(1, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.1 }):Play()
+	smartBarTransition:create(smartBar.Back.UIStroke, TweenInfo.new(1, Enum.EasingStyle.Quint), { Transparency = 0.8 }):Play()
 	altairValues.smartBarLayout:syncContents(true)
 	altairValues.smartBarLayout:syncToasts()
 end
 
 local function closeSmartBar()
+	local transition = smartBarTransition:begin()
 	smartBarOpen = false
 	updateBackpackLayout()
 
@@ -6994,58 +7201,50 @@ local function closeSmartBar()
 		if smartBar.Back.Buttons:FindFirstChild(otherPanel.Name) and isPanel(otherPanel.Name) and otherPanel.Visible then
 			task.spawn(closePanel, otherPanel.Name, true)
 			task.wait()
+			if transition ~= smartBarTransition.generation then return end
 		end
 	end
 
-	tweenService:Create(smartBar.Back.Time, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-	tweenService:Create(smartBar.Back.Time.AMPM, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
+	smartBarTransition:create(smartBar.Back.Time, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
+	smartBarTransition:create(smartBar.Back.Time.AMPM, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
 
 	for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 		if button:IsA("GuiObject") and button.Name ~= "Placeholder" then
 			local stroke = button:FindFirstChildOfClass("UIStroke")
 			local icon = button:FindFirstChild("Icon")
-			if stroke then tweenService:Create(stroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play() end
-			tweenService:Create(button, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {
+			if stroke then smartBarTransition:create(stroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play() end
+			smartBarTransition:create(button, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {
 				Size = UDim2.fromOffset(30, 30),
 				BackgroundTransparency = 1,
 			}):Play()
 			if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then
-				tweenService:Create(icon, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
+				smartBarTransition:create(icon, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
 			end
 		end
 	end
 
-	local viewport = camera.ViewportSize
-	local barCenter = smartBar.AbsolutePosition + smartBar.AbsoluteSize * 0.5
-
-	-- When closed, Drag replaces the SmartBar at its last location.
-	drag.Visible = not settingValue("Hide Toggle Button")
+	-- When closed, the visible Drag line rests on the outer SmartBar edge.
+	drag.Visible = not settingValue("Hide Bar")
 	altairValues.smartBarLayout.closedAtDrag = true
 
-	local yRatio = viewport.Y > 0 and barCenter.Y / viewport.Y or 0.5
-	local closeOffset = yRatio >= 0.72 and 18 or (yRatio <= 0.28 and -18 or 0)
 	local closeInfo = TweenInfo.new(0.34, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut)
-	altairValues.smartBarLayout:tweenDragCenter(barCenter + Vector2.new(0, closeOffset),
+	altairValues.smartBarLayout:tweenDragCenter(altairValues.smartBarLayout:getClosedDragCenter(),
 		closeInfo, UDim2.fromOffset(150, 20))
 	local shellGoal = {
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(280, 54),
 	}
-	if closeOffset ~= 0 then
-		shellGoal.Position = smartBar.Position + UDim2.fromOffset(0, closeOffset)
-	end
 
-	tweenService:Create(smartBar.Back.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
-	tweenService:Create(smartBar.Back, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-	tweenService:Create(smartBar, closeInfo, shellGoal):Play()
-	tweenService:Create(smartBar.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
-	tweenService:Create(smartBar.Shadow, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
+
+	smartBarTransition:create(smartBar.Back.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
+	smartBarTransition:create(smartBar.Back, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
+	smartBarTransition:create(smartBar, closeInfo, shellGoal):Play()
+	smartBarTransition:create(smartBar.UIStroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
+	smartBarTransition:create(smartBar.Shadow, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
 
 	task.delay(0.35, function()
-		if not smartBarOpen and smartBar.Parent then
+		if transition == smartBarTransition.generation and not smartBarOpen and smartBar.Parent then
 			smartBar.Visible = false
 			smartBar.Size = UDim2.fromOffset(300, 60)
-			altairValues.smartBarLayout:restoreSmartBarAtDrag()
 			altairValues.smartBarLayout:syncToasts()
 		end
 	end)
@@ -9440,6 +9639,32 @@ altairAPI.CreateESP = createEsp
 
 altairAPI.GetPing = getPing
 altairAPI.GetSetting = settingValue
+-- Name-based integrations can recognize the local player without comparing only
+-- the anonymized label. A preserved source wins over alias guesses.
+altairAPI.IsLocalPlayerName = function(value, textObject)
+	local function normalize(name)
+		if type(name) ~= "string" then return nil end
+		return name:match("^%s*(.-)%s*$"):gsub("^@", ""):lower()
+	end
+	local function actualMatch(name)
+		return name == localPlayer.Name:lower() or name == localPlayer.DisplayName:lower()
+	end
+	if typeof(textObject) == "Instance" and originalTextValues[textObject]
+		and altairValues.anonymousMaskedText
+		and textObject.Text == altairValues.anonymousMaskedText[textObject] then
+		return actualMatch(normalize(originalTextValues[textObject]))
+	end
+	local name = normalize(value)
+	if not name or name == "" then return false end
+	if actualMatch(name) then return true end
+	if not settingValue("Anonymous Client") then return false end
+	for _, player in ipairs(players:GetPlayers()) do
+		if player ~= localPlayer and (name == player.Name:lower() or name == player.DisplayName:lower()) then
+			return false
+		end
+	end
+	return name == randomUsername:lower() or name == randomDisplayName:lower()
+end
 altairAPI.SaveSettings = saveSettings
 altairAPI.UpdateHome = UpdateHome
 altairAPI.IsLoaded = checkAltair
@@ -9676,7 +9901,7 @@ local function start()
 	smartBar.Back.Time.Text = os.date("%I:%M"):gsub("^0", "")
     smartBar.Back.Time.AMPM.Text = os.date("%p")
 
-	drag.Visible = not settingValue("Hide Toggle Button")
+	drag.Visible = not settingValue("Hide Bar")
 
 	altairValues.smartBarLayout:restoreSavedPosition()
 
@@ -10335,6 +10560,47 @@ local function runtime()
 		end
 	end
 
+	local function anonymousReplacement(raw, objectName)
+		local lowered = raw:lower()
+		local result, cursor = {}, 1
+		while cursor <= #raw do
+			local us, ue = string.find(lowered, lowerName, cursor, true)
+			local ds, de = string.find(lowered, lowerDisplayName, cursor, true)
+			if lowerName == "" then us, ue = nil, nil end
+			if lowerDisplayName == "" then ds, de = nil, nil end
+			if not us and not ds then break end
+			local useUsername = us and (not ds or us < ds or (us == ds and ue > de))
+			if us and ds and us == ds and ue == de then
+				local field = (objectName or ""):lower()
+				useUsername = field == "username" or field == "user" or (us > 1 and raw:sub(us - 1, us - 1) == "@")
+			end
+			local startIndex, endIndex = useUsername and us or ds, useUsername and ue or de
+			table.insert(result, raw:sub(cursor, startIndex - 1))
+			table.insert(result, useUsername and randomUsername or randomDisplayName)
+			cursor = endIndex + 1
+		end
+		table.insert(result, raw:sub(cursor))
+		return table.concat(result)
+	end
+
+	local function maskAnonymousText(text)
+		if not text.Parent then return end
+		altairValues.anonymousMaskedText = altairValues.anonymousMaskedText or {}
+		local raw = text.Text
+		local lastMasked = altairValues.anonymousMaskedText[text]
+		if raw == lastMasked then return end
+		local lowerText = string.lower(raw)
+		if string.find(lowerText, lowerName, 1, true) or string.find(lowerText, lowerDisplayName, 1, true) then
+			originalTextValues[text] = raw
+			local masked = anonymousReplacement(raw, text.Name)
+			altairValues.anonymousMaskedText[text] = masked
+			text.Text = masked
+		else
+			originalTextValues[text] = nil
+			altairValues.anonymousMaskedText[text] = nil
+		end
+	end
+
 	local function registerText(instance)
 		if not anonymousWanted() then
 			return
@@ -10345,6 +10611,15 @@ local function runtime()
 
 		trackedText[instance] = true
 		table.insert(cachedText, instance)
+		if instance:IsDescendantOf(UI) then
+			-- HiddenUI is outside the normal DataModel sweep. Mask Altair text immediately,
+			-- including names rewritten by the Home/profile/player-list renderers.
+			maskAnonymousText(instance)
+			local connection = track(instance:GetPropertyChangedSignal("Text"):Connect(function()
+				if anonymousWanted() then maskAnonymousText(instance) end
+			end))
+			track(instance.Destroying:Once(function() connection:Disconnect() end))
+		end
 	end
 
 	local function registerDescendant(instance)
@@ -10365,6 +10640,11 @@ local function runtime()
 
 		task.spawn(function()
 			local descendants = game:GetDescendants()
+			for _, instance in ipairs(UI:GetDescendants()) do
+				if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
+					table.insert(descendants, instance)
+				end
+			end
 			for index, instance in ipairs(descendants) do
 				registerDescendant(instance)
 				if index % 400 == 0 then
@@ -10627,20 +10907,7 @@ local function runtime()
 						originalTextValues[text] = nil
 						table.remove(cachedText, i)
 					else
-						local raw = text.Text
-						local lastMasked = altairValues.anonymousMaskedText[text]
-						if raw ~= lastMasked then
-							local lowerText = string.lower(raw)
-							if string.find(lowerText, lowerName, 1, true) or string.find(lowerText, lowerDisplayName, 1, true) then
-								originalTextValues[text] = raw
-								local masked = replacePlain(replacePlain(raw, lowerName, randomUsername), lowerDisplayName, randomUsername)
-								altairValues.anonymousMaskedText[text] = masked
-								text.Text = masked
-							else
-								originalTextValues[text] = nil
-								altairValues.anonymousMaskedText[text] = nil
-							end
-						end
+						maskAnonymousText(text)
 					end
 				end
 			end
@@ -10682,6 +10949,12 @@ local function runtime()
 			descendantRemovingConn = nil
 		end
 	end
+
+	track(UI.DescendantAdded:Connect(function(instance)
+		if checkAltair() and (instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox")) then
+			registerText(instance)
+		end
+	end))
 
 	if descendantTrackingWanted() then
 		refreshDescendantTracking()
@@ -10726,7 +10999,7 @@ local function runtime()
 				end
 			end
 
-			local dragVisible = not settingValue("Hide Toggle Button")
+			local dragVisible = not settingValue("Hide Bar")
 			if drag.Visible ~= dragVisible then
 				drag.Visible = dragVisible
 			end
