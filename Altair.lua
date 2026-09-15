@@ -61,6 +61,23 @@ local cloneRef = optional(cloneref)
 local getEnv = optional(getgenv)
 
 local env = getEnv and getEnv() or _G
+-- Finish the previous session before capturing camera/audio state for this one.
+do
+	local previous = env.Altair
+	if type(previous) == "table" and type(previous.Unload) == "function" then
+		pcall(previous.Unload)
+	elseif type(previous) == "table" then
+		-- One-time migration from the old name-based, one-second cleanup loop.
+		pcall(function()
+			local root = getHiddenUI and getHiddenUI() or game:GetService("CoreGui")
+			local old = root:FindFirstChild("Altair")
+			if old and old:FindFirstChild("SmartBar") and old:FindFirstChild("Drag") then
+				old:Destroy()
+				task.wait(1.1)
+			end
+		end)
+	end
+end
 
 local function getService(name)
 	local service = game:GetService(name)
@@ -107,8 +124,7 @@ local creatorId = game.CreatorId
 local noclipDefaults = {}
 local movers = {}
 local creatorType = game.CreatorType
-local espContainer = Instance.new("Folder", getHiddenUI and getHiddenUI() or coreGui)
-espContainer.Name = "AltairESP"
+local espContainer -- Created only after the UI asset successfully loads.
 local locatedPlayers = {} -- per-player ESP toggles, independent from the global ESP action
 local espConnections = {} -- [player] = RBXScriptConnection for CharacterAdded
 local descendantAddedConn -- top-level DescendantAdded; tracked so we can disconnect on teardown
@@ -941,10 +957,6 @@ end)()
 
 -- Initialise Altair Client Interface
 local guiParent = getHiddenUI and getHiddenUI() or (useStudio and localPlayer:WaitForChild("PlayerGui")) or coreGui
-local altair = guiParent:FindFirstChild("Altair")
-if altair then
-	altair:Destroy()
-end
 
 local function loadInterface()
 	if useStudio then
@@ -952,7 +964,9 @@ local function loadInterface()
 		return container and container:FindFirstChild(altairValues.altairName)
 	end
 	local objects = game:GetObjects("rbxassetid://" .. altairValues.interfaceAsset)
-	return objects and objects[1]
+	local root = objects and objects[1]
+	for _, object in ipairs(objects or {}) do if object ~= root then object:Destroy() end end
+	return root
 end
 
 local uiResult, uiError
@@ -973,8 +987,71 @@ if not uiResult then
 	return
 end
 
-local UI = uiResult
-UI.Name = altairValues.altairName
+-- One owner for runtime resources; identifiers are not used to find them again.
+altairValues.lifecycle = { alive = true, objects = {}, globals = {}, audio = {} }
+function altairValues.lifecycle:own(object)
+	object.Name = httpService:GenerateGUID(false)
+	self.objects[object] = true
+	object.Destroying:Once(function() self.objects[object] = nil end)
+	return object
+end
+function altairValues.lifecycle:replaceGlobal(key, value)
+	self.globals[key] = { before = env[key], installed = value }
+	env[key] = value
+end
+function altairValues.lifecycle:unload()
+	if not self.alive then return end
+	self.alive = false
+	if self.runtimeCleanup then pcall(self.runtimeCleanup) end
+	for _, connection in ipairs(connections) do pcall(connection.Disconnect, connection) end
+	table.clear(connections)
+	for key, replacement in pairs(self.globals) do
+		if env[key] == replacement.installed then env[key] = replacement.before end
+	end
+	table.clear(self.globals)
+	for object in pairs(self.objects) do pcall(object.Destroy, object) end
+	table.clear(self.objects)
+	table.clear(self.audio)
+	if self.api and env.Altair == self.api then env.Altair = nil end
+end
+
+-- Bounded session activity; teleport settings stay local to this Roblox session.
+altairValues.activity = { items = {}, revision = 0, key = "Altair.Activity.v1" }
+do
+	local activity = altairValues.activity
+	local ok, saved = pcall(teleportService.GetTeleportSetting, teleportService, activity.key)
+	if ok and type(saved) == "table" and saved.universe == game.GameId and type(saved.items) == "table" then
+		for _, item in ipairs(saved.items) do
+			if #activity.items >= 30 then break end
+			if type(item) == "table" and type(item.title) == "string" and #item.title <= 160
+				and type(item.description) == "string" and #item.description <= 320
+				and type(item.time) == "number" and item.time <= os.time() and item.time >= 0 then
+				table.insert(activity.items, {title=item.title, description=item.description, time=item.time,
+					icon="rbxassetid://7733734848"})
+			end
+		end
+		activity.previousJob = saved.job
+	end
+	function activity:save()
+		pcall(teleportService.SetTeleportSetting, teleportService, self.key,
+			{universe=game.GameId, job=game.JobId, items=self.items})
+	end
+	function activity:record(title, description, icon)
+		if not altairValues.lifecycle.alive or type(title) ~= "string" or title == "" then return false end
+		table.insert(self.items, 1, {title=title:sub(1,160), description=tostring(description or ""):sub(1,320),
+			icon=type(icon) == "string" and icon or "rbxassetid://7733734848", time=os.time()})
+		if #self.items > 30 then table.remove(self.items) end
+		self.revision += 1
+		self:save()
+		return true
+	end
+end
+
+local UI = altairValues.lifecycle:own(uiResult)
+UI.Destroying:Once(function() altairValues.lifecycle:unload() end)
+espContainer = altairValues.lifecycle:own(Instance.new("Folder"))
+espContainer.Parent = guiParent
+UI.Enabled = false -- Never render the asset at its authored position.
 UI.Parent = guiParent
 
 -- Volt/CoreGui: use the full physical viewport, not Roblox top-bar / safe-area insets.
@@ -1012,24 +1089,18 @@ local smartBar = UI.SmartBar
 local drag = UI.Drag
 local toastsContainer = UI.Toasts
 
-env.cachedInGameUI = {}
-env.cachedCoreUI = {}
+altairValues.cachedInGameUI = {}
+altairValues.cachedCoreUI = {}
 
 local indexSetClipboard = "setclipboard"
 
 local index = (http_request and "http_request") or "request"
 local rawRequest = optional(env.request) or optional(env.http_request) or optional(env.http and env.http.request) or optional(env.syn and env.syn.request) or optional(env.fluxus and env.fluxus.request) or optional(request) or optional(http_request)
 
-if env.altairOriginals == nil then
-	env.altairOriginals = {
-		request = rawRequest,
-		setclipboard = env[indexSetClipboard],
-	}
-end
-
-if not optional(env.altairOriginals.request) then env.altairOriginals.request = rawRequest end
-local originalRequest = optional(env.altairOriginals.request)
-local originalSetClipboard = env.altairOriginals.setclipboard
+-- Read legacy originals once, then keep them local rather than in shared globals.
+local originalRequest = optional(type(env.altairOriginals) == "table" and env.altairOriginals.request) or rawRequest
+local originalSetClipboard = optional(type(env.altairOriginals) == "table" and env.altairOriginals.setclipboard) or optional(env[indexSetClipboard])
+env.altairOriginals = nil
 
 if not legacyChatActive then
 	altairValues.chatSpy.enabled = false
@@ -1041,6 +1112,7 @@ end
 local httpRequest = originalRequest
 
 local function track(connection)
+	if not altairValues.lifecycle.alive then connection:Disconnect(); return connection end
 	table.insert(connections, connection)
 	return connection
 end
@@ -1113,7 +1185,7 @@ local function applyActionVisual(action, object)
 end
 
 local function checkAltair()
-	return UI.Parent
+	return altairValues.lifecycle.alive and UI.Parent
 end
 
 local function getPing()
@@ -1355,20 +1427,18 @@ local function wipeTransparency(ins, target, checkSelf, tween, duration)
 end
 
 local function blurSignature(value)
+	local owner = altairValues.lifecycle
 	if not value then
-		if lighting:FindFirstChild("AltairBlur") then
-			lighting:FindFirstChild("AltairBlur"):Destroy()
-		end
-	else
-		if not lighting:FindFirstChild("AltairBlur") then
-			local blurLight = Instance.new("DepthOfFieldEffect", lighting)
-			blurLight.Name = "AltairBlur"
-			blurLight.Enabled = true
-			blurLight.FarIntensity = 0
-			blurLight.FocusDistance = 51.6
-			blurLight.InFocusRadius = 50
-			blurLight.NearIntensity = 0.8
-		end
+		if owner.blur then owner.blur:Destroy(); owner.blur = nil end
+	elseif owner.alive and not owner.blur then
+		local blurLight = owner:own(Instance.new("DepthOfFieldEffect"))
+		owner.blur = blurLight
+		blurLight.Enabled = true
+		blurLight.FarIntensity = 0
+		blurLight.FocusDistance = 51.6
+		blurLight.InFocusRadius = 50
+		blurLight.NearIntensity = 0.8
+		blurLight.Parent = lighting
 	end
 end
 
@@ -2453,11 +2523,38 @@ local function BlinkSmartBar(blinkCount, color)
 end
 
 local function Toast(content, color, font, skipBlink)
+	if not checkAltair() then return end
+	content = tostring(content or "")
+	local length = utf8.len(content) or #content
+	local lifetime = math.clamp(4 + length / 22, 7, 16)
+	local reducedMotion = false
+	pcall(function() reducedMotion = guiService.ReducedMotionEnabled end)
+	for _, existing in ipairs(activeToasts) do
+		if existing.Parent and not existing:GetAttribute("AltairExiting")
+			and existing:GetAttribute("AltairContent") == content
+			and existing:GetAttribute("AltairColor") == (color or Color3.fromRGB(240, 240, 240)) then
+			local count = (existing:GetAttribute("AltairCount") or 1) + 1
+			existing:SetAttribute("AltairCount", count)
+			existing:SetAttribute("AltairDeadline", os.clock() + lifetime)
+			existing.Title.Text = content .. " (x" .. count .. ")"
+			existing.Title.MaxVisibleGraphemes = -1
+			return
+		end
+	end
+	while #activeToasts >= 6 do
+		local oldest = table.remove(activeToasts)
+		oldest:SetAttribute("AltairExiting", true)
+		oldest:Destroy()
+	end
 	local template = UI.Toasts.Template:Clone()
 	template.Parent, template.Title.Text, template.Title.TextColor3, template.Title.Font = UI.Toasts, content, color or Color3.fromRGB(240, 240, 240), font or Enum.Font.GothamSemibold
 	template.Visible, template.BackgroundTransparency, template.Title.TextTransparency, template.Title.TextStrokeTransparency, template.Title.FontFace = true, 1, 1, 0.3, Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold, Enum.FontStyle.Italic)
 	template.Title.MaxVisibleGraphemes = 0
 
+	template:SetAttribute("AltairContent", content)
+	template:SetAttribute("AltairCount", 1)
+	template:SetAttribute("AltairColor", color or Color3.fromRGB(240, 240, 240))
+	template:SetAttribute("AltairDeadline", os.clock() + lifetime)
 	table.insert(activeToasts, 1, template)
 
 	if altairValues.smartBarLayout then altairValues.smartBarLayout:syncToasts() end
@@ -2476,11 +2573,11 @@ local function Toast(content, color, font, skipBlink)
 	}):Play()
 
 	task.spawn(function()
-		local length = utf8.len(content) or #content
+		if reducedMotion then template.Title.MaxVisibleGraphemes = -1; return end
 		local delay = math.clamp(1.15 / math.max(length, 1), 0.012, 0.035)
 
 		for i = 1, length do
-			if not template.Parent or template:GetAttribute("AltairExiting") then return end
+			if not template.Parent or template:GetAttribute("AltairExiting") or template:GetAttribute("AltairCount") > 1 then return end
 			template.Title.MaxVisibleGraphemes = i
 			task.wait(delay)
 		end
@@ -2490,12 +2587,16 @@ local function Toast(content, color, font, skipBlink)
 		end
 	end)
 
-	if not skipBlink then
+	if not skipBlink and not reducedMotion then
 		BlinkSmartBar(1, color)
 	end
 
 	task.spawn(function()
-		task.wait(7)
+		while template.Parent do
+			local remaining = (template:GetAttribute("AltairDeadline") or 0) - os.clock()
+			if remaining <= 0 then break end
+			task.wait(remaining)
+		end
 		if not template.Parent then return end
 		template:SetAttribute("AltairExiting", true)
 		template.Title.MaxVisibleGraphemes = -1
@@ -2821,10 +2922,13 @@ altairValues.runDetectedScript = function()
 			end
 
 			local ok, err = pcall(function()
-				loadstring(game:HttpGet(url))()
+				local chunk = assert(loadstring(game:HttpGet(url)))
+				altairValues.activity:record("Script started", tostring(scriptInfo.ScriptTitle or currentGameName) .. " · Custom script")
+				chunk()
 			end)
 
 			if not ok then
+				altairValues.activity:record("Script failed", tostring(scriptInfo.ScriptTitle or currentGameName) .. " · Load or runtime error")
 				warn("Altair | Remote custom script failed: " .. tostring(err))
 				Toast("The remote custom script failed to load.", Color3.fromRGB(255, 90, 90))
 			end
@@ -2896,12 +3000,15 @@ altairValues.runDetectedScript = function()
 
 		local compileOk, chunk = pcall(loadstring, source)
 		if not compileOk or type(chunk) ~= "function" then
+			altairValues.activity:record("Script failed", tostring(scriptInfo.ScriptTitle or currentGameName) .. " · Compile error")
 			Toast("The custom script couldn't be compiled.", Color3.fromRGB(255, 90, 90))
 			return
 		end
 
+		altairValues.activity:record("Script started", tostring(scriptInfo.ScriptTitle or currentGameName) .. " · Custom script")
 		local runOk, runError = pcall(chunk)
 		if not runOk then
+			altairValues.activity:record("Script failed", tostring(scriptInfo.ScriptTitle or currentGameName) .. " · Runtime error")
 			warn("Altair | Custom script failed: " .. tostring(runError))
 			Toast("The custom script returned an error.", Color3.fromRGB(255, 90, 90))
 		end
@@ -3252,38 +3359,28 @@ end
 
 local function removeReverbs(timing)
 	timing = timing or 0.65
-
-	for _, sound in ipairs(soundInstances) do
-		if sound:FindFirstChild("AltairAudioProfile") then
-			local reverb = sound:FindFirstChild("AltairAudioProfile")
-			tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { HighGain = 0 }):Play()
-			tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { LowGain = 0 }):Play()
-			tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { MidGain = 0 }):Play()
-
-			task.delay(timing + 0.03, reverb.Destroy, reverb)
+	for sound, reverb in pairs(altairValues.lifecycle.audio) do
+		altairValues.lifecycle.audio[sound] = nil
+		if reverb.Parent then
+			tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { HighGain = 0, LowGain = 0, MidGain = 0 }):Play()
+			task.delay(timing + 0.03, function() if reverb.Parent then reverb:Destroy() end end)
 		end
 	end
 end
 
 local function createReverb(timing)
+	if not altairValues.lifecycle.alive then return end
 	for _, sound in ipairs(soundInstances) do
-		if not sound:FindFirstChild("AltairAudioProfile") then
-			local reverb = Instance.new("EqualizerSoundEffect")
-
-			reverb.Name = "AltairAudioProfile"
+		if sound.Parent and not altairValues.lifecycle.audio[sound] then
+			local reverb = altairValues.lifecycle:own(Instance.new("EqualizerSoundEffect"))
+			altairValues.lifecycle.audio[sound] = reverb
+			reverb.Destroying:Once(function()
+				if altairValues.lifecycle.audio[sound] == reverb then altairValues.lifecycle.audio[sound] = nil end
+			end)
+			reverb.HighGain, reverb.LowGain, reverb.MidGain = 0, 0, 0
 			reverb.Parent = sound
-
-			reverb.Enabled = false
-
-			reverb.HighGain = 0
-			reverb.LowGain = 0
-			reverb.MidGain = 0
-			reverb.Enabled = true
-
 			if timing then
-				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { HighGain = -20 }):Play()
-				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { LowGain = 5 }):Play()
-				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { MidGain = -20 }):Play()
+				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { HighGain = -20, LowGain = 5, MidGain = -20 }):Play()
 			end
 		end
 	end
@@ -3590,6 +3687,7 @@ altairValues.smartBarLayout = (function()
 		barOffsetY = 0,
 		closedAtDrag = false,
 		idleAccumulator = 0,
+		initializing = true,
 	}
 
 	local back = smartBar.Back
@@ -3763,9 +3861,35 @@ altairValues.smartBarLayout = (function()
 		local originX = UI:IsA("ScreenGui") and UI.AbsolutePosition.X or 0
 		local target = Vector2.new(originX + position.x * viewport.X, screenOriginY() + position.y * viewport.Y)
 		smartBar.Size = UDim2.fromOffset(300, 60)
-		moveCenter(smartBar, clampCenter(smartBar, target, 8))
+		-- Restore from known dimensions, without reading a stale rendered asset size.
+		local x = math.clamp(target.X - originX, 158, math.max(158, viewport.X - 158))
+		local y = math.clamp(target.Y - screenOriginY(), 38, math.max(38, viewport.Y - 38))
+		smartBar.Position = UDim2.fromOffset(x + (smartBar.AnchorPoint.X - 0.5) * 300,
+			y + (smartBar.AnchorPoint.Y - 0.5) * 60)
 		altairValues.smartBarPositionInitialized = true
 		return true
+	end
+
+	function controller:prepareStartup(hidden)
+		smartBar.Visible = false
+		drag.Visible = false
+		smartBar.Size = UDim2.fromOffset(300, 60)
+		if not self:restoreSavedPosition() then
+			local viewport = screenSize()
+			smartBar.Position = UDim2.fromOffset(viewport.X * 0.5, math.max(38, viewport.Y - 38))
+			altairValues.smartBarPositionInitialized = true
+		end
+		-- Let Roblox resolve absolute geometry while both moving objects are invisible.
+		UI.Enabled = true
+		runService.RenderStepped:Wait()
+		self.closedAtDrag = hidden
+		self:cancelDragPositionTween()
+		local target = hidden and self:getClosedDragCenter() or self:getRestDragCenter()
+		drag.Position = positionAtRenderedCenter(drag, target)
+		self:syncContents(false)
+		self:syncToasts()
+		runService.RenderStepped:Wait() -- Resolve Drag before open/close computes its first tween.
+		self.initializing = false
 	end
 
 	function controller:getClosedDragCenter()
@@ -4100,6 +4224,7 @@ altairValues.smartBarLayout = (function()
 
 			self.dragging = false
 			self.touchInput = nil
+			if self.viewportFitPending then self:fitViewport() end
 			tweenService:Create(drag, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 				Size = UDim2.fromOffset(150, 20),
 			}):Play()
@@ -4123,7 +4248,7 @@ altairValues.smartBarLayout = (function()
 		end))
 
 		track(runService.RenderStepped:Connect(function(dt)
-			if not UI.Parent then
+			if not UI.Parent or self.initializing then
 				return
 			end
 
@@ -4151,6 +4276,30 @@ altairValues.smartBarLayout = (function()
 				end
 			end
 		end))
+	end
+
+	function controller:fitViewport()
+		if self.initializing or self.viewportFitQueued then return end
+		self.viewportFitQueued = true
+		task.defer(function()
+			runService.RenderStepped:Wait()
+			self.viewportFitQueued = false
+			if not UI.Parent then return end
+			if self.dragging then self.viewportFitPending = true; return end
+			self.viewportFitPending = false
+			local center = centerOf(smartBar)
+			local target = clampCenter(smartBar, center, 8)
+			if (center - target).Magnitude < 0.5 then return end
+			self:cancelDragPositionTween()
+			moveCenter(smartBar, target)
+			runService.RenderStepped:Wait()
+			if not UI.Parent or self.dragging then return end
+			drag.Position = positionAtRenderedCenter(drag, smartBarOpen and self:getRestDragCenter() or self:getClosedDragCenter())
+			self:syncContents(false)
+			self:syncPanels(1 / 60)
+			self:syncToasts()
+			self.viewportReflows = (self.viewportReflows or 0) + 1
+		end)
 	end
 
 	function controller:panelSize(panel)
@@ -4867,6 +5016,7 @@ altairValues.smartBarLayout.onDragBegin = function(self)
 end
 
 local function rejoin()
+	altairValues.activity:record("Rejoin requested", "Current server")
 	queueNotification("Rejoining Session", "We're queueing a rejoin to this session, give us a moment.", 4400696294)
 
 	if #players:GetPlayers() <= 1 then
@@ -5027,6 +5177,7 @@ altairValues.serverHop = (function()
 end)()
 
 local function serverhop()
+	if not altairValues.serverHop.busy then altairValues.activity:record("Server hop requested", "Searching for a server") end
 	altairValues.serverHop:start()
 end
 
@@ -5043,7 +5194,7 @@ local function leaveExperience()
 end
 
 local function ensureFrameProperties()
-	UI.Enabled = true
+	drag.Visible = false
 
 	for _, panelName in ipairs({ "Character", "Scripts", "Playerlist" }) do
 		local panel = UI:FindFirstChild(panelName)
@@ -5192,8 +5343,8 @@ local function promptModerator(player, role)
 	end
 end
 
-local homeBlur = Instance.new("BlurEffect")
-homeBlur.Name, homeBlur.Size, homeBlur.Parent = "AltairHomeBlur", 0, lighting
+local homeBlur = altairValues.lifecycle:own(Instance.new("BlurEffect"))
+homeBlur.Size = 0
 UI.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
 homeContainer.Size=UDim2.fromScale(1,1)
 homeContainer.Position=UDim2.fromScale(.5,.5)
@@ -6443,17 +6594,16 @@ local homeController = (function()
   text(home.SessionStatus,'Game',item.name) renderGames()
   local detail=gameDetails(item) if alive then home.NowPlaying.Artwork.Image=detail.artwork or gameIcon(item.universeId) end
  end
- local activity={}
+ local activity=altairValues.activity.items
  recordActivity=function(title,description,icon)
-  table.insert(activity,1,{title=title,description=description,icon=icon or 'rbxassetid://7733734848',time=os.time()})
-  if #activity>30 then table.remove(activity) end
+  return altairValues.activity:record(title,description,icon)
  end
  local function renderActivity()
   if not home:FindFirstChild('RecentActivity') then return end
   local list=home.RecentActivity.List clear(list)
   for index,item in ipairs(activity) do local entry=row(list,index,index) text(entry,'Title',item.title) text(entry,'Description',item.description..' · '..age(item.time)) entry.Icon.Image=item.icon end
  end
- local lastActivityRender=0
+ local lastActivityRender,activityRevision=0,-1
  local function tick()
   if not alive or not opened then return end
   local now=os.clock()
@@ -6465,7 +6615,7 @@ local homeController = (function()
   local seconds=math.floor(now-sessionStarted) text(home.Server.Uptime,'Label','Session time') text(home.Server.Uptime,'Value',math.floor(seconds/3600)..'h '..math.floor(seconds/60)%60 ..'m')
   text(home.Server.Region,'Value',data.serverRegion.value~='' and data.serverRegion.value or 'Searching...')
   text(home.NowPlaying,'SessionPills','● In Game     '..playerCount..' / '..players.MaxPlayers..' Players     '..ping..' ms')
-  if now-lastActivityRender>=5 then lastActivityRender=now renderActivity() end
+  if activityRevision~=altairValues.activity.revision or now-lastActivityRender>=5 then lastActivityRender=now activityRevision=altairValues.activity.revision renderActivity() end
   refreshFriends()
  end
  local controller={}
@@ -6540,7 +6690,10 @@ local homeController = (function()
   local count=getJSON('https://friends.roblox.com/v1/users/'..localPlayer.UserId..'/friends/count')
   if alive then text(profile,'StatValues',tostring(count and count.count or '—')..'                   '..tostring(localPlayer.AccountAge)..' days') end
  end)
- recordActivity('Joined experience',placeName or 'Current session') renderActivity()
+ if altairValues.activity.previousJob~=game.JobId then
+  recordActivity(altairValues.activity.previousJob and 'Arrived after teleport' or 'Joined experience',placeName or 'Current session')
+ end
+ renderActivity()
  selectFriend(nil) selectGame(nil)
  for _,v in ipairs(homeContent.Sidebar:GetChildren()) do if v:IsA('GuiButton') and pages:FindFirstChild(v.Name) then action(v,function() showPage(v.Name) end) end end
  action(homeContent.Sidebar.Profile.Interact,function() inspect(localPlayer.UserId) end)
@@ -6606,6 +6759,7 @@ local function UpdateHome() homeController.tick() end
 openHome = function()
  if homeOpen or not UI.Parent then return end
  homeOpen=true homeFov=homeFov or camera.FieldOfView
+ homeBlur.Parent=lighting
  for _,panel in ipairs(UI:GetChildren()) do
   if panel:IsA("GuiObject") and panel.Visible and smartBar.Back.Buttons:FindFirstChild(panel.Name) and isPanel(panel.Name) then
    task.spawn(closePanel,panel.Name,true)
@@ -6637,12 +6791,69 @@ closeHome = function(immediate)
  tweenService:Create(homeBlur,TweenInfo.new(immediate and 0 or .8,Enum.EasingStyle.Quint),{Size=0}):Play()
  tweenService:Create(camera,TweenInfo.new(immediate and 0 or .8,Enum.EasingStyle.Quint),{FieldOfView=homeFov or camera.FieldOfView}):Play()
  slide.Completed:Once(function(state)
-  if state==Enum.PlaybackState.Completed and not homeOpen then homeContainer.Visible=false homeFov=nil end
+  if state==Enum.PlaybackState.Completed and not homeOpen then homeContainer.Visible=false homeFov=nil
+   if homeBlur.Parent then homeBlur.Parent=nil end
+  end
  end)
  slide:Play()
 end
 
+-- Search owns its input layer and transition state. The interface now uses
+-- sibling Z ordering, so decorative siblings must stay below the text field.
+altairValues.scriptSearchState = { version = 0, phase = "closed" }
+
+function altairValues.scriptSearchState:prepareInput()
+	scriptSearch.ZIndex = math.max(scriptSearch.ZIndex, homeContainer.ZIndex + 1,
+		settingsPanel.ZIndex + 1, scriptsPanel.ZIndex + 1,
+		characterPanel.ZIndex + 1, playerlistPanel.ZIndex + 1)
+	scriptSearch.Active = true
+	scriptSearch.Interactable = true
+	scriptSearch.Shadow.Active = false
+	scriptSearch.Shadow.ZIndex = 0
+	local top = 1
+	for _, child in ipairs(scriptSearch:GetChildren()) do
+		if child:IsA("GuiObject") and child ~= scriptSearch.SearchBox and child ~= scriptSearch.Icon then
+			top = math.max(top, child.ZIndex + 1)
+		end
+	end
+	scriptSearch.SearchBox.ZIndex = top
+	scriptSearch.Icon.ZIndex = top
+	scriptSearch.Icon.Active = false
+	scriptSearch.SearchBox.Visible = true
+	scriptSearch.SearchBox.Active = true
+	scriptSearch.SearchBox.Interactable = true
+	scriptSearch.SearchBox.TextEditable = true
+	scriptSearch.SearchBox.ClearTextOnFocus = false
+	scriptSearch.SearchBox.MultiLine = false
+	scriptSearch.List.Active = true
+	scriptSearch.List.Interactable = true
+	-- A visible Modal button releases first-person mouse lock. Keep this tiny,
+	-- transparent button behind the content so it cannot cover search/results.
+	if not self.mouseUnlock then
+		local button = Instance.new("TextButton")
+		button.Name = "ScriptSearchMouseUnlock"
+		button.Size = UDim2.fromOffset(1, 1)
+		button.BackgroundTransparency = 1
+		button.Text = ""
+		button.AutoButtonColor = false
+		button.Active = false
+		button.Selectable = false
+		button.ZIndex = 0
+		button.Parent = scriptSearch
+		self.mouseUnlock = button
+	end
+	self.mouseUnlock.Modal = true
+end
+
 local function openScriptSearch()
+	local state = altairValues.scriptSearchState
+	if state.phase == "open" or state.phase == "opening" then return end
+	state.version += 1
+	local version = state.version
+	state.phase = "opening"
+	state:prepareInput()
+	scriptSearch.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	scriptSearch.UIGradient.Enabled = true
 	if homeOpen then closeHome() end
 	debounce = true
 
@@ -6663,22 +6874,35 @@ local function openScriptSearch()
 	tweenService:Create(scriptSearch, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 580, 0, 43) }):Play()
 	tweenService:Create(scriptSearch.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0.85 }):Play()
 	task.wait(0.03)
+	if state.version ~= version then return end
 	tweenService:Create(scriptSearch.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
 	task.wait(0.02)
+	if state.version ~= version then return end
 	tweenService:Create(scriptSearch.SearchBox, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 
 	task.wait(0.3)
+	if state.version ~= version or not scriptSearch.Visible then return end
+	state.phase = "open"
 	scriptSearch.SearchBox:CaptureFocus()
 	task.wait(0.2)
+	if state.version ~= version then return end
 	debounce = false
 end
 
 closeScriptSearch = function()
+	local state = altairValues.scriptSearchState
+	if state.phase == "closing" or state.phase == "closed" then return end
+	state.version += 1
+	local version = state.version
+	state.phase = "closing"
+	state.searching = nil
+	if state.mouseUnlock then state.mouseUnlock.Modal = false end
 	debounce = true
 
 	wipeTransparency(scriptSearch, 1, false)
 
 	task.wait(0.1)
+	if state.version ~= version then return end
 
 	scriptSearch.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 	scriptSearch.UIGradient.Enabled = false
@@ -6686,6 +6910,7 @@ closeScriptSearch = function()
 	scriptSearch.SearchBox:ReleaseFocus()
 
 	task.wait(0.5)
+	if state.version ~= version then return end
 
 	for _, createdScript in ipairs(scriptSearch.List:GetChildren()) do
 		if createdScript.Name ~= "Placeholder" and createdScript.Name ~= "Template" and createdScript.ClassName == "Frame" then
@@ -6694,13 +6919,87 @@ closeScriptSearch = function()
 	end
 
 	task.wait(0.1)
+	if state.version ~= version then return end
 	scriptSearch.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	state.phase = "closed"
 	scriptSearch.Visible = false
 	scriptSearch.UIGradient.Enabled = true
 	debounce = false
 end
 
-local function createScript(result)
+-- Search-only transport: bounded work, short-lived cache, and shared requests.
+altairValues.searchTransport = { cache = {}, pending = {}, active = 0, hits = 0, bytes = 0, cooldown = 0 }
+function altairValues.searchTransport:get(url, current)
+	local deadline = os.clock() + 12
+	if not current() then return nil, "Cancelled" end
+	local cached = self.cache[url]
+	if cached and cached.expires > os.clock() then
+		cached.used = os.clock(); self.hits += 1
+		return cached.value
+	end
+	if os.clock() < self.cooldown then return nil, "Search is rate limited; try again shortly." end
+	if type(httpRequest) ~= "function" then return nil, "This executor does not provide HTTP requests." end
+	while self.active >= 4 and not self.pending[url] do
+		if not current() then return nil, "Cancelled" end
+		if os.clock() >= deadline then return nil, "Search is busy; try again shortly." end
+		task.wait(0.05)
+	end
+	if not current() then return nil, "Cancelled" end
+	if os.clock() < self.cooldown then return nil, "Search is rate limited; try again shortly." end
+	local job = self.pending[url]
+	if not job then
+		job = { done = false }
+		self.pending[url] = job
+		self.active += 1
+		task.spawn(function()
+			local ok, result = pcall(function()
+				local response = httpRequest({ Url = url, Method = "GET", Timeout = 12 })
+				assert(type(response) == "table", "No response received.")
+				local status = tonumber(response.StatusCode or response.Status) or 200
+				if status == 429 then
+					local headers = type(response.Headers) == "table" and response.Headers or {}
+					self.cooldown = os.clock() + math.clamp(tonumber(headers["Retry-After"] or headers["retry-after"]) or 15, 1, 60)
+				end
+				assert(status >= 200 and status < 300, "Search returned HTTP " .. tostring(status) .. ".")
+				assert(type(response.Body) == "string" and #response.Body <= 1024 * 1024, "Search response is missing or too large.")
+				local value = httpService:JSONDecode(response.Body)
+				assert(type(value) == "table", "Invalid search response.")
+				assert((type(value.result) == "table" and type(value.result.scripts) == "table")
+					or type(value.script) == "table", "Search data is unavailable.")
+				if UI.Parent then
+					local old = self.cache[url]
+					if old then self.bytes -= old.bytes end
+					self.cache[url] = { value = value, bytes = #response.Body, used = os.clock(), expires = os.clock() + 60 }
+					self.bytes += #response.Body
+					while true do
+						local count, oldest, stamp = 0, nil, math.huge
+						for key, entry in pairs(self.cache) do
+							count += 1
+							if entry.used < stamp then oldest, stamp = key, entry.used end
+						end
+						if count <= 32 and self.bytes <= 4 * 1024 * 1024 then break end
+						self.bytes -= self.cache[oldest].bytes; self.cache[oldest] = nil
+					end
+				end
+				return value
+			end)
+			job.value = ok and result or nil
+			job.problem = not ok and tostring(result) or nil
+			job.done = true
+			self.active -= 1
+			self.pending[url] = nil
+		end)
+	end
+	while not job.done do
+		if not current() then return nil, "Cancelled" end
+		if os.clock() >= deadline then return nil, "Search timed out; you can retry." end
+		task.wait(0.05)
+	end
+	if not current() then return nil, "Cancelled" end
+	return job.value, job.problem
+end
+local function createScript(result, current)
+	if not current() or type(result) ~= "table" or type(result.title) ~= "string" then return end
 	local newScript = UI.ScriptSearch.List.Template:Clone()
 	newScript.Name = result.title
 	newScript.Parent = UI.ScriptSearch.List
@@ -6714,26 +7013,19 @@ local function createScript(result)
 		end
 	end
 
-	task.spawn(function()
-		local response
-
-		local success = pcall(function()
-			local responseRequest = httpRequest({
-				Url = "https://www.scriptblox.com/api/script/" .. result["slug"],
-				Method = "GET",
-			})
-
-			response = httpService:JSONDecode(responseRequest.Body)
-		end)
-
-		if not success or not response or not response.script then
+	task.defer(function()
+		local response = altairValues.searchTransport:get("https://scriptblox.com/api/script/" .. httpService:UrlEncode(tostring(result.slug or "")),
+			function() return current() and newScript.Parent ~= nil end)
+		if not current() or not newScript.Parent then return end
+		if not response or type(response.script) ~= "table" then
+			newScript.ScriptDescription.Text = "Details unavailable. The search result is still available."
 			return
 		end
 
-		newScript.ScriptDescription.Text = response.script.features
+		newScript.ScriptDescription.Text = tostring(response.script.features or "No description provided.")
 
-		local likes = response.script.likeCount
-		local dislikes = response.script.dislikeCount
+		local likes = tonumber(response.script.likeCount) or 0
+		local dislikes = tonumber(response.script.dislikeCount) or 0
 
 		if likes ~= dislikes then
 			newScript.Tags.Review.Title.Text = (likes > dislikes) and "Positive Reviews" or "Negative Reviews"
@@ -6747,8 +7039,9 @@ local function createScript(result)
 			newScript.Tags.Review.Visible = false
 		end
 
-		newScript.ScriptAuthor.Text = "uploaded by " .. response.script.owner.username
-		newScript.Tags.Verified.Visible = response.script.owner.verified or false
+		local owner = type(response.script.owner) == "table" and response.script.owner or {}
+		newScript.ScriptAuthor.Text = "uploaded by " .. tostring(owner.username or "Unknown")
+		newScript.Tags.Verified.Visible = owner.verified == true
 
 		tweenService:Create(newScript, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.8 }):Play()
 		tweenService:Create(newScript.ScriptName, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
@@ -6772,6 +7065,13 @@ local function createScript(result)
 	wipeTransparency(newScript, 1, true)
 
 	newScript.ScriptName.Text = result.title
+	newScript.ScriptDescription.Text = "Loading details..."
+	newScript.ScriptAuthor.Text = ""
+	newScript.BackgroundTransparency = 0.8
+	newScript.ScriptName.TextTransparency = 0
+	newScript.Execute.BackgroundTransparency = 0.8
+	newScript.Execute.TextTransparency = 0
+	newScript.ScriptDescription.TextTransparency = 0.3
 
 	newScript.Tags.Visible = false
 	newScript.Tags.Patched.Visible = result.isPatched or false
@@ -6785,14 +7085,17 @@ local function createScript(result)
 		queueNotification("ScriptSearch", "Running " .. result.title .. " via ScriptSearch", 4384403532)
 		closeScriptSearch()
 
-		local chunk, compileError = loadstring(result.script)
-		if not chunk then
-			queueNotification("ScriptSearch", "Couldn't run " .. result.title .. ": " .. tostring(compileError), 4384402990)
+		local compiled, chunk, compileError = pcall(loadstring, result.script)
+		if not compiled or type(chunk) ~= "function" then
+			altairValues.activity:record("Script failed", result.title .. " · Compile error")
+			queueNotification("ScriptSearch", "Couldn't run " .. result.title .. ": " .. tostring(compiled and compileError or chunk), 4384402990)
 			return
 		end
 
+		altairValues.activity:record("Script started", result.title .. " · ScriptSearch")
 		local runSuccess, runError = pcall(chunk)
 		if not runSuccess then
+			altairValues.activity:record("Script failed", result.title .. " · Runtime error")
 			queueNotification("ScriptSearch", result.title .. " errored while running: " .. tostring(runError), 4384402990)
 		end
 	end)
@@ -6947,7 +7250,7 @@ local function securityDetection(title, content, link, gradient, actions)
 end
 
 if originalRequest then
-	env[index] = function(data)
+	altairValues.lifecycle.requestWrapper = function(data)
 		if type(data) ~= "table" then
 			return originalRequest(data)
 		end
@@ -6987,15 +7290,16 @@ if originalRequest then
 		}
 	end
 
+	altairValues.lifecycle:replaceGlobal(index, altairValues.lifecycle.requestWrapper)
 	for _, alias in ipairs({ "request", "http_request" }) do
-		if env[alias] then
-			env[alias] = env[index]
+		if alias ~= index and env[alias] then
+			altairValues.lifecycle:replaceGlobal(alias, altairValues.lifecycle.requestWrapper)
 		end
 	end
 end
 
 if originalSetClipboard then
-	env[indexSetClipboard] = function(data)
+	altairValues.lifecycle.clipboardWrapper = function(data)
 		if not (checkAltair() and settingValue("Intelligent Clipboard Interception")) then
 			return originalSetClipboard(data)
 		end
@@ -7010,30 +7314,30 @@ if originalSetClipboard then
 			return originalSetClipboard(data)
 		end
 	end
+	altairValues.lifecycle:replaceGlobal(indexSetClipboard, altairValues.lifecycle.clipboardWrapper)
 end
 
 local function searchScriptBlox(query)
-	local response
-
-	if not httpRequest then
-		queueNotification("ScriptSearch", "ScriptSearch needs an executor with a request function, and this one doesn't expose it.", 4384402990)
-		closeScriptSearch()
-		return
+	local state = altairValues.scriptSearchState
+	query = tostring(query or ""):match("^%s*(.-)%s*$")
+	if query == "" or #query > 160 or state.phase ~= "open" then return end
+	if state.searching == query then return end
+	state.requestVersion = (state.requestVersion or 0) + 1
+	local requestVersion, version = state.requestVersion, state.version
+	state.searching = query
+	local function current()
+		return UI.Parent ~= nil and scriptSearch.Visible and state.phase == "open"
+			and state.version == version and state.requestVersion == requestVersion
 	end
-
-	local success = pcall(function()
-		local responseRequest = httpRequest({
-			Url = "https://scriptblox.com/api/script/search?q=" .. httpService:UrlEncode(query) .. "&mode=free&max=20&page=1",
-			Method = "GET",
-		})
-
-		response = httpService:JSONDecode(responseRequest.Body)
-	end)
-
-	if not success or type(response) ~= "table" or type(response.result) ~= "table" or type(response.result.scripts) ~= "table" then
-		queueNotification("ScriptSearch", "ScriptSearch backend encountered an error, try again later", 4384402990)
-		closeScriptSearch()
-		return
+	scriptSearch.SearchBox.PlaceholderText = "Searching..."
+	local response, problem = altairValues.searchTransport:get(
+		"https://scriptblox.com/api/script/search?q=" .. httpService:UrlEncode(query) .. "&mode=free&max=20&page=1", current)
+	if not current() then return end
+	state.searching = nil
+	scriptSearch.SearchBox.PlaceholderText = "Search ScriptBlox.com"
+	if not response or type(response.result) ~= "table" or type(response.result.scripts) ~= "table" then
+		queueNotification("ScriptSearch", problem or "Search data is unavailable. Try again.", 4384402990)
+		return -- Keep the query and previous results available for retry.
 	end
 
 	tweenService:Create(scriptSearch.NoScriptsTitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
@@ -7047,6 +7351,7 @@ local function searchScriptBlox(query)
 
 	scriptSearch.List.Visible = true
 	task.wait(0.5)
+	if not current() then return end
 
 	scriptSearch.List.CanvasPosition = Vector2.new(0, 0)
 
@@ -7062,16 +7367,19 @@ local function searchScriptBlox(query)
 	tweenService:Create(scriptSearch.UIGradient, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.6) }):Play()
 
 	local scriptCreated = false
-	for _, scriptResult in ipairs(response.result.scripts) do
-		if pcall(createScript, scriptResult) then
+	for index, scriptResult in ipairs(response.result.scripts) do
+		if index > 20 or not current() then break end
+		if type(scriptResult) == "table" and type(scriptResult.title) == "string" and pcall(createScript, scriptResult, current) then
 			scriptCreated = true
 		end
 	end
 
 	if not scriptCreated then
 		task.wait(0.2)
+		if not current() then return end
 		tweenService:Create(scriptSearch.NoScriptsTitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 		task.wait(0.1)
+		if not current() then return end
 		tweenService:Create(scriptSearch.NoScriptsDesc, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 	else
 		tweenService:Create(scriptSearch.List, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ScrollBarImageTransparency = 0 }):Play()
@@ -9003,12 +9311,65 @@ local function settingsPath()
 	return altairValues.altairFolder .. "/" .. altairValues.settingsFile
 end
 
+-- Keep a validated recovery copy; executor file APIs do not promise atomic writes.
+altairValues.settingsStore = { status = "Not loaded" }
+function altairValues.settingsStore:read(path)
+	if type(readfile) ~= "function" then return nil end
+	local ok, raw = pcall(readfile, path)
+	if not ok or type(raw) ~= "string" or #raw > 256 * 1024 then return nil end
+	local decoded, value = pcall(httpService.JSONDecode, httpService, raw)
+	if not decoded or type(value) ~= "table" then return nil end
+	return value, raw
+end
+
+function altairValues.settingsStore:load()
+	local value, raw = self:read(settingsPath())
+	if value then self.lastGood = raw; self.status = "Loaded"; return value end
+	value, raw = self:read(settingsPath() .. ".backup")
+	if value then
+		self.lastGood = raw; self.recovered = true; self.status = "Recovered backup"
+		warn("Altair | Recovered settings from the backup copy.")
+		return value
+	end
+	self.status = type(writefile) == "function" and "Defaults" or "Session only"
+	return nil
+end
+
+function altairValues.settingsStore:write(encoded)
+	if type(writefile) ~= "function" then self.status = "Session only"; return false end
+	if self.writing then self.pending = encoded; return false end
+	if encoded == self.lastGood and not self.recovered then return true end
+	self.writing = true
+	local ok, problem = pcall(function()
+		checkFolder()
+		-- Never replace a good backup with unreadable primary data.
+		writefile(settingsPath() .. ".backup", self.lastGood or encoded)
+		if type(readfile) == "function" then
+			assert(readfile(settingsPath() .. ".backup") == (self.lastGood or encoded), "Backup verification failed")
+		end
+		writefile(settingsPath(), encoded)
+		if type(readfile) == "function" then assert(readfile(settingsPath()) == encoded, "Settings verification failed") end
+	end)
+	if self.pending then
+		task.defer(function()
+			local pending = self.pending; self.pending = nil; self.writing = false
+			self:write(pending)
+		end)
+	else self.writing = false end
+	if ok then self.lastGood = encoded; self.recovered = false; self.status = "Saved"; return true end
+	self.status = "Save failed"
+	if not self.warnedAt or os.clock() - self.warnedAt >= 30 then
+		self.warnedAt = os.clock()
+		warn("Altair | Settings could not be saved: " .. tostring(problem))
+		queueNotification("Settings not saved", "Your changes still work this session, but could not be saved to disk. Altair kept its recovery copy.", 4370336704)
+	end
+	return false
+end
 local function saveSettings()
 	if not writefile then
 		return
 	end
 
-	checkFolder()
 
 	local flat = {}
 	for _, category in ipairs(altairSettings) do
@@ -9025,16 +9386,13 @@ local function saveSettings()
 		return
 	end
 
-	pcall(writefile, settingsPath(), encoded)
+	altairValues.settingsStore:write(encoded)
 end
 
 local function assembleSettings()
-	if isfile and readfile and isfile(settingsPath()) then
-		local success, stored = pcall(function()
-			return httpService:JSONDecode(readfile(settingsPath()))
-		end)
-
-		if success and type(stored) == "table" then
+	do
+		local stored = altairValues.settingsStore:load()
+		if type(stored) == "table" then
 			for _, category in ipairs(altairSettings) do
 				for _, setting in ipairs(category.categorySettings) do
 					if setting.persistent == false then continue end
@@ -9058,8 +9416,6 @@ local function assembleSettings()
 					end
 				end
 			end
-		else
-			warn("Altair | Settings file was unreadable and has been reset to defaults")
 		end
 	end
 
@@ -9211,6 +9567,7 @@ local function assembleSettings()
 
 						local previousValue = setting.current
 						setting.current = not setting.current
+						altairValues.activity:record("Setting changed", setting.name .. (setting.current and " · Enabled" or " · Disabled"))
 						saveSettings()
 						if type(setting.onChanged) == "function" then
 							task.spawn(setting.onChanged, setting.current, previousValue)
@@ -9597,7 +9954,10 @@ local developerTools = (function()
 	return controller
 end)()
 
-local altairAPI = type(env.Altair) == "table" and env.Altair or {}
+local altairAPI = {}
+altairValues.lifecycle.api = altairAPI
+altairAPI.Unload = function() altairValues.lifecycle:unload() end
+altairAPI.Destroy = altairAPI.Unload
 
 altairAPI.Toast = Toast
 altairAPI.QueueNotification = queueNotification
@@ -9636,6 +9996,16 @@ altairAPI.LeaveExperience = leaveExperience
 altairAPI.TeleportToPlayer = teleportTo
 altairAPI.ToggleSpectate = toggleSpectate
 altairAPI.CreateESP = createEsp
+
+altairAPI.GetRuntimeHealth = function()
+	local network = altairValues.searchTransport
+	return {
+		searchRequests = network.active, searchCacheHits = network.hits, searchCacheBytes = network.bytes,
+		searchCooldown = math.max(0, network.cooldown - os.clock()),
+		settings = altairValues.settingsStore.status, activeToasts = #activeToasts,
+		viewportRecoveries = altairValues.smartBarLayout.viewportReflows or 0,
+	}
+end
 
 altairAPI.GetPing = getPing
 altairAPI.GetSetting = settingValue
@@ -9713,8 +10083,52 @@ altairAPI.OnDebugChanged = function(callback)
 	return developerTools:Observe(callback)
 end
 
+altairAPI.RecordActivity = function(title, description)
+	return altairValues.activity:record(title, description)
+end
 altairAPI.Version = altairValues.altairVersion
 env.Altair = altairAPI
+
+altairValues.continuation = { quiet = false, key = "Altair.Session.v1" }
+do
+	local session = altairValues.continuation
+	local ok, marker = pcall(teleportService.GetTeleportSetting, teleportService, session.key)
+	local recent = ok and type(marker) == "table" and marker.universe == game.GameId
+		and type(marker.at) == "number" and os.time() - marker.at >= 0 and os.time() - marker.at < 600
+	if recent then
+		session.quiet = marker.arrivedJob == jobId or (type(marker.fromJob) == "string" and marker.fromJob ~= jobId)
+		if session.quiet and type(marker.open) == "boolean" then session.open = marker.open end
+	end
+	local function mark(arriving)
+		pcall(teleportService.SetTeleportSetting, teleportService, session.key, {
+			universe = game.GameId, fromJob = jobId, arrivedJob = arriving and jobId or "",
+			at = os.time(), open = smartBarOpen,
+		})
+	end
+	session.mark = mark
+	mark(true)
+	local teleportPending = false
+	local function teleportFailed()
+		if teleportPending then altairValues.activity:record("Teleport failed", "Still in the current server") end
+		teleportPending = false
+		mark(true)
+	end
+	track(localPlayer.OnTeleport:Connect(function(teleportState)
+		if teleportState == Enum.TeleportState.Failed then teleportFailed(); return end
+		if teleportState == Enum.TeleportState.Started or teleportState == Enum.TeleportState.InProgress then
+			if not teleportPending then
+				teleportPending = true
+				altairValues.activity:record("Teleport started", "Leaving the current server")
+			end
+			altairValues.activity:save()
+			altairValues.smartBarLayout:savePosition()
+			mark(false)
+		end
+	end))
+	track(teleportService.TeleportInitFailed:Connect(function(player)
+		if player == localPlayer then teleportFailed() end
+	end))
+end
 
 local function start()
 	if altairValues.releaseType == "Experimental" then -- Make this more secure.
@@ -9724,8 +10138,6 @@ local function start()
 		end
 	end
 	windowFocusChanged(true)
-
-	UI.Enabled = true
 
 	local developerAvailable = developerTools:IsAvailable()
 	local developerCategory
@@ -9901,12 +10313,12 @@ local function start()
 	smartBar.Back.Time.Text = os.date("%I:%M"):gsub("^0", "")
     smartBar.Back.Time.AMPM.Text = os.date("%p")
 
-	drag.Visible = not settingValue("Hide Bar")
+	local startupHidden = settingValue("Load Hidden")
+	if altairValues.continuation.open ~= nil then startupHidden = not altairValues.continuation.open end
+	altairValues.smartBarLayout:prepareStartup(startupHidden)
 
-	altairValues.smartBarLayout:restoreSavedPosition()
-
-	if not settingValue("Load Hidden") then
-		if settingValue("Startup Sound Effect") then
+	if not startupHidden then
+		if not altairValues.continuation.quiet and settingValue("Startup Sound Effect") then
 			local startupSound = Instance.new("Sound")
 			startupSound.Parent = UI
 			startupSound.SoundId = "rbxassetid://5515669992"
@@ -9920,16 +10332,33 @@ local function start()
 	else
 		closeSmartBar()
 	end
+	altairValues.continuation.mark(true)
+
+	-- Resume Rivals if this executor lacks a teleport queue; the module deduplicates both paths.
+	task.spawn(function()
+		-- Runs either from the executor's teleport queue or Altair's existing autoexecute.
+		if not game:IsLoaded() then game.Loaded:Wait() end
+		if game.GameId ~= 6035872082 then return end
+		local service = game:GetService("TeleportService")
+		local ok, marker = pcall(service.GetTeleportSetting, service, "Altair.Rivals.v1")
+		if not ok or type(marker) ~= "table" or marker.active ~= true or marker.universe ~= game.GameId
+			or type(marker.fromJob) ~= "string" or marker.fromJob == game.JobId
+			or type(marker.at) ~= "number" or os.time() - marker.at < 0 or os.time() - marker.at > 600
+			or type(marker.source) ~= "string" then return end
+		local chunk, err = loadstring(marker.source, "Altair Rivals (continued)")
+		if chunk then return chunk(marker.source, true) end
+		warn("Altair Rivals | Could not continue after teleport: " .. tostring(err))
+	end)
 
 	task.spawn(function()
 		task.wait(0.65)
 		local detected = altairValues.scanCustomScripts()
-		if detected then
+		if detected and not altairValues.continuation.quiet then
 			altairValues.showGameDetection(detected)
 		end
 	end)
 
-	if settingValue("Chat Spy") and not legacyChatActive then
+	if not altairValues.continuation.quiet and settingValue("Chat Spy") and not legacyChatActive then
 		task.delay(6, function()
 			queueNotification(
 				"Chat Spy unavailable",
@@ -9951,12 +10380,16 @@ end
 altairValues.smartBarLayout:bind(function()
 	if smartBarOpen then closeSmartBar() else openSmartBar() end
 end)
+track(UI:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() altairValues.smartBarLayout:fitViewport() end))
+track(UI:GetPropertyChangedSignal("AbsolutePosition"):Connect(function() altairValues.smartBarLayout:fitViewport() end))
+
 
 
 local startSuccess, startError = pcall(start)
 if not startSuccess then
 	warn("Altair | Startup error: " .. tostring(startError))
-	pcall(queueNotification, "Altair had trouble starting", "Some features may be unavailable. Error details: " .. tostring(startError), 4370336704)
+	altairValues.lifecycle:unload()
+	return
 end
 
 do
@@ -10222,6 +10655,11 @@ track(userInputService.InputBegan:Connect(function(input, processed)
 		return
 	end
 
+	if scriptSearch.Visible and input.KeyCode == Enum.KeyCode.Escape then
+		closeScriptSearch()
+		return
+	end
+
 	if processed then
 		return
 	end
@@ -10316,6 +10754,8 @@ scriptSearch.SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
 end)
 
 scriptSearch.SearchBox.FocusLost:Connect(function(enterPressed)
+	-- ReleaseFocus during close must not start another close coroutine.
+	if altairValues.scriptSearchState.phase ~= "open" or not scriptSearch.Visible then return end
 	tweenService:Create(scriptSearch.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageColor3 = Color3.fromRGB(150, 150, 150) }):Play()
 	tweenService:Create(scriptSearch.SearchBox, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextColor3 = Color3.fromRGB(150, 150, 150) }):Play()
 
@@ -10375,7 +10815,12 @@ for _, player in ipairs(players:GetPlayers()) do
 	end))
 end
 
+track(localPlayer.CharacterAdded:Connect(function()
+	altairValues.activity:record("Character spawned", "Your character was added to the world")
+end))
+
 track(players.PlayerAdded:Connect(function(player)
+	altairValues.activity:record("Player joined", player.DisplayName)
 	if not checkAltair() then
 		return
 	end
@@ -10422,6 +10867,7 @@ track(players.PlayerAdded:Connect(function(player)
 end))
 
 track(players.PlayerRemoving:Connect(function(player)
+	altairValues.activity:record("Player left", player.DisplayName)
 	disconnectPlayerConnections(player)
 	altairValues.chatModeration.users[player.UserId] = nil
 	altairValues.playerAnomaly.users[player.UserId] = nil
@@ -10490,6 +10936,7 @@ track(runService.RenderStepped:Connect(function(frame)
 end))
 
 local function runtime()
+	if not checkAltair() then return end
 	local characterParts = {}
 	local characterPartConnections = {}
 
@@ -10646,6 +11093,7 @@ local function runtime()
 				end
 			end
 			for index, instance in ipairs(descendants) do
+				if not checkAltair() then break end
 				registerDescendant(instance)
 				if index % 400 == 0 then
 					task.wait()
@@ -10657,6 +11105,8 @@ local function runtime()
 	end
 
 	local function teardown()
+		if altairValues.runtimeCleaned then return end
+		altairValues.runtimeCleaned = true
 		developerTools:Stop("altair-teardown")
 		homeController.destroy()
 		if espContainer then
@@ -10716,11 +11166,11 @@ local function runtime()
 			camera.FieldOfView = baseFieldOfView
 		end)
 
-		for _, coreUI in ipairs(env.cachedCoreUI or {}) do
+		for _, coreUI in ipairs(altairValues.cachedCoreUI or {}) do
 			pcall(starterGui.SetCoreGuiEnabled, starterGui, Enum.CoreGuiType[coreUI], true)
 		end
 
-		for _, cachedUI in ipairs(env.cachedInGameUI or {}) do
+		for _, cachedUI in ipairs(altairValues.cachedInGameUI or {}) do
 			pcall(function()
 				if cachedUI.Parent then
 					cachedUI.Enabled = true
@@ -10729,6 +11179,7 @@ local function runtime()
 		end
 	end
 
+	altairValues.lifecycle.runtimeCleanup = teardown
 	trackCharacterParts(localPlayer.Character)
 	track(localPlayer.CharacterAdded:Connect(trackCharacterParts))
 	track(localPlayer.CharacterRemoving:Connect(clearCharacterPartTracking))
@@ -10967,7 +11418,7 @@ local function runtime()
 
 	while task.wait(1) do
 		if not checkAltair() then
-			teardown()
+			altairValues.lifecycle:unload()
 			break
 		end
 
@@ -11146,9 +11597,11 @@ end
 	end
 end)()
 
-BlinkSmartBar(2)
-task.wait(2)
-Toast("Welcome back. Nice to see you, "..lowerDisplayName)
+if not altairValues.continuation.quiet then
+	BlinkSmartBar(2)
+	task.wait(2)
+	Toast("Welcome back. Nice to see you, "..lowerDisplayName)
+end
 --[[]]
 
 runtime()
