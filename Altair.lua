@@ -1001,6 +1001,7 @@ function altairValues.lifecycle:replaceGlobal(key, value)
 end
 function altairValues.lifecycle:unload()
 	if not self.alive then return end
+	if self.snapshot then pcall(self.snapshot) end
 	self.alive = false
 	if self.runtimeCleanup then pcall(self.runtimeCleanup) end
 	for _, connection in ipairs(connections) do pcall(connection.Disconnect, connection) end
@@ -1015,6 +1016,43 @@ function altairValues.lifecycle:unload()
 	if self.api and env.Altair == self.api then env.Altair = nil end
 end
 
+-- A new place/server continues the experience; a new universe starts a new session.
+altairValues.sessionMemory = { key="Altair.Context.v1", startedAt=os.time(), hops=0 }
+do
+	local context = altairValues.sessionMemory
+	local ok, saved = pcall(teleportService.GetTeleportSetting, teleportService, context.key)
+	local now = os.time()
+	local function stamp(value) return type(value)=="number" and value==value and value>=0 and value<=now end
+	local same = ok and type(saved)=="table" and saved.version==1 and saved.universe==game.GameId
+		and saved.user==localPlayer.UserId and type(saved.job)=="string" and saved.job~=""
+		and stamp(saved.at) and (saved.job==game.JobId or now-saved.at<600)
+	if same then
+		context.resumed = true
+		context.startedAt = stamp(saved.startedAt) and saved.startedAt or now
+		local hops=tonumber(saved.hops) or 0
+		context.hops = (hops==hops and math.floor(math.clamp(hops,0,10000)) or 0) + (saved.job~=game.JobId and 1 or 0)
+		context.position = type(saved.position)=="table" and saved.position or nil
+		context.home = type(saved.home)=="table" and saved.home or nil
+		context.open = type(saved.open)=="boolean" and saved.open or nil
+		if saved.open==false then context.open=false end
+		if type(saved.username)=="string" and #saved.username>=3 and #saved.username<=20
+			and saved.username:match("^[%w_]+$") and type(saved.displayName)=="string"
+			and #saved.displayName>0 and #saved.displayName<=64 then
+			randomUsername, randomDisplayName = saved.username, saved.displayName
+		end
+	end
+	function context:save()
+		if not altairValues.lifecycle.alive then return end
+		if self.captureHome then self.home=self.captureHome() end
+		pcall(teleportService.SetTeleportSetting, teleportService, self.key, {
+			version=1, universe=game.GameId, user=localPlayer.UserId, job=game.JobId, at=os.time(),
+			startedAt=self.startedAt, hops=self.hops, position=self.position, home=self.home,
+			open=smartBarOpen, username=randomUsername, displayName=randomDisplayName,
+		})
+		self.lastSave=os.clock()
+	end
+	altairValues.lifecycle.snapshot=function() context:save() end
+end
 -- Bounded session activity; teleport settings stay local to this Roblox session.
 altairValues.activity = { items = {}, revision = 0, key = "Altair.Activity.v1" }
 do
@@ -3829,7 +3867,6 @@ altairValues.smartBarLayout = (function()
 	end
 
 	function controller:savePosition()
-		if type(writefile) ~= "function" then return end
 		local viewport = screenSize()
 		if viewport.X <= 0 or viewport.Y <= 0 then return end
 		local originX = UI:IsA("ScreenGui") and UI.AbsolutePosition.X or 0
@@ -3839,6 +3876,9 @@ altairValues.smartBarLayout = (function()
 			x = math.clamp((center.X - originX) / viewport.X, 0, 1),
 			y = math.clamp((center.Y - screenOriginY()) / viewport.Y, 0, 1),
 		}
+		altairValues.sessionMemory.position = position
+		altairValues.sessionMemory:save()
+		if type(writefile) ~= "function" then return end
 		local ok, err = pcall(function()
 			checkFolder()
 			writefile(positionPath(), httpService:JSONEncode(position))
@@ -3847,8 +3887,10 @@ altairValues.smartBarLayout = (function()
 	end
 
 	function controller:restoreSavedPosition()
-		if type(readfile) ~= "function" then return false end
 		local ok, position = pcall(function()
+			local remembered = altairValues.sessionMemory and altairValues.sessionMemory.position
+			if type(remembered)=="table" and remembered.version==1 and finiteFraction(remembered.x) and finiteFraction(remembered.y) then return remembered end
+			if type(readfile) ~= "function" then return nil end
 			if isfile and not isfile(positionPath()) then return nil end
 			return httpService:JSONDecode(readfile(positionPath()))
 		end)
@@ -5439,10 +5481,54 @@ local homeController = (function()
  local friendFilter, gameFilter, activePage = 'All', 'Recent', 'Home'
  local friendBusy, favoriteBusy, friendError, favoriteError = false, false, nil, nil
  local lastFriends, lastFavorites = -math.huge, -math.huge
- local sessionStarted = os.clock()
+ local sessionStarted = altairValues.sessionMemory.startedAt
  local renderFriends, renderGames, selectFriend, selectGame, refreshFriends, refreshFavorites, showPage, recordActivity
  local storePath = altairValues.altairFolder .. '/home-' .. tostring(localPlayer.UserId) .. '.json'
- local storageWarning = false
+ local model={}
+ function model.id(value)
+  local n=tonumber(value)
+  return n and n==n and n>0 and n<9007199254740992 and n%1==0 and n or 0
+ end
+ function model.key(item)
+  local id=model.id(item.universeId)
+  return id>0 and ('u:'..id) or ('p:'..model.id(item.placeId))
+ end
+ function model.normalize(value)
+  if type(value)~='table' then return nil end
+  local place,universe,root=model.id(value.placeId),model.id(value.universeId),model.id(value.rootPlaceId)
+  if place==0 and root==0 then return nil end
+  local stamp=tonumber(value.lastPlayed) or 0
+  return {placeId=root>0 and root or place,universeId=universe,rootPlaceId=root,
+   lastPlaceId=model.id(value.lastPlaceId)>0 and model.id(value.lastPlaceId) or place,
+   name=tostring(value.name or 'Experience'):sub(1,200),creator=tostring(value.creator or ''):sub(1,160),
+   lastPlayed=stamp==stamp and math.clamp(stamp,0,os.time()) or 0}
+ end
+ function model.decode(value)
+  if type(value)~='table' or type(value.history)~='table' or type(value.saved)~='table' then return nil end
+  local result,seen={history={},saved={}},{ }
+  for _,raw in ipairs(value.history) do
+   local item=model.normalize(raw)
+   if item and not seen[model.key(item)] and #result.history<100 then
+    seen[model.key(item)]=true table.insert(result.history,item)
+   end
+  end
+  local count=0
+  for _,raw in pairs(value.saved) do
+   local item=model.normalize(raw)
+   if item and count<100 then
+    local key=model.key(item)
+    if not result.saved[key] then result.saved[key]=item count+=1 end
+   end
+  end
+  return result
+ end
+ function model.apply(item,info)
+  if type(info)~='table' or model.id(info.id)~=model.id(item.universeId) or model.id(info.rootPlaceId)==0 then return false end
+  item.rootPlaceId=model.id(info.rootPlaceId) item.placeId=item.rootPlaceId
+  if type(info.name)=='string' and info.name~='' then item.name=info.name:sub(1,200) end
+  item.creator=type(info.creator)=='table' and tostring(info.creator.name or ''):sub(1,160) or item.creator
+  return true
+ end
  local function connect(signal, fn) local c=signal:Connect(fn) table.insert(connections,c) return c end
  local function action(button, fn)
   if not button or not button:IsA('GuiButton') then return end
@@ -5466,19 +5552,52 @@ local homeController = (function()
   if not result[1] then return nil,tostring(result[2]) end
   return result[2],nil
  end
+ local homeNetwork={active=0,pending={},cooldowns={},hits=0}
+ altairValues.homeNetwork=homeNetwork
  local function getJSON(url)
-  local value, err=bounded(function()
-   if not originalRequest then error('HTTP requests are unavailable') end
-   local response=originalRequest({Url=url,Method='GET',Headers={Accept='application/json'}})
-   assert(type(response)=='table','Invalid response')
-   local status=tonumber(response.StatusCode) or 0
-   assert(status>=200 and status<300, status==429 and 'Roblox rate limit; retry shortly' or ('Roblox request failed ('..status..')'))
-   local decoded=httpService:JSONDecode(response.Body)
-   assert(type(decoded)=='table','Invalid JSON response')
-   return decoded
-  end)
-  return value,err
+  if not alive then return nil,'Closed' end
+  local host=url:match('^https?://([^/]+)') or ''
+  local deadline=os.clock()+15
+  if (homeNetwork.cooldowns[host] or 0)>os.clock() then return nil,'Service rate limit; retry shortly' end
+  local pending=homeNetwork.pending[url]
+  if pending then homeNetwork.hits+=1 end
+  while not pending and homeNetwork.active>=4 and alive and os.clock()<deadline do
+   task.wait(.03) pending=homeNetwork.pending[url]
+  end
+  if not alive then return nil,'Closed' end
+  if os.clock()>=deadline then return nil,'Requests are busy; retry shortly' end
+  if not pending then
+   if (homeNetwork.cooldowns[host] or 0)>os.clock() then return nil,'Service rate limit; retry shortly' end
+   pending={done=false} homeNetwork.pending[url]=pending homeNetwork.active+=1
+   task.spawn(function()
+    local ok,result=pcall(function()
+     assert(type(originalRequest)=='function','HTTP requests are unavailable')
+     local response=originalRequest({Url=url,Method='GET',Headers={Accept='application/json'}})
+     assert(type(response)=='table','Invalid response')
+     local status=tonumber(response.StatusCode) or 0
+     if status==429 then
+      local retry=15
+      for key,value in pairs(type(response.Headers)=='table' and response.Headers or {}) do
+       if tostring(key):lower()=='retry-after' then retry=math.clamp(tonumber(value) or 15,1,120) end
+      end
+      homeNetwork.cooldowns[host]=os.clock()+retry
+     end
+     assert(status>=200 and status<300,status==429 and 'Service rate limit; retry shortly' or ('Request failed ('..status..')'))
+     assert(type(response.Body)=='string' and #response.Body<=2097152,'Response is missing or too large')
+     local decoded=httpService:JSONDecode(response.Body)
+     assert(type(decoded)=='table','Invalid JSON response')
+     return decoded
+    end)
+    pending.value=ok and result or nil pending.error=not ok and tostring(result) or nil pending.done=true
+    homeNetwork.pending[url]=nil homeNetwork.active-=1
+   end)
+  end
+  while not pending.done and alive and os.clock()<deadline do task.wait(.03) end
+  if not alive then return nil,'Closed' end
+  if not pending.done then return nil,'Request timed out' end
+  return pending.value,pending.error
  end
+
  data.serverRegion=(function()
   local state={
    value=tostring(game:GetAttribute('ServerRegion') or workspace:GetAttribute('ServerRegion') or ''),
@@ -5633,37 +5752,62 @@ local homeController = (function()
   return state
  end)()
 
- local function save()
-  if not writefile or not readfile then
-   if not storageWarning then storageWarning=true if alive then queueNotification('Home', 'History and saved games are session-only: filesystem access is unavailable.', 4370336704) end end
-   return false
+ local homeStore={status='Session only',key='Altair.Home.v2.'..tostring(localPlayer.UserId)}
+ altairValues.homeStore=homeStore
+ function homeStore:read(path)
+  if type(readfile)~='function' then return nil end
+  local ok,raw=pcall(readfile,path)
+  if not ok or type(raw)~='string' or #raw>1048576 then return nil end
+  local decoded,value=pcall(httpService.JSONDecode,httpService,raw)
+  if decoded and model.decode(value) then return value,raw end
+ end
+ function homeStore:load()
+  local value,raw=self:read(storePath)
+  if not value then value,raw=self:read(storePath..'.backup') self.recovered=value~=nil end
+  self.lastGood=raw
+  local ok,memory=pcall(teleportService.GetTeleportSetting,teleportService,self.key)
+  if ok and type(memory)=='string' and #memory<=1048576 then
+   local parsed,snapshot=pcall(httpService.JSONDecode,httpService,memory)
+   if parsed and model.decode(snapshot) and (not value or (tonumber(snapshot.savedAt) or 0)>=(tonumber(value.savedAt) or 0)) then value=snapshot end
   end
+  self.status=self.recovered and 'Recovered backup' or value and 'Loaded' or 'New history'
+  return value and model.decode(value)
+ end
+ function homeStore:write(encoded)
+  if not alive then return false end
+  pcall(teleportService.SetTeleportSetting,teleportService,self.key,encoded)
+  if type(writefile)~='function' or type(readfile)~='function' then self.status='Session only' return false end
+  if self.writing then self.pending=encoded return false end
+  self.writing=true
   local ok,err=pcall(function()
    checkFolder()
-   writefile(storePath,httpService:JSONEncode({version=1,history=data.history,saved=data.saved}))
+   local backup=self.lastGood or encoded
+   writefile(storePath..'.backup',backup)
+   assert(readfile(storePath..'.backup')==backup,'Backup verification failed')
+   writefile(storePath,encoded)
+   assert(readfile(storePath)==encoded,'History verification failed')
   end)
-  if not ok then if alive then queueNotification('Home', 'Could not save history: '..tostring(err), 4370336704) end end
-  return ok
- end
- local function validGame(v)
-  return type(v)=='table' and tonumber(v.placeId) and tonumber(v.placeId)>0 and tonumber(v.universeId) and tonumber(v.universeId)>=0
- end
- if readfile and isfile then
-  local ok,decoded=pcall(function() if isfile(storePath) then return httpService:JSONDecode(readfile(storePath)) end end)
-  if ok and type(decoded)=='table' then
-   local seen={}
-   for _,v in ipairs(type(decoded.history)=='table' and decoded.history or {}) do
-    if validGame(v) and not seen[tostring(v.universeId>0 and v.universeId or v.placeId)] and #data.history<100 then
-     seen[tostring(v.universeId>0 and v.universeId or v.placeId)]=true
-     table.insert(data.history,{placeId=tonumber(v.placeId),universeId=tonumber(v.universeId),name=tostring(v.name or 'Experience'),creator=tostring(v.creator or ''),lastPlayed=tonumber(v.lastPlayed) or 0})
-    end
-   end
-   for k,v in pairs(type(decoded.saved)=='table' and decoded.saved or {}) do if validGame(v) then data.saved[tostring(k)]=v end end
-  elseif not ok then
-   if writefile then pcall(function() writefile(storePath..'.corrupt-'..os.time(),readfile(storePath)) end) end
-   if alive then queueNotification('Home', 'History file could not be read. A fresh history will be started.', 4370336704) end
+  if self.pending then
+   task.defer(function() local pending=self.pending self.pending=nil self.writing=false self:write(pending) end)
+  else self.writing=false end
+  if ok then self.lastGood=encoded self.status='Saved' self.recovered=false return true end
+  self.status='Save failed; session copy retained'
+  if not self.warnedAt or os.clock()-self.warnedAt>=30 then
+   self.warnedAt=os.clock()
+   if alive then queueNotification('Home','History could not be saved to disk. Its session copy and recovery backup are retained.',4370336704) end
   end
+  return false
  end
+ local function save()
+  local ok,encoded=pcall(httpService.JSONEncode,httpService,{version=2,savedAt=os.time(),history=data.history,saved=data.saved})
+  if not ok or #encoded>1048576 then return false end
+  return homeStore:write(encoded)
+ end
+ do
+  local loaded=homeStore:load()
+  if loaded then data.history=loaded.history data.saved=loaded.saved end
+ end
+
  local function clear(list)
   list.Template.Visible=false
   for _,v in ipairs(list:GetChildren()) do if v:IsA('GuiObject') and v.Name~='Template' and (v:GetAttribute('RuntimeEntry') or v:GetAttribute('IsPreview') or v.Name:match('^Preview')) then v:Destroy() end end
@@ -5731,6 +5875,8 @@ local homeController = (function()
    if not ok then copy(profileURL(id)) end
   end)
  end
+ local resolveRoot
+ local joining=false
  local function playGame(item,job)
   if not item or not tonumber(item.placeId) or item.placeId<=0 then if alive then queueNotification('Home', 'This experience is unavailable to join.', 4370336704) end return end
   if not job and (tonumber(item.placeId)==game.PlaceId or (tonumber(item.universeId) and item.universeId>0 and item.universeId==game.GameId)) then
@@ -5740,13 +5886,19 @@ local homeController = (function()
    queueNotification(ok and 'Copied Join Script' or 'Unable to copy join script',ok and 'Copied a join script for your current server.' or 'The clipboard operation failed.',ok and 4335479121 or 4335479658)
    return
   end
-  recordActivity('Joining experience',item.name or 'Experience')
+  if joining then return end
+  joining=true
   task.spawn(function()
+   local target=job and item.placeId or resolveRoot(item)
+   if not alive then joining=false return end
+   if not target then joining=false queueNotification('Home','The experience launch place is unavailable. Try again shortly.',4370336704) return end
+   recordActivity('Joining experience',item.name or 'Experience')
    local ok,err=pcall(function()
-    if job and job~='' then teleportService:TeleportToPlaceInstance(item.placeId,job,localPlayer)
-    else teleportService:Teleport(item.placeId,localPlayer) end
+    if job and job~='' then teleportService:TeleportToPlaceInstance(target,job,localPlayer)
+    else teleportService:Teleport(target,localPlayer) end
    end)
-   if not ok then if alive then queueNotification('Home', 'Could not join: '..tostring(err), 4370336704) end end
+   joining=false
+   if not ok and alive then queueNotification('Home','Could not join: '..tostring(err),4370336704) end
   end)
  end
  local friendActivity={roster=nil,rosterAt=0,version=0,placeCache={},refreshError=nil}
@@ -6185,12 +6337,12 @@ local homeController = (function()
    end
   end)
  end
- local function gameKey(item) return tostring(item.universeId>0 and item.universeId or item.placeId) end
+ local gameKey=model.key
  local function saved(item) return item and data.saved[gameKey(item)]~=nil end
  local function toggleSave(item)
   if not item then return end
   local key=gameKey(item)
-  data.saved[key]=not saved(item) and {placeId=item.placeId,universeId=item.universeId,name=item.name,creator=item.creator,lastPlayed=item.lastPlayed} or nil
+  data.saved[key]=not saved(item) and model.normalize(item) or nil
   save() renderGames() if selectedGame then selectGame(selectedGame) end
   recordActivity(saved(item) and 'Saved game' or 'Removed saved game',item.name)
  end
@@ -6200,7 +6352,7 @@ local homeController = (function()
   local result=id>0 and getJSON('https://games.roblox.com/v1/games?universeIds='..id) or nil
   local info=result and result.data and result.data[1]
   local detail=table.clone(item)
-  if info then detail.name=info.name detail.creator=info.creator and info.creator.name or '' detail.description=info.description or '' detail.placeId=info.rootPlaceId or item.placeId end
+  if model.apply(detail,info) then detail.description=info.description or '' else info=nil end
   if id>0 then
    local thumbnails=getJSON('https://thumbnails.roblox.com/v1/games/multiget/thumbnails?universeIds='..id..'&countPerUniverse=1&defaults=true&size=768x432&format=Png&isCircular=false')
    local thumb=thumbnails and thumbnails.data and thumbnails.data[1] and thumbnails.data[1].thumbnails and thumbnails.data[1].thumbnails[1]
@@ -6208,6 +6360,22 @@ local homeController = (function()
   end
   if info then metadata[id]=detail end
   return detail
+ end
+ local function repairGame(item,detail)
+  if not detail or model.id(detail.rootPlaceId)==0 then return false end
+  local changed=item.rootPlaceId~=detail.rootPlaceId or item.name~=detail.name or item.creator~=detail.creator
+  item.placeId=detail.rootPlaceId item.rootPlaceId=detail.rootPlaceId item.name=detail.name item.creator=detail.creator
+  local stored=data.saved[gameKey(item)]
+  if stored then stored.placeId=item.placeId stored.rootPlaceId=item.rootPlaceId stored.name=item.name stored.creator=item.creator end
+  return changed
+ end
+ resolveRoot=function(item)
+  if model.id(item.universeId)==0 then return model.id(item.placeId)>0 and item.placeId or nil end
+  if model.id(item.rootPlaceId)>0 then return item.rootPlaceId end
+  local detail=gameDetails(item)
+  if not alive then return nil end
+  if repairGame(item,detail) then save() renderGames() end
+  return model.id(item.rootPlaceId)>0 and item.rootPlaceId or nil
  end
  local function selectDetails(panel,list,id)
   panel:SetAttribute('RestPosition',panel:GetAttribute('RestPosition') or panel.Position)
@@ -6230,6 +6398,8 @@ local homeController = (function()
   task.spawn(function()
    local detail=gameDetails(item)
    if not alive or selectedGame~=item then return end
+   if repairGame(item,detail) then save() renderGames() end
+   d:SetAttribute('SelectedPlaceId',item.placeId)
    text(d,'Title',detail.name) text(d,'Creator',detail.creator) text(d,'Description',detail.description or 'Description unavailable.') d.Artwork.Image=detail.artwork or gameIcon(detail.universeId)
   end)
  end
@@ -6572,7 +6742,7 @@ local homeController = (function()
     if not response then err=e break end
     for _,v in ipairs(response.data or {}) do
      local id=tonumber(v.id) local place=v.rootPlace and tonumber(v.rootPlace.id)
-     if id and place and not seen[id] then seen[id]=true table.insert(result,{universeId=id,placeId=place,name=v.name or 'Experience',creator=v.creator and v.creator.name or '',lastPlayed=0}) end
+     if id and place and not seen[id] then seen[id]=true table.insert(result,{universeId=id,placeId=place,rootPlaceId=place,name=v.name or 'Experience',creator=v.creator and v.creator.name or '',lastPlayed=0}) end
     end
     local nextCursor=response.nextPageCursor if not nextCursor or nextCursor=='' then break end
     if nextCursor==cursor then err='Repeated Roblox page cursor' break end cursor=nextCursor
@@ -6582,17 +6752,20 @@ local homeController = (function()
   end)
  end
  local function refreshCurrentGame()
-  local item={placeId=game.PlaceId,universeId=game.GameId,name=placeName or 'Current experience',creator='',lastPlayed=os.time()}
-  local info=bounded(function() return marketplaceService:GetProductInfo(game.PlaceId) end)
-  if info then item.name=info.Name or item.name item.creator=info.Creator and info.Creator.Name or '' end
+  local previous
+  for _,v in ipairs(data.history) do if v.universeId==game.GameId then previous=v break end end
+  local item=previous and table.clone(previous) or {placeId=game.PlaceId,universeId=game.GameId,name=placeName or 'Current experience',creator=''}
+  item.lastPlaceId=game.PlaceId item.lastPlayed=os.time()
+  -- Only universe metadata can establish a launch place; a match title cannot replace it.
+  local detail=gameDetails(item)
   if not alive then return end
+  repairGame(item,detail)
   local key=gameKey(item)
   for i=#data.history,1,-1 do if gameKey(data.history[i])==key then table.remove(data.history,i) end end
   if item.placeId>0 then table.insert(data.history,1,item) while #data.history>100 do table.remove(data.history) end save() end
-  text(home.NowPlaying,'GameName',item.name) text(home.NowPlaying,'Creator',item.creator) home.NowPlaying.GameIcon.Image=gameIcon(item.universeId) home.NowPlaying.Artwork.Image=gameIcon(item.universeId)
-  home.NowPlaying:SetAttribute('PlaceId',item.placeId) home.NowPlaying:SetAttribute('UniverseId',item.universeId)
+  text(home.NowPlaying,'GameName',item.name) text(home.NowPlaying,'Creator',item.creator) home.NowPlaying.GameIcon.Image=gameIcon(item.universeId) home.NowPlaying.Artwork.Image=detail.artwork or gameIcon(item.universeId)
+  home.NowPlaying:SetAttribute('PlaceId',game.PlaceId) home.NowPlaying:SetAttribute('UniverseId',item.universeId)
   text(home.SessionStatus,'Game',item.name) renderGames()
-  local detail=gameDetails(item) if alive then home.NowPlaying.Artwork.Image=detail.artwork or gameIcon(item.universeId) end
  end
  local activity=altairValues.activity.items
  recordActivity=function(title,description,icon)
@@ -6612,7 +6785,7 @@ local homeController = (function()
   text(home.SessionStatus,'Time',os.date('%I:%M %p'):gsub('^0','')) text(home.SessionStatus,'Date',os.date('%a, %b %d, %Y')) text(home.SessionStatus,'Status','In Game ●')
   text(home.Server,'PlayerCount',playerCount..' / '..players.MaxPlayers)
   text(home.Server.Ping,'Value',ping..' ms')
-  local seconds=math.floor(now-sessionStarted) text(home.Server.Uptime,'Label','Session time') text(home.Server.Uptime,'Value',math.floor(seconds/3600)..'h '..math.floor(seconds/60)%60 ..'m')
+  local seconds=math.max(0,os.time()-sessionStarted) text(home.Server.Uptime,'Label','Session time') text(home.Server.Uptime,'Value',math.floor(seconds/3600)..'h '..math.floor(seconds/60)%60 ..'m')
   text(home.Server.Region,'Value',data.serverRegion.value~='' and data.serverRegion.value or 'Searching...')
   text(home.NowPlaying,'SessionPills','● In Game     '..playerCount..' / '..players.MaxPlayers..' Players     '..ping..' ms')
   if activityRevision~=altairValues.activity.revision or now-lastActivityRender>=5 then lastActivityRender=now activityRevision=altairValues.activity.revision renderActivity() end
@@ -6704,7 +6877,7 @@ local homeController = (function()
  local sessionLink=Instance.new('TextButton') sessionLink.Name='CopyServerLink' sessionLink.Text='' sessionLink.BackgroundTransparency=1 sessionLink.Size=UDim2.fromOffset(26,26) sessionLink.Position=UDim2.new(1,-40,0,10) sessionLink.Text='⋯' sessionLink.TextColor3=Color3.new(1,1,1) sessionLink.ZIndex=30 sessionLink.Parent=home.Server
  action(sessionLink,function() copy('https://www.roblox.com/games/start?placeId='..game.PlaceId..'&gameInstanceId='..httpService:UrlEncode(game.JobId)) end)
  local gameLink=Instance.new('TextButton') gameLink.Name='ViewGame' gameLink.Text='' gameLink.BackgroundTransparency=1 gameLink.Position=home.NowPlaying.GameIcon.Position gameLink.Size=home.NowPlaying.GameIcon.Size gameLink.ZIndex=30 gameLink.Parent=home.NowPlaying
- action(gameLink,function() if gameFilter~='Recent' then gameFilter='Recent' renderGames() end showPage('Games') for _,item in ipairs(data.history) do if item.placeId==game.PlaceId then selectGame(item) break end end end)
+ action(gameLink,function() if gameFilter~='Recent' then gameFilter='Recent' renderGames() end showPage('Games') for _,item in ipairs(data.history) do if item.universeId==game.GameId then selectGame(item) break end end end)
  for _,v in ipairs(fp.Browser.Filters:GetChildren()) do if v:IsA('GuiButton') then action(v,function() friendFilter=v.Name fp.Browser.List.CanvasPosition=Vector2.zero renderFriends() end) end end
  for _,v in ipairs(gp.Browser.Filters:GetChildren()) do if v:IsA('GuiButton') then action(v,function() gameFilter=v.Name gp.Browser.List.CanvasPosition=Vector2.zero renderGames() if gameFilter=='Favorites' then refreshFavorites() end end) end end
  local friendSearchVersion,gameSearchVersion=0,0
@@ -6749,7 +6922,11 @@ local homeController = (function()
   end
   controller.fadeOut(0)
  end
- homeContainer.Visible=false showPage('Home') renderFriends() renderGames()
+ local remembered=altairValues.sessionMemory.home or {}
+ if ({All=true,InGame=true,Online=true,Offline=true})[remembered.friendFilter] then friendFilter=remembered.friendFilter end
+ if ({Recent=true,Favorites=true})[remembered.gameFilter] then gameFilter=remembered.gameFilter end
+ altairValues.sessionMemory.captureHome=function() return {page=activePage,friendFilter=friendFilter,gameFilter=gameFilter} end
+ homeContainer.Visible=false showPage(pages:FindFirstChild(tostring(remembered.page)) and remembered.page or 'Home') renderFriends() renderGames()
  task.spawn(refreshCurrentGame)
  controller.refreshCurrentGame=refreshCurrentGame
  return controller
@@ -10004,6 +10181,10 @@ altairAPI.GetRuntimeHealth = function()
 		searchCooldown = math.max(0, network.cooldown - os.clock()),
 		settings = altairValues.settingsStore.status, activeToasts = #activeToasts,
 		viewportRecoveries = altairValues.smartBarLayout.viewportReflows or 0,
+		homeStorage = altairValues.homeStore.status, homeRequests = altairValues.homeNetwork.active,
+		homeSharedRequests = altairValues.homeNetwork.hits,
+		sessionSeconds = math.max(0,os.time()-altairValues.sessionMemory.startedAt),
+		sessionHops = altairValues.sessionMemory.hops, resumedSession = altairValues.sessionMemory.resumed == true,
 	}
 end
 
@@ -10094,12 +10275,18 @@ do
 	local session = altairValues.continuation
 	local ok, marker = pcall(teleportService.GetTeleportSetting, teleportService, session.key)
 	local recent = ok and type(marker) == "table" and marker.universe == game.GameId
-		and type(marker.at) == "number" and os.time() - marker.at >= 0 and os.time() - marker.at < 600
+		and type(marker.at) == "number" and os.time() - marker.at >= 0
+		and (marker.arrivedJob == jobId or os.time() - marker.at < 600)
 	if recent then
 		session.quiet = marker.arrivedJob == jobId or (type(marker.fromJob) == "string" and marker.fromJob ~= jobId)
 		if session.quiet and type(marker.open) == "boolean" then session.open = marker.open end
 	end
+	if altairValues.sessionMemory.resumed then
+		session.quiet=true
+		if altairValues.sessionMemory.open~=nil then session.open=altairValues.sessionMemory.open end
+	end
 	local function mark(arriving)
+		altairValues.sessionMemory:save()
 		pcall(teleportService.SetTeleportSetting, teleportService, session.key, {
 			universe = game.GameId, fromJob = jobId, arrivedJob = arriving and jobId or "",
 			at = os.time(), open = smartBarOpen,
@@ -11423,6 +11610,7 @@ local function runtime()
 		end
 
 		local tickSuccess, tickError = pcall(function()
+			if os.clock()-(altairValues.sessionMemory.lastSave or 0)>=60 then altairValues.sessionMemory:save() end
 			smartBar.Back.Time.Text = os.date("%I:%M"):gsub("^0", "")
 			smartBar.Back.Time.AMPM.Text = os.date("%p")
 			UpdateHome()
