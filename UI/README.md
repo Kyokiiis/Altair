@@ -7,12 +7,13 @@ Existing image and font asset IDs are preserved for the original appearance.
 
 ## Loading
 
-Normal execution downloads `UI/Build.lua` from this repository. For local
-development, place a copy at `Altair/UI/Build.lua` in your executor's filesystem;
+Normal execution downloads `UI/Build.lua`, `UI/Notifications.lua`, `UI/Clock.lua`
+and `UI/Capsules.lua` from this repository. For local
+development, place matching copies in `Altair/UI/` in your executor's filesystem;
 Altair prefers that file when it exists. Update or remove that local copy when
 you want to use the repository version. The loader does not create a disk cache.
 
-In Roblox Studio, import `Build.lua` as a **ModuleScript** named `Build` inside
+In Roblox Studio, import all four modules as **ModuleScripts** using their filenames without `.lua` inside
 a folder named `UI`, beside the Altair **LocalScript**. `UI` can also be a child
 of the Altair LocalScript. Run the LocalScript on the client, for example from
 `StarterPlayerScripts`. The old ScreenGui is no longer needed by the loader.
@@ -24,7 +25,10 @@ their corresponding runtime capabilities.
 StarterPlayerScripts
 ├── Altair          (LocalScript: Altair.lua)
 └── UI             (Folder)
-    └── Build      (ModuleScript: UI/Build.lua)
+    ├── Build         (ModuleScript: UI/Build.lua)
+    ├── Notifications (ModuleScript: UI/Notifications.lua)
+    ├── Clock         (ModuleScript: UI/Clock.lua)
+    └── Capsules      (ModuleScript: UI/Capsules.lua)
 ```
 
 To construct an independent preview without running Altair:
@@ -88,3 +92,38 @@ Studio modules, diagnostics, and cleanup of incompatible UI hierarchies.
 The integrated main script also started in a separate Studio Play session with
 the generated UI mounted and enabled; Home, Character, and Settings were checked
 through the actual UI. Executor-specific gameplay features were not exercised.
+
+## Notifications and top capsules
+
+`Notifications.lua` replaces the runtime notification renderer with black rounded,
+content-sized cards: 300px wide, 20px corners, 8px spacing and a 44px single-line
+variant. It measures the actual font, queues bursts, pauses expiry while hovered,
+supports click dismissal and bounds the visible stack. The original builder
+retains its legacy template for hierarchy compatibility.
+
+`Capsules.lua` owns the top pills, expandable music/control center, countdown
+ruler and stopwatch/lap display. Capsules keep a top anchor and move beneath
+overlapping Altair panels, bar, toasts and notifications. Settings control scale
+and visibility. Clocks use timestamp differences, so pauses and slow frames do
+not accumulate countdown drift. One throttled render loop updates visible text;
+one request at a time polls the local Spotify companion with failure backoff.
+All owned connections and tweens are released on unload.
+
+Expanded surfaces share the SmartBar's flat background and subtle 1px outline,
+with a darker base (40% toward black), 4% background transparency and 85% stroke
+transparency. Compact pills keep their black finish. Expanded outlines follow
+the existing Rainbow Mode hue and restore their neutral color when it is off.
+The Spotify backend supplies no live audio amplitude, so no simulated beat pulse
+is added.
+
+`Altair.Capsules.clock` exposes `StartTimer(seconds)`, `ToggleTimer()`,
+`CancelTimer()`, `ToggleWatch()`, `Lap()` and `ResetWatch()`.
+`Altair.Capsules:Open("center" | "music" | "timer" | "watch")` toggles a surface;
+`Open(nil)` collapses it. `Altair.Notify(title, description, icon, {Duration=5})`
+returns a dismissal handle.
+
+The client-side Studio test `require(path.To.UI.ValidateCapsules)()` exercises
+visibility, simulated link/control/unlink/relink, top overlap avoidance and the
+single-line notification size. It cleans up its preview and never authorizes
+a real Spotify account. Clock model tests run with `luau UI/Clock.spec.luau`.
+See [Spotify setup](../Companion/README.md) for connection requirements.

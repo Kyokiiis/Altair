@@ -108,7 +108,6 @@ local camera = workspace.CurrentCamera
 local getMessage = replicatedStorage:WaitForChild("DefaultChatSystemChatEvents", 1) and replicatedStorage.DefaultChatSystemChatEvents:WaitForChild("OnMessageDoneFiltering", 1)
 local legacyChatActive = getMessage ~= nil and textChatService.ChatVersion == Enum.ChatVersion.LegacyChatService
 local localPlayer = players.LocalPlayer
-local notifications = {}
 
 local promptedDisconnected = false
 local smartBarOpen = false
@@ -915,6 +914,22 @@ local altairSettings = {
 			},
 		},
 	},
+	{
+		name = "Capsules & Spotify",
+		description = "Top capsules, clocks, and your own Spotify connection.",
+		color = Color3.fromRGB(55,224,92), minimumLicense = "Free",
+		categorySettings = {
+			{name="Capsules Enabled", settingType="Boolean", current=true, id="capsulesenabled"},
+			{name="Capsule Scale", settingType="Number", current=1, values={0.65,2}, id="capsulescale"},
+			{name="Spotify Connection", settingType="Boolean", current=false, id="spotifyenabled", description="Keep the local companion running to use playback controls."},
+			{name="Spotify Client ID", settingType="Input", current="", id="spotifyclientid", description="Public Client ID from your Spotify developer app. Never enter a client secret."},
+			{name="Spotify Bridge Key", settingType="Input", current="", id="spotifybridgekey", description="Paste the local key printed by the companion. Account tokens stay in the companion."},
+			{name="Spotify Bridge Port", settingType="Number", current=43827, values={1024,65535}, id="spotifyport"},
+			{name="Spotify Setup", settingType="Action", description="1. Run Companion/StartSpotify.cmd and leave it open.\n2. Create a Spotify developer app with redirect http://127.0.0.1:43827/callback (match your Bridge Port).\n3. Paste its public Client ID and the companion's local key above. Never enter a client secret.\n4. Enable Spotify Connection, then click Link Spotify and approve in your browser.\n5. Start playback in Spotify. Unlink Spotify deletes this device's account tokens.\nPremium and Spotify app access rules apply. Full guide: Companion/README.md.", action=function() if altairValues.capsules then altairValues.capsules:ShowSetup() end end},
+			{name="Link Spotify", settingType="Action", description="Open Spotify approval in your browser.", action=function() if altairValues.capsules then altairValues.capsules:LinkSpotify() end end},
+			{name="Unlink Spotify", settingType="Action", description="Delete the saved account tokens and cancel pending linking.", action=function() if altairValues.capsules then altairValues.capsules:UnlinkSpotify() end end},
+		},
+	},
 }
 
 -- Keep one natural-looking, distinct username/display-name pair for this session.
@@ -966,34 +981,33 @@ end)()
 -- Initialise Altair Client Interface
 local guiParent = getHiddenUI and getHiddenUI() or (useStudio and localPlayer:WaitForChild("PlayerGui")) or coreGui
 
-local function loadInterface()
-	local build
+function altairValues.loadUIModule(name)
+	assert(({Build=true, Notifications=true, Capsules=true, Clock=true})[name], "Unknown Altair UI module")
 	if useStudio then
-		-- In Studio, import UI/Build.lua as a ModuleScript named Build in a
-		-- folder named UI beside this LocalScript (or directly beneath it).
 		local container = script and script.Parent
 		local folder = (script and script:FindFirstChild("UI")) or (container and container:FindFirstChild("UI"))
-		local module = folder and folder:FindFirstChild("Build")
-		assert(module and module:IsA("ModuleScript"), "Import UI/Build.lua as UI.Build beside the Altair LocalScript")
-		build = require(module)
-	else
-		local source
-		-- Optional local development copy in the executor's filesystem. A
-		-- downloaded source is never written here, so it cannot become stale.
-		local read = optional(readfile)
-		if read then
-			local ok, contents = pcall(read, altairValues.altairFolder .. "/UI/Build.lua")
-			if ok and type(contents) == "string" and contents:match("%S") then source = contents end
-		end
-		if not source then source = game:HttpGet(altairValues.interfaceSource) end
-		assert(type(source) == "string" and source:match("%S"), "The UI builder source was empty")
-		local compile = optional(loadstring)
-		assert(compile, "This executor does not support loadstring for the Lua UI builder")
-		local chunk, compileError = compile(source, "@Altair/UI/Build.lua")
-		assert(chunk, "Couldn't compile the UI builder: " .. tostring(compileError))
-		build = chunk()
+		local module = folder and folder:FindFirstChild(name)
+		assert(module and module:IsA("ModuleScript"), "Import UI/" .. name .. ".lua beside the Altair LocalScript")
+		return require(module)
 	end
-	assert(type(build) == "function", "UI/Build.lua must return a UI factory function")
+	local source
+	local read = optional(readfile)
+	if read then
+		local ok, contents = pcall(read, altairValues.altairFolder .. "/UI/" .. name .. ".lua")
+		if ok and type(contents)=="string" and contents:match("%S") then source=contents end
+	end
+	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua")) end
+	assert(type(source)=="string" and source:match("%S"), "Empty Altair UI module: "..name)
+	local compile=optional(loadstring)
+	assert(compile,"This executor does not support loadstring")
+	local chunk, compileError=compile(source,"@Altair/UI/"..name..".lua")
+	assert(chunk,"Couldn't compile "..name..": "..tostring(compileError))
+	return chunk()
+end
+
+local function loadInterface()
+	local build=altairValues.loadUIModule("Build")
+	assert(type(build)=="function", "UI/Build.lua must return a UI factory function")
 	local root = build()
 	assert(typeof(root) == "Instance" and root:IsA("ScreenGui"), "The UI builder must return a ScreenGui")
 	-- Catch an incompatible builder before mounting it or binding events.
@@ -1521,123 +1535,10 @@ local function blurSignature(value)
 	end
 end
 
-local function figureNotifications()
-	if checkAltair() then
-		local notificationsSize = 0
-
-		if #notifications > 0 then
-			blurSignature(true)
-		else
-			blurSignature(false)
-		end
-
-		for i = #notifications, 1, -1 do
-			local notification = notifications[i]
-			if notification then
-				if notificationsSize == 0 then
-					notificationsSize = notification.Size.Y.Offset + 2
-				else
-					notificationsSize += notification.Size.Y.Offset + 5
-				end
-				local desiredPosition = UDim2.new(0.5, 0, 0, notificationsSize)
-				if notification.Position ~= desiredPosition then
-					notification:TweenPosition(desiredPosition, "Out", "Quint", 0.8, true)
-				end
-			end
-		end
-	end
-end
-
-local function queueNotification(Title, Description, Image)
-	task.spawn(function()
-		if checkAltair() then
-			local newNotification = notificationContainer.Template:Clone()
-			newNotification.Parent = notificationContainer
-			newNotification.Name = Title or "Unknown Title"
-			newNotification.Visible = true
-
-			newNotification.Title.Text = Title or "Unknown Title"
-			newNotification.Description.Text = Description or "Unknown Description"
-
-			-- Prepare for animation
-			newNotification.AnchorPoint = Vector2.new(0.5, 1)
-			newNotification.Position = UDim2.new(0.5, 0, -1, 0)
-			newNotification.Size = UDim2.new(0, 320, 0, 500)
-			newNotification.Description.Size = UDim2.new(0, 241, 0, 400)
-			wipeTransparency(newNotification, 1, true)
-
-			newNotification.Description.Size = UDim2.new(0, 241, 0, newNotification.Description.TextBounds.Y)
-			newNotification.Size = UDim2.new(0, 100, 0, newNotification.Description.TextBounds.Y + 50)
-
-			table.insert(notifications, newNotification)
-			figureNotifications()
-
-			local notificationSound = Instance.new("Sound")
-			notificationSound.Parent = UI
-			notificationSound.SoundId = "rbxassetid://255881176"
-			notificationSound.Name = "notificationSound"
-			notificationSound.Volume = 0.65
-			notificationSound.PlayOnRemove = true
-			notificationSound:Destroy()
-
-			if tonumber(Image) then
-				newNotification.Icon.Image = "rbxassetid://" .. tostring(Image)
-			elseif type(Image) == "string" and Image ~= "" then
-				newNotification.Icon.Image = Image
-			else
-				newNotification.Icon.Image = "rbxassetid://14317577326"
-			end
-
-			newNotification:TweenPosition(UDim2.new(0.5, 0, 0, newNotification.Size.Y.Offset + 2), "Out", "Quint", 0.9, true)
-			task.wait(0.1)
-			tweenService:Create(newNotification, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), { Size = UDim2.new(0, 320, 0, newNotification.Description.TextBounds.Y + 50) }):Play()
-			task.wait(0.05)
-			tweenService:Create(newNotification, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), { BackgroundTransparency = 0.35 }):Play()
-			tweenService:Create(newNotification.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), { Transparency = 0.7 }):Play()
-			task.wait(0.05)
-			tweenService:Create(newNotification.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), { ImageTransparency = 0 }):Play()
-			task.wait(0.04)
-			tweenService:Create(newNotification.Title, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), { TextTransparency = 0 }):Play()
-			task.wait(0.04)
-			tweenService:Create(newNotification.Description, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), { TextTransparency = 0.15 }):Play()
-
-			newNotification.Interact.MouseButton1Click:Connect(function()
-				local foundNotification = table.find(notifications, newNotification)
-				if foundNotification then
-					table.remove(notifications, foundNotification)
-				end
-
-				tweenService
-					:Create(newNotification, TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.In), { Position = UDim2.new(1.5, 0, 0, newNotification.Position.Y.Offset) })
-					:Play()
-
-				task.wait(0.4)
-				newNotification:Destroy()
-				figureNotifications()
-				return
-			end)
-
-			local waitTime = (#newNotification.Description.Text * 0.1) + 2
-			if waitTime <= 1 then
-				waitTime = 2.5
-			elseif waitTime > 10 then
-				waitTime = 10
-			end
-
-			task.wait(waitTime)
-
-			local foundNotification = table.find(notifications, newNotification)
-			if foundNotification then
-				table.remove(notifications, foundNotification)
-			end
-
-			tweenService:Create(newNotification, TweenInfo.new(0.8, Enum.EasingStyle.Quint, Enum.EasingDirection.In), { Position = UDim2.new(1.5, 0, 0, newNotification.Position.Y.Offset) }):Play()
-
-			task.wait(1.2)
-			newNotification:Destroy()
-			figureNotifications()
-		end
-	end)
+notificationContainer.Visible = false
+altairValues.notificationController = altairValues.loadUIModule("Notifications")({Root=UI})
+local function queueNotification(Title, Description, Image, options)
+	return altairValues.notificationController:Notify(Title, Description, Image, options)
 end
 
 function altairValues.playerAnomaly:headshot(player)
@@ -9763,7 +9664,14 @@ local function assembleSettings()
 				local minimumLicense = setting.minimumLicense
 				local object
 
-				if settingType == "Boolean" then
+				if settingType == "Action" then
+					object = settingsPanel.SettingLists.Template.ButtonTemplate:Clone()
+					object.Name, object.Parent, object.Visible = setting.name, newList, true
+					object.Title.Text = setting.name
+					object.Interact.Activated:Connect(function()
+						if type(setting.action)=="function" then setting.action() end
+					end)
+				elseif settingType == "Boolean" then
 					local newSwitch = settingsPanel.SettingLists.Template.SwitchTemplate:Clone()
 					object = newSwitch
 					setting._uiObject = newSwitch
@@ -10186,6 +10094,11 @@ altairAPI.Destroy = altairAPI.Unload
 altairAPI.Toast = Toast
 altairAPI.QueueNotification = queueNotification
 altairAPI.Notify = queueNotification
+altairValues.capsules = altairValues.loadUIModule("Capsules")({Root=UI, Clock=altairValues.loadUIModule("Clock"),
+	GetSetting=settingValue, Request=originalRequest, Notify=queueNotification, Alive=checkAltair,
+	GetRainbowColor=function() return altairValues.rainbowColor end,
+	Notifications=altairValues.notificationController})
+altairAPI.Capsules = altairValues.capsules
 altairAPI.BlinkSmartBar = BlinkSmartBar
 altairAPI.SupportsColoredSmartBarBlink = true
 altairAPI.SupportsQueuedSmartBarBlink = true
@@ -11085,7 +10998,7 @@ track(players.PlayerAdded:Connect(function(player)
 			for _, role in ipairs(altairValues.administratorRoles) do
 				if string.find(string.lower(roleFound), role, 1, true) then
 					promptModerator(player, roleFound)
-					queueNotification("Administrator Joined", roleFound .. " " .. player.DisplayName .. " has joined your session", 3944670656)
+					queueNotification("Staff in your server", "An administrator from this experience's group has just joined. They can see what you do in game. (" .. roleFound .. ")", 3944670656)
 					break -- a role matching two keywords used to fire two prompts and two toasts
 				end
 			end
@@ -11095,7 +11008,7 @@ track(players.PlayerAdded:Connect(function(player)
 	if settingValue("Friend Notifications") then
 		local friendSuccess, isFriend = pcall(localPlayer.IsFriendsWith, localPlayer, player.UserId)
 		if friendSuccess and isFriend then
-			queueNotification("Friend Joined", "Your friend " .. player.DisplayName .. " has joined your server.", 4370335364)
+			queueNotification("Friend joined", player.DisplayName .. " has joined your server.", 4370335364)
 		end
 	end
 end))
@@ -11690,7 +11603,7 @@ local function runtime()
 				drag.Visible = dragVisible
 			end
 
-			local promptGui = coreGui:FindFirstChild("RobloxPromptGui")
+			local promptGui = not useStudio and game:GetService("CoreGui"):FindFirstChild("RobloxPromptGui")
 			local promptOverlay = promptGui and promptGui:FindFirstChild("promptOverlay")
 			local disconnectedRobloxUI = promptOverlay and promptOverlay:FindFirstChild("ErrorPrompt")
 
