@@ -124,11 +124,18 @@ local creatorId = game.CreatorId
 local noclipDefaults = {}
 local movers = {}
 local creatorType = game.CreatorType
-local espContainer -- Created only after the UI asset successfully loads.
+local espContainer -- Created only after the Lua interface successfully builds.
 local locatedPlayers = {} -- per-player ESP toggles, independent from the global ESP action
 local espConnections = {} -- [player] = RBXScriptConnection for CharacterAdded
 local descendantAddedConn -- top-level DescendantAdded; tracked so we can disconnect on teardown
-local oldVolume = gameSettings.MasterVolume
+local oldVolume = 1
+-- Ordinary Studio LocalScripts cannot read this executor-only setting.
+if useStudio then
+	gameSettings = nil
+else
+	local readable = pcall(function() oldVolume = gameSettings.MasterVolume end)
+	if not readable then gameSettings = nil end
+end
 local baseFieldOfView = camera.FieldOfView -- captured once; Home restores to this rather than doing relative maths
 
 local placeName -- resolved once at startup so the JobId copy button never yields on click
@@ -166,7 +173,7 @@ local altairValues = {
 	detectedScript = nil,
 	detectionPromptOpen = false,
 	customScriptPromptOpen = false,
-	interfaceAsset = 138836088211906,
+	interfaceSource = "https://raw.githubusercontent.com/Kyokiiis/Altair/refs/heads/main/UI/Build.lua",
 
 	executors = {
 		"synapse x",
@@ -368,6 +375,7 @@ local altairValues = {
 			enabled = false,
 			rotateWhileEnabled = false,
 			callback = function(value)
+				if not gameSettings then return end
 				if value then
 					oldVolume = gameSettings.MasterVolume
 					gameSettings.MasterVolume = 0
@@ -959,13 +967,46 @@ end)()
 local guiParent = getHiddenUI and getHiddenUI() or (useStudio and localPlayer:WaitForChild("PlayerGui")) or coreGui
 
 local function loadInterface()
+	local build
 	if useStudio then
-		local container = script.Parent
-		return container and container:FindFirstChild(altairValues.altairName)
+		-- In Studio, import UI/Build.lua as a ModuleScript named Build in a
+		-- folder named UI beside this LocalScript (or directly beneath it).
+		local container = script and script.Parent
+		local folder = (script and script:FindFirstChild("UI")) or (container and container:FindFirstChild("UI"))
+		local module = folder and folder:FindFirstChild("Build")
+		assert(module and module:IsA("ModuleScript"), "Import UI/Build.lua as UI.Build beside the Altair LocalScript")
+		build = require(module)
+	else
+		local source
+		-- Optional local development copy in the executor's filesystem. A
+		-- downloaded source is never written here, so it cannot become stale.
+		local read = optional(readfile)
+		if read then
+			local ok, contents = pcall(read, altairValues.altairFolder .. "/UI/Build.lua")
+			if ok and type(contents) == "string" and contents:match("%S") then source = contents end
+		end
+		if not source then source = game:HttpGet(altairValues.interfaceSource) end
+		assert(type(source) == "string" and source:match("%S"), "The UI builder source was empty")
+		local compile = optional(loadstring)
+		assert(compile, "This executor does not support loadstring for the Lua UI builder")
+		local chunk, compileError = compile(source, "@Altair/UI/Build.lua")
+		assert(chunk, "Couldn't compile the UI builder: " .. tostring(compileError))
+		build = chunk()
 	end
-	local objects = game:GetObjects("rbxassetid://" .. altairValues.interfaceAsset)
-	local root = objects and objects[1]
-	for _, object in ipairs(objects or {}) do if object ~= root then object:Destroy() end end
+	assert(type(build) == "function", "UI/Build.lua must return a UI factory function")
+	local root = build()
+	assert(typeof(root) == "Instance" and root:IsA("ScreenGui"), "The UI builder must return a ScreenGui")
+	-- Catch an incompatible builder before mounting it or binding events.
+	local ok, validationError = pcall(function()
+		for _, name in ipairs({ "Character", "CustomScriptPrompt", "Disconnected", "GameDetection", "Home",
+			"ModeratorDetectionPrompt", "Notifications", "Playerlist", "ScriptSearch", "Scripts", "Settings",
+			"SmartBar", "Drag", "Toasts", "Starlight", "SecurityPrompt" }) do
+			assert(root:FindFirstChild(name), "The UI builder is missing " .. name)
+		end
+		assert(root.SmartBar.Back:FindFirstChild("Time") and root.SmartBar.Back:FindFirstChild("Buttons"), "The SmartBar hierarchy is incomplete")
+		assert(root.Drag:FindFirstChild("Interact"), "The drag handle has no input button")
+	end)
+	if not ok then root:Destroy(); error(validationError, 0) end
 	return root
 end
 
@@ -976,14 +1017,14 @@ for attempt = 1, 3 do
 		uiResult = result
 		break
 	end
-	uiError = success and "the interface asset returned nothing" or tostring(result)
+	uiError = success and "the UI builder returned nothing" or tostring(result)
 	if attempt < 3 then
 		task.wait(attempt)
 	end
 end
 
 if not uiResult then
-	warn("Altair | Couldn't load the interface asset after 3 attempts (" .. tostring(uiError) .. "). Altair has not started.")
+	warn("Altair | Couldn't build the Lua interface after 3 attempts (" .. tostring(uiError) .. "). Altair has not started.")
 	return
 end
 
@@ -1089,7 +1130,7 @@ local UI = altairValues.lifecycle:own(uiResult)
 UI.Destroying:Once(function() altairValues.lifecycle:unload() end)
 espContainer = altairValues.lifecycle:own(Instance.new("Folder"))
 espContainer.Parent = guiParent
-UI.Enabled = false -- Never render the asset at its authored position.
+UI.Enabled = false -- Never render the interface at its authored position.
 UI.Parent = guiParent
 
 -- Volt/CoreGui: use the full physical viewport, not Roblox top-bar / safe-area insets.
@@ -6985,8 +7026,11 @@ function altairValues.scriptSearchState:prepareInput()
 		characterPanel.ZIndex + 1, playerlistPanel.ZIndex + 1)
 	scriptSearch.Active = true
 	scriptSearch.Interactable = true
-	scriptSearch.Shadow.Active = false
-	scriptSearch.Shadow.ZIndex = 0
+	local shadow = scriptSearch:FindFirstChild("Shadow")
+	if shadow then
+		shadow.Active = false
+		shadow.ZIndex = 0
+	end
 	local top = 1
 	for _, child in ipairs(scriptSearch:GetChildren()) do
 		if child:IsA("GuiObject") and child ~= scriptSearch.SearchBox and child ~= scriptSearch.Icon then
@@ -7049,7 +7093,10 @@ local function openScriptSearch()
 
 	tweenService:Create(scriptSearch, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
 	tweenService:Create(scriptSearch, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 580, 0, 43) }):Play()
-	tweenService:Create(scriptSearch.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0.85 }):Play()
+	local shadow = scriptSearch:FindFirstChild("Shadow")
+	if shadow then
+		tweenService:Create(shadow, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0.85 }):Play()
+	end
 	task.wait(0.03)
 	if state.version ~= version then return end
 	tweenService:Create(scriptSearch.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
@@ -11346,9 +11393,9 @@ local function runtime()
 		if setFpsCap then
 			pcall(setFpsCap, 240)
 		end
-		pcall(function()
-			gameSettings.MasterVolume = oldVolume
-		end)
+		if gameSettings then
+			pcall(function() gameSettings.MasterVolume = oldVolume end)
+		end
 		pcall(function()
 			camera.FieldOfView = baseFieldOfView
 		end)
@@ -11505,7 +11552,7 @@ local function runtime()
 					local sound = soundInstances[i]
 					if not sound then
 						table.remove(soundInstances, i)
-					elseif gameSettings.MasterVolume * sound.PlaybackLoudness * sound.Volume >= threshold then
+					elseif (gameSettings and gameSettings.MasterVolume or oldVolume) * sound.PlaybackLoudness * sound.Volume >= threshold then
 						if sound.Volume > 0.55 then
 							suppressedSounds[sound.SoundId] = "S"
 							sound.Volume = 0.5
