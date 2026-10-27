@@ -40,3 +40,8 @@ Files live in `%LOCALAPPDATA%/Altair/Spotify` on Windows, or `~/Altair/Spotify` 
 - **Rate limited:** the companion honors Spotify's retry delay; leave it running and wait.
 
 Tests: `python -m unittest discover -s Companion/tests -v` from the repository root. Tests simulate authorization and playback responses and never connect an actual Spotify account.
+
+Manual development checks also used a real linked account and Volt's HTTP and
+local asset implementation. The state response includes a public Spotify cover
+URL; Altair loads it directly from `i.scdn.co` without sending account tokens or
+the companion key. Cover rendering requires executor local image-asset support.

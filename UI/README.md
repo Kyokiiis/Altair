@@ -8,12 +8,12 @@ Existing image and font asset IDs are preserved for the original appearance.
 ## Loading
 
 Normal execution downloads `UI/Build.lua`, `UI/Notifications.lua`, `UI/Clock.lua`
-and `UI/Capsules.lua` from this repository. For local
+from this repository. For local
 development, place matching copies in `Altair/UI/` in your executor's filesystem;
 Altair prefers that file when it exists. Update or remove that local copy when
 you want to use the repository version. The loader does not create a disk cache.
 
-In Roblox Studio, import all four modules as **ModuleScripts** using their filenames without `.lua` inside
+In Roblox Studio, import these three modules as **ModuleScripts** using their filenames without `.lua` inside
 a folder named `UI`, beside the Altair **LocalScript**. `UI` can also be a child
 of the Altair LocalScript. Run the LocalScript on the client, for example from
 `StarterPlayerScripts`. The old ScreenGui is no longer needed by the loader.
@@ -27,8 +27,7 @@ StarterPlayerScripts
 └── UI             (Folder)
     ├── Build         (ModuleScript: UI/Build.lua)
     ├── Notifications (ModuleScript: UI/Notifications.lua)
-    ├── Clock         (ModuleScript: UI/Clock.lua)
-    └── Capsules      (ModuleScript: UI/Capsules.lua)
+    └── Clock         (ModuleScript: UI/Clock.lua)
 ```
 
 To construct an independent preview without running Altair:
@@ -42,7 +41,9 @@ root.Enabled = true
 The factory returns a fresh, disabled, unparented ScreenGui. Altair takes
 ownership, mounts it, positions it, and enables it through its existing startup
 and lifecycle logic. The builder does not connect events, start background
-tasks, fetch models, or run any other scripts.
+tasks, or fetch models. It also returns bindings: the main script calls
+`bindings.Capsules(context)` to attach behavior to the constructed UI.
+`Capsules.lua` remains a compatibility shim for Studio callers.
 
 ## Layout and performance
 
@@ -60,8 +61,8 @@ This follows Roblox's guidance to [set Parent last](https://create.roblox.com/do
 Failed construction destroys all partially created instances before reporting
 the error. Separate factory calls never share Instances.
 
-`values` contains shared Roblox datatypes, `propertySets` contains named property
-assignments, and `nodes` describes `{parentIndex, classIndex, name, propertySet,
+`v` contains shared Roblox datatypes, `propertySets` contains packed property-name/value
+indices using `propertyNames`, and `nodes` describes `{parentIndex, classIndex, name, propertySet,
 optionalAttributeSet}`. The `classes` table resolves each class index. Edit the
 appropriate shared property set carefully: several nodes may use the same set.
 For a one-off change, give that node a new property set.
@@ -95,13 +96,36 @@ through the actual UI. Executor-specific gameplay features were not exercised.
 
 ## Notifications and top capsules
 
+Capsules default to scale 1.25, giving a 375px control center on desktop with
+proportional reduction on narrow screens. The former saved default of 3 is
+migrated at layout time. Hover a pill to expand it; moving away collapses it
+after a 350ms grace period. Touch uses tap-to-open. Slider drags and timer entry
+keep the panel open. Repeated hover does not toggle the panel closed.
+
+Icons use official [Lucide](https://lucide.dev/icons/) SVG artwork in `UI/Icons/`,
+rasterized to transparent PNGs for Roblox ImageLabels. Build.lua embeds the PNG
+bytes and registers a local cache through the executor's `getcustomasset` (or
+`getsynasset`), `writefile`, and `makefolder`. No icons are redrawn using Frames
+or Unicode. Ordinary Studio LocalScripts cannot register local PNG files;
+actual image rendering is validated in Volt. The license is included in
+`LUCIDE-LICENSE.txt`.
+
+Spotify cover art is downloaded from the public Spotify image CDN when the
+track artwork changes, shared across all three player views, and cached in
+four slots. Artwork requests carry no bridge key or account token. The Lucide
+note is the fallback when artwork or local asset support is unavailable.
+
+Re-execution unloads the prior session and removes orphaned Altair ScreenGuis
+before mounting the replacement. Root destruction disconnects capsule events,
+cancels tweens and queued commands, and stops future polling updates.
+
 `Notifications.lua` replaces the runtime notification renderer with black rounded,
 content-sized cards: 300px wide, 20px corners, 8px spacing and a 44px single-line
 variant. It measures the actual font, queues bursts, pauses expiry while hovered,
 supports click dismissal and bounds the visible stack. The original builder
 retains its legacy template for hierarchy compatibility.
 
-`Capsules.lua` owns the top pills, expandable music/control center, countdown
+`Build.lua` owns the top pills, expandable music/control center, countdown
 ruler and stopwatch/lap display. Capsules keep a top anchor and move beneath
 overlapping Altair panels, bar, toasts and notifications. Settings control scale
 and visibility. Clocks use timestamp differences, so pauses and slow frames do

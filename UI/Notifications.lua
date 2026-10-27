@@ -3,8 +3,12 @@ return function(context)
 	local root, tweenService = context.Root, game:GetService("TweenService")
 	local textService = game:GetService("TextService")
 	local controller = {alive = true, active = {}, pending = {}, nextId = 0}
-	local font = Font.new("rbxasset://fonts/families/GothamSSm.json")
-	local host = Instance.new("Frame")
+	local builtHost=root:FindFirstChild("NotificationCapsules")
+	local template=builtHost and builtHost:FindFirstChild("CardTemplate")
+	if context.RequireBuiltUI then assert(template,"Build.lua is missing the notification card template") end
+	local font = template and template.Description.FontFace or Font.new("rbxasset://fonts/families/GothamSSm.json")
+	local titleFont=template and template.Title.FontFace or Font.new(font.Family,Enum.FontWeight.Medium)
+	local host = builtHost or Instance.new("Frame")
 	host.Name, host.BackgroundTransparency, host.Size, host.ZIndex = "NotificationCapsules", 1, UDim2.fromScale(1, 1), 350
 	host.Parent = root
 	local connections, tweens = {}, setmetatable({}, {__mode = "k"})
@@ -77,26 +81,38 @@ return function(context)
 		end)
 	end
 	local function spawnRecord(item)
-		local group = Instance.new("CanvasGroup")
-		group.Name, group.BackgroundColor3, group.BorderSizePixel = "Notification_" .. item.id, Color3.fromRGB(17,17,17), 0
+		local group = template and template:Clone() or Instance.new("CanvasGroup")
+		group.Visible=true
+		group.Name="Notification_"..item.id
+		if not template then group.BackgroundColor3,group.BorderSizePixel=Color3.fromRGB(17,17,17),0 end
 		group.Size, group.GroupTransparency, group.ZIndex = UDim2.fromOffset(300, 64), 1, 350
-		local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0,20); corner.Parent = group
-		local gradient = Instance.new("UIGradient")
-		gradient.Rotation, gradient.Color = 90, ColorSequence.new(Color3.new(1,1,1), Color3.fromRGB(115,115,115)); gradient.Parent = group
-		item.group, item.generation, item.connections = group, 0, {}
-		item.titleLabel = label(group, "Title", item.title, 14, Color3.fromRGB(250,250,250))
-		item.titleLabel.FontFace = Font.new(font.Family, Enum.FontWeight.Medium)
-		item.body = label(group, "Description", item.description, 13, Color3.fromRGB(174,174,178))
-		if item.icon then
-			local icon = Instance.new("ImageLabel")
-			icon.Name, icon.BackgroundTransparency, icon.Image = "Icon", 1, item.icon
-			icon.Size, icon.Position, icon.AnchorPoint = UDim2.fromOffset(22,22), UDim2.new(0,20,0.5,0), Vector2.new(0,0.5)
-			icon.ZIndex=351
-			icon.ImageColor3, icon.Parent = Color3.new(1,1,1), group
+		if not template then
+			local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(0,20);corner.Parent=group
+			local gradient=Instance.new("UIGradient");gradient.Rotation=90
+			gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(115,115,115));gradient.Parent=group
 		end
-		local button = Instance.new("TextButton")
-		button.Name, button.Text, button.BackgroundTransparency, button.AutoButtonColor = "Dismiss", "", 1, false
-		button.Size, button.ZIndex, button.Parent = UDim2.fromScale(1,1), 354, group
+		item.group,item.generation,item.connections=group,0,{}
+		item.titleLabel=group:FindFirstChild("Title") or label(group,"Title",item.title,14,Color3.fromRGB(250,250,250))
+		item.titleLabel.Text=item.title;item.titleLabel.FontFace=titleFont
+		item.body=group:FindFirstChild("Description") or label(group,"Description",item.description,13,Color3.fromRGB(174,174,178))
+		item.body.Text=item.description
+		local icon=group:FindFirstChild("Icon")
+		if not icon then
+			icon=Instance.new("ImageLabel");icon.Name="Icon";icon.BackgroundTransparency=1
+			icon.Size,icon.Position,icon.AnchorPoint=UDim2.fromOffset(22,22),UDim2.new(0,20,.5,0),Vector2.new(0,.5)
+			icon.ImageColor3,icon.ZIndex,icon.Parent=Color3.new(1,1,1),351,group
+		end
+		local friend,staff=group:FindFirstChild("FriendIcon"),group:FindFirstChild("StaffIcon")
+		local friendIcon=friend and item.icon and item.icon:find("4370335364",1,true)~=nil
+		local staffIcon=staff and item.icon and item.icon:find("3944670656",1,true)~=nil
+		if friend then friend.Visible=friendIcon==true end
+		if staff then staff.Visible=staffIcon==true end
+		icon.Visible=item.icon~=nil and not friendIcon and not staffIcon;icon.Image=item.icon or ""
+		local button=group:FindFirstChild("Dismiss")
+		if not button then
+			button=Instance.new("TextButton");button.Name="Dismiss";button.Text="";button.BackgroundTransparency=1
+			button.AutoButtonColor=false;button.Size=UDim2.fromScale(1,1);button.ZIndex=354;button.Parent=group
+		end
 		group.Position, group.Parent = UDim2.new(1,60,1,-100), host
 		controller.active[#controller.active+1] = item
 		controller:Layout()
@@ -139,7 +155,7 @@ return function(context)
 			local params=Instance.new("GetTextBoundsParams")
 			params.Width=width-(icon and 58 or 20)-20;params.RichText=false
 			local ok,measured=pcall(function()
-				params.Font=Font.new(font.Family,Enum.FontWeight.Medium);params.Size=14;params.Text=title
+				params.Font=titleFont;params.Size=14;params.Text=title
 				local titleHeight=math.max(17,math.ceil(textService:GetTextBoundsAsync(params).Y))
 				params.Font=font;params.Size=13;params.Text=description
 				return {width=width,title=titleHeight,body=description~="" and math.max(16,math.ceil(textService:GetTextBoundsAsync(params).Y)) or 0}

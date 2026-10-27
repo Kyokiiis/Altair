@@ -14,6 +14,15 @@ spec=importlib.util.spec_from_file_location('bridge',Path(__file__).parents[1]/'
 b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
 
 class OAuthTests(unittest.TestCase):
+    def test_artwork_uses_smallest_valid_spotify_cover(self):
+        item={"album":{"images":[{"url":"https://i.scdn.co/image/large","width":640},
+                                  {"url":"https://i.scdn.co/image/small","width":64},
+                                  {"url":"https://example.com/image/bad","width":64},
+                                  {"url":"https://i.scdn.co.evil/image/bad","width":64}]}}
+        self.assertEqual(b.artwork_url(item),"https://i.scdn.co/image/small")
+        self.assertEqual(b.artwork_url({}),"")
+        self.assertEqual(b.artwork_url({"images":[{"url":"http://127.0.0.1/private","width":64}]}),"")
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.store=b.TokenStore(Path(self.temp.name)/'tokens')
@@ -83,6 +92,14 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(state['progress'],0);self.assertEqual(state['volume'],0)
         self.assertFalse(state['controls']['volume']);self.assertFalse(state['controls']['next'])
         self.assertFalse(state['controls']['seek'])
+    def test_successful_controls_accept_empty_or_text_acknowledgments(self):
+        from unittest.mock import MagicMock
+        self.media.tokens={'access_token':'test','expires_at':time.time()+3600}
+        for body in [b'',b' ',b'OK']:
+            response=MagicMock();response.status=200;response.read.return_value=body
+            response.__enter__.return_value=response
+            with patch.object(b,'urlopen',return_value=response):
+                self.assertIsNone(self.media.api('PUT','me/player/pause'))
 
 class HTTPTests(unittest.TestCase):
     def setUp(self):

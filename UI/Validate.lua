@@ -76,9 +76,16 @@ return function(build, reference)
 				if not equal(v,result:GetAttribute(name)) then fail(path .. " attribute " .. name) end
 			end
 			for name in pairs(result:GetAttributes()) do
-				if attributes[name] == nil then fail(path .. " extra attribute " .. name) end
+				if attributes[name] == nil and not (expected==reference and name=="AltairCapsuleSchema") then fail(path .. " extra attribute " .. name) end
 			end
 			local children, resultChildren = expected:GetChildren(), result:GetChildren()
+			if expected==reference and not expected:FindFirstChild("TopCapsules") then
+				local originalChildren={}
+				for _,child in ipairs(resultChildren) do
+					if child.Name~="TopCapsules" and child.Name~="NotificationCapsules" then originalChildren[#originalChildren+1]=child end
+				end
+				resultChildren=originalChildren
+			end
 			if #children ~= #resultChildren then fail(path .. ": child count mismatch") end
 			for index,child in ipairs(children) do
 				if resultChildren[index] then compare(child,resultChildren[index],path .. "." .. child.Name .. "[" .. index .. "]") end

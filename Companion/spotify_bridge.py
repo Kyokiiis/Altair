@@ -28,6 +28,18 @@ LOG = logging.getLogger("altair.spotify")
 MAX_BODY = 4096
 
 
+def artwork_url(item):
+    """Use Spotify's smallest cover of at least 64px; expose only its public CDN URL."""
+    images=((item.get("album") or {}).get("images") or item.get("images") or [])
+    choices=[]
+    for image in images:
+        url=image.get("url","")
+        if not isinstance(url,str) or not re.fullmatch(r"https://i\.scdn\.co/image/[A-Za-z0-9]+",url): continue
+        width=image.get("width") or 0
+        if isinstance(width,(int,float)) and width>=64: choices.append((width,url))
+    return min(choices)[1] if choices else ""
+
+
 def protected_bytes(data, decrypt=False):
     """Protect account tokens for the current Windows user; restrictive file mode elsewhere."""
     if os.name != "nt": return data
@@ -149,7 +161,10 @@ class WebSpotify:
             try:
                 with urlopen(request, timeout=5) as response:
                     if response.status == 204: return None
-                    body=response.read();return json.loads(body) if body else None
+                    body=response.read().strip()
+                    # Playback endpoints may acknowledge with an empty or plain-text
+                    # success body. Only data requests require a JSON response.
+                    return json.loads(body) if method=="GET" and body else None
             except HTTPError as exc:
                 if exc.code == 401 and attempt == 0:
                     self.tokens["expires_at"] = 0; continue
@@ -170,6 +185,7 @@ class WebSpotify:
                 device=(data or {}).get("device") or {}
                 disallows=((data or {}).get("actions") or {}).get("disallows") or {}
                 self.state={"connected":True,"linked":True,"title":item.get("name","Nothing playing"),"artist":artist,
+                            "artwork":artwork_url(item),
                             "duration":(item.get("duration_ms") or 0)/1000,"progress":((data or {}).get("progress_ms") or 0)/1000,
                             "playing":(data or {}).get("is_playing",False),
                             "volume":(device.get("volume_percent") or 0)/100,
@@ -192,6 +208,7 @@ class WebSpotify:
 
     def dispatch(self, action, value):
         with self.lock:
+            started=time.monotonic()
             position = self.snapshot().get("progress",0)
             if action == "seek": value = number(value,0,self.state.get("duration",0))
             if action == "volume": value = number(value,0,1)
@@ -206,6 +223,8 @@ class WebSpotify:
                 self.state["playing"]=not self.state.get("playing",False)
             if action=="seek": self.state["progress"]=value
             if action=="volume": self.state["volume"]=value
+            if action=="volume":
+                self.state["progress"]=min(self.state.get("duration",0),position+(time.monotonic()-started if self.state.get("playing") else 0))
             self.sampled_at=time.monotonic()
 
     async def run(self):

@@ -66,16 +66,20 @@ do
 	local previous = env.Altair
 	if type(previous) == "table" and type(previous.Unload) == "function" then
 		pcall(previous.Unload)
-	elseif type(previous) == "table" then
-		-- One-time migration from the old name-based, one-second cleanup loop.
-		pcall(function()
-			local root = getHiddenUI and getHiddenUI() or game:GetService("CoreGui")
-			local old = root:FindFirstChild("Altair")
-			if old and old:FindFirstChild("SmartBar") and old:FindFirstChild("Drag") then
+	end
+	-- Also remove orphaned roots left by an interrupted or older session.
+	-- Destroying a current root invokes its runtime teardown before replacement.
+	local containers={}
+	pcall(function() containers[#containers+1]=getHiddenUI and getHiddenUI() or game:GetService("CoreGui") end)
+	pcall(function() containers[#containers+1]=game:GetService("CoreGui") end)
+	pcall(function() containers[#containers+1]=game:GetService("Players").LocalPlayer:FindFirstChildOfClass("PlayerGui") end)
+	for _,container in ipairs(containers) do
+		for _,old in ipairs(container:GetChildren()) do
+			if old:IsA("ScreenGui") and (old.Name=="Altair" or old.Name=="AltairCapsuleQA" or old:GetAttribute("AltairCapsuleSchema")==2)
+				and (old:FindFirstChild("SmartBar") or old:FindFirstChild("TopCapsules")) then
 				old:Destroy()
-				task.wait(1.1)
 			end
-		end)
+		end
 	end
 end
 
@@ -920,7 +924,7 @@ local altairSettings = {
 		color = Color3.fromRGB(55,224,92), minimumLicense = "Free",
 		categorySettings = {
 			{name="Capsules Enabled", settingType="Boolean", current=true, id="capsulesenabled"},
-			{name="Capsule Scale", settingType="Number", current=1, values={0.65,2}, id="capsulescale"},
+			{name="Capsule Scale", settingType="Number", current=1.25, values={0.65,2}, id="capsulescale"},
 			{name="Spotify Connection", settingType="Boolean", current=false, id="spotifyenabled", description="Keep the local companion running to use playback controls."},
 			{name="Spotify Client ID", settingType="Input", current="", id="spotifyclientid", description="Public Client ID from your Spotify developer app. Never enter a client secret."},
 			{name="Spotify Bridge Key", settingType="Input", current="", id="spotifybridgekey", description="Paste the local key printed by the companion. Account tokens stay in the companion."},
@@ -982,7 +986,7 @@ end)()
 local guiParent = getHiddenUI and getHiddenUI() or (useStudio and localPlayer:WaitForChild("PlayerGui")) or coreGui
 
 function altairValues.loadUIModule(name)
-	assert(({Build=true, Notifications=true, Capsules=true, Clock=true})[name], "Unknown Altair UI module")
+	assert(({Build=true, Notifications=true, Clock=true})[name], "Unknown Altair UI module")
 	if useStudio then
 		local container = script and script.Parent
 		local folder = (script and script:FindFirstChild("UI")) or (container and container:FindFirstChild("UI"))
@@ -992,7 +996,7 @@ function altairValues.loadUIModule(name)
 	end
 	local source
 	local read = optional(readfile)
-	if read then
+	if read and not altairValues.remoteInterface then
 		local ok, contents = pcall(read, altairValues.altairFolder .. "/UI/" .. name .. ".lua")
 		if ok and type(contents)=="string" and contents:match("%S") then source=contents end
 	end
@@ -1008,10 +1012,18 @@ end
 local function loadInterface()
 	local build=altairValues.loadUIModule("Build")
 	assert(type(build)=="function", "UI/Build.lua must return a UI factory function")
-	local root = build()
+	local root, bindings = build()
+	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function") then
+		if typeof(root)=="Instance" then root:Destroy() end
+		altairValues.remoteInterface=true
+		root,bindings=altairValues.loadUIModule("Build")()
+	end
+	altairValues.interfaceBindings = bindings
 	assert(typeof(root) == "Instance" and root:IsA("ScreenGui"), "The UI builder must return a ScreenGui")
 	-- Catch an incompatible builder before mounting it or binding events.
 	local ok, validationError = pcall(function()
+		assert(type(bindings)=="table" and type(bindings.Capsules)=="function", "Update UI/Build.lua: capsule bindings are missing")
+		assert(root:FindFirstChild("TopCapsules") and root:FindFirstChild("NotificationCapsules"), "Update UI/Build.lua: capsule templates are missing")
 		for _, name in ipairs({ "Character", "CustomScriptPrompt", "Disconnected", "GameDetection", "Home",
 			"ModeratorDetectionPrompt", "Notifications", "Playerlist", "ScriptSearch", "Scripts", "Settings",
 			"SmartBar", "Drag", "Toasts", "Starlight", "SecurityPrompt" }) do
@@ -1536,7 +1548,7 @@ local function blurSignature(value)
 end
 
 notificationContainer.Visible = false
-altairValues.notificationController = altairValues.loadUIModule("Notifications")({Root=UI})
+altairValues.notificationController = altairValues.loadUIModule("Notifications")({Root=UI,RequireBuiltUI=true})
 local function queueNotification(Title, Description, Image, options)
 	return altairValues.notificationController:Notify(Title, Description, Image, options)
 end
@@ -10094,7 +10106,7 @@ altairAPI.Destroy = altairAPI.Unload
 altairAPI.Toast = Toast
 altairAPI.QueueNotification = queueNotification
 altairAPI.Notify = queueNotification
-altairValues.capsules = altairValues.loadUIModule("Capsules")({Root=UI, Clock=altairValues.loadUIModule("Clock"),
+altairValues.capsules = altairValues.interfaceBindings.Capsules({Root=UI, RequireBuiltUI=true, Clock=altairValues.loadUIModule("Clock"),
 	GetSetting=settingValue, Request=originalRequest, Notify=queueNotification, Alive=checkAltair,
 	GetRainbowColor=function() return altairValues.rainbowColor end,
 	Notifications=altairValues.notificationController})
