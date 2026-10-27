@@ -968,7 +968,10 @@ local function bindCapsules(context)
 	end
 	local function inside(object,position)
 		local p,s=object.AbsolutePosition,object.AbsoluteSize
-		return position.X>=p.X and position.X<=p.X+s.X and position.Y>=p.Y and position.Y<=p.Y+s.Y
+		-- Keep edge controls usable without changing the visible capsule dimensions.
+		local margin=math.max(18,24*scale.Scale)
+		return position.X>=p.X-margin and position.X<=p.X+s.X+margin
+			and position.Y>=p.Y-margin and position.Y<=p.Y+s.Y+margin
 	end
 	connect(surface.MouseEnter,function() controller.hoverSession=true;controller.hoverLeftAt=nil end)
 	connect(input.InputBegan,function(event)
@@ -992,7 +995,7 @@ local function bindCapsules(context)
 				controller.hoverLeftAt=nil
 			else
 				controller.hoverLeftAt=controller.hoverLeftAt or now
-				if now-controller.hoverLeftAt>.35 then controller.hoverSession=false;controller:Open(nil) end
+				if now-controller.hoverLeftAt>.5 then controller.hoverSession=false;controller:Open(nil) end
 			end
 		end
 		if now>=controller.layoutAt then controller.layoutAt=now+.1;controller:Layout() end

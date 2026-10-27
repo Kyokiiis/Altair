@@ -44,7 +44,8 @@ and pending commands, and stops future polling updates.
 
 Capsules default to scale 1.25, with a 375px expanded control center on desktop.
 The prior oversized saved default of 3 is migrated. Hover expands a pill;
-leaving collapses it after 350ms. Touch uses tapping. Capsules stay near the
+leaving the padded hover area collapses it after 500ms. The hover margin is
+24 scaled pixels on every side, with an 18px minimum. Touch uses tapping. Capsules stay near the
 top and move below overlapping Altair panels, notifications, and toasts.
 
 Timer setup opens an animated duration panel with a moving, edge-faded ruler,
