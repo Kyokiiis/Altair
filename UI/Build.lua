@@ -1335,7 +1335,7 @@ return function(options)
 			objects[index].Parent = objects[nodes[index][1]]
 		end
 		styleSettings(objects[1])
-		objects[1]:SetAttribute("AltairUIRevision",4)
+		objects[1]:SetAttribute("AltairUIRevision",5)
 		bindCapsules({Root=objects[1],BuildOnly=true})
 		return objects[1]
 	end)

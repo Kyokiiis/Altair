@@ -1013,7 +1013,7 @@ local function loadInterface()
 	local build=altairValues.loadUIModule("Build")
 	assert(type(build)=="function", "UI/Build.lua must return a UI factory function")
 	local root, bindings = build()
-	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=4) then
+	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=5) then
 		if typeof(root)=="Instance" then root:Destroy() end
 		altairValues.remoteInterface=true
 		root,bindings=altairValues.loadUIModule("Build")()
