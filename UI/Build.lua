@@ -511,9 +511,11 @@ local function bindCapsules(context)
 	host.AnchorPoint,host.Position,host.ZIndex=Vector2.new(0.5,0),UDim2.new(0.5,0,0,12),290
 	local scale=make("UIScale",host,{Scale=1.25})
 	local compact=make("CanvasGroup",host,{Name="Compact",Size=UDim2.fromOffset(300,24),BackgroundTransparency=1})
+	compact.AnchorPoint=Vector2.new(.5,0);compact.Position=UDim2.fromScale(.5,0)
+	local compactFit=make("UIScale",compact,{Name="FitScale",Scale=1})
 	local strip=make("Frame",compact,{Name="Pills",AnchorPoint=Vector2.new(0.5,0),Position=UDim2.fromScale(.5,0),
 		Size=UDim2.fromOffset(250,24),BackgroundTransparency=1})
-	make("UIListLayout",strip,{FillDirection=Enum.FillDirection.Horizontal,HorizontalAlignment=Enum.HorizontalAlignment.Center,
+	local pillLayout=make("UIListLayout",strip,{FillDirection=Enum.FillDirection.Horizontal,HorizontalAlignment=Enum.HorizontalAlignment.Center,
 		VerticalAlignment=Enum.VerticalAlignment.Center,Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
 	local smartBar=root:FindFirstChild("SmartBar")
 	local barColor=smartBar and smartBar.BackgroundColor3 or Color3.fromRGB(30,30,30)
@@ -576,7 +578,7 @@ local function bindCapsules(context)
 				local source=pills[name]
 				local factor=math.max(.01,scale.Scale)
 				local x=source and ((source.AbsolutePosition.X+source.AbsoluteSize.X/2-host.AbsolutePosition.X)/factor) or 150
-				local width=source and source.Size.X.Offset or 60
+				local width=source and source.AbsoluteSize.X/factor or 60
 				self.origin={x=x,width=width}
 				surface.Size=UDim2.fromOffset(width,24);surface.Position=UDim2.fromOffset(x,0)
 				surface.BackgroundTransparency=0
@@ -629,6 +631,29 @@ local function bindCapsules(context)
 	pills.center,pills.music,pills.timer,pills.watch=menuPill,musicPill,timerPill,watchPill
 	artwork(musicVisual,2,3,18,9,6,7,10)
 	local compactTitle=label(musicVisual,"Title","Spotify",24,0,60,24,7,white);compactTitle.FontFace=medium
+	compactTitle.TextTruncate=Enum.TextTruncate.None
+	local function renderedTitleWidth()
+		if compactTitle.Text==controller.measuredTitle and compactTitle.TextBounds.X>0 then
+			return math.ceil(compactTitle.TextBounds.X/math.max(.01,scale.Scale*compactFit.Scale))
+		end
+	end
+	connect(compactTitle:GetPropertyChangedSignal("TextBounds"),function()
+		controller.titleWidth=renderedTitleWidth() or controller.titleWidth
+	end)
+	local function measureCompactTitle(title)
+		if controller.measuredTitle==title then return end
+		controller.measuredTitle=title;controller.titleMeasurement=(controller.titleMeasurement or 0)+1
+		local generation=controller.titleMeasurement
+		task.spawn(function()
+			local params=Instance.new("GetTextBoundsParams")
+			params.Text=title;params.Font=compactTitle.FontFace;params.Size=compactTitle.TextSize;params.Width=100000
+			local ok,bounds=pcall(function() return game:GetService("TextService"):GetTextBoundsAsync(params) end)
+			params:Destroy()
+			if controller.alive and generation==controller.titleMeasurement then
+				controller.titleWidth=renderedTitleWidth() or (ok and math.ceil(bounds.X) or game:GetService("TextService"):GetTextSize(title,7,Enum.Font.Roboto,Vector2.new(100000,24)).X)
+			end
+		end)
+	end
 	controller.musicShown=false;controller.musicTransition=0
 	musicPill.Size=UDim2.fromOffset(0,24)
 	local function animateMusic(active,width)
@@ -661,6 +686,18 @@ local function bindCapsules(context)
 		end
 	end
 	timerPill.Visible,watchPill.Visible=false,false
+	local function syncCompactBounds()
+		if root.AbsoluteSize.X<=0 then return end
+		local factor=math.max(.01,scale.Scale*compactFit.Scale)
+		local width=math.max(24,pillLayout.AbsoluteContentSize.X/factor)
+		local fit=math.min(1,(root.AbsoluteSize.X-24)/math.max(1,(width+8)*scale.Scale))
+		set(compactFit,"Scale",math.max(.05,fit))
+		set(strip,"Size",UDim2.fromOffset(width,24))
+		set(compact,"Size",UDim2.fromOffset(width+8,24))
+		controller.compactWidth=(width+8)*compactFit.Scale
+	end
+	connect(pillLayout:GetPropertyChangedSignal("AbsoluteContentSize"),syncCompactBounds)
+	connect(root:GetPropertyChangedSignal("AbsoluteSize"),syncCompactBounds)
 	local function notifyError(message)
 		if os.clock()-controller.lastErrorAt<4 then return end
 		controller.lastErrorAt=os.clock();context.Notify("Spotify",message,nil)
@@ -754,6 +791,7 @@ local function bindCapsules(context)
 		state.artist=tostring(state.artist or ""):sub(1,300)
 		state.connected=state.connected==true;state.playing=state.playing==true
 		self.media,self.mediaAt=state,os.clock()
+		measureCompactTitle(state.title)
 		updateArtwork(state.connected and state.artwork or nil)
 	end
 	local function progress()
@@ -1007,7 +1045,7 @@ local function bindCapsules(context)
 		local factor=math.clamp(requested,.65,2)
 		factor=math.min(factor*math.clamp(viewport.X/1280,.8,1),math.max(.45,(viewport.X-24)/300))
 		scale.Scale=factor
-		local width=(self.view and sizes[self.view].X or 250)*factor
+		local width=(self.view and sizes[self.view].X or self.compactWidth or 250)*factor
 		local height=(self.view and sizes[self.view].Y or 24)*factor
 				local top=12*factor
 		local x,y=viewport.X/2-width/2,top
@@ -1102,7 +1140,7 @@ local function bindCapsules(context)
 		-- Retain the title during exit so the whole pill fades as a single visual.
 		if musicActive then set(compactTitle,"Text",controller.media.title) end
 		if controller.view=="music" and not musicActive then controller:Open(nil) end
-		local pillWidth=math.clamp(compactTitle.TextBounds.X/math.max(.01,scale.Scale)+33,60,110)
+		local pillWidth=math.max(60,(controller.titleWidth or 0)+33)
 		animateMusic(musicActive==true,pillWidth)
 		set(timerPill.Value,"Text","    "..Clock.Format(remaining,false,true));set(watchPill.Value,"Text","    "..Clock.Format(elapsed))
 		if controller.view=="duration" then

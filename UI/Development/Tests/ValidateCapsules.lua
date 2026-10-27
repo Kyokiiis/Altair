@@ -39,6 +39,16 @@ return function()
 		settings['Capsules Enabled']=true;controller:Layout();expect(root.TopCapsules.Visible,'Capsules could not be shown')
 		controller:LinkSpotify();task.wait(.15);controller.nextPoll=0;task.wait(.25)
 		expect(linked and controller.media.connected,'Link did not refresh playback')
+		local originalTitle=media.title
+		media.title='The Other Side of Paradise (Live at Alexandra Palace - Extended Version)'
+		controller:SetMedia(media);task.wait(.6)
+		local musicPill=root.TopCapsules.Compact.Pills.Music
+		local title=musicPill.Visual.Title
+		expect(musicPill.Size.X.Offset>110,'Song title retained the old width cap')
+		expect(title.TextBounds.X<=title.AbsoluteSize.X+1,'Full song title was clipped')
+		local expandedWidth=musicPill.Size.X.Offset
+		media.title=originalTitle;controller:SetMedia(media);task.wait(.6)
+		expect(musicPill.Size.X.Offset<expandedWidth,'Shorter song title did not shrink the pill')
 		controller:Open('music');task.wait(.45)
 		controller:Open('music');expect(controller.view=='music','Repeated hover unexpectedly collapsed the panel')
 		controller:BeginTimerEntry();controller:SetTimerDraft(90)

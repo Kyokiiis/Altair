@@ -63,6 +63,11 @@ compact pill and both expanded players, fetched from the public Spotify image
 CDN without account tokens or bridge keys, and cached in four slots. Seek and
 volume drags show immediate feedback and send one command on release.
 
+The music pill measures the complete song title in its actual font and animates
+to that width, including space for artwork and padding. The row resizes with it
+so long titles are not clipped by a fixed container. Extremely long titles fit
+within the viewport by scaling only the compact row, leaving expanded panels unchanged.
+
 ## Appearance and performance
 
 Settings uses two columns of compact category cards with descriptions and
