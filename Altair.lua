@@ -165,7 +165,7 @@ local closeModPrompt
 -- Configurable Core Values
 local SECURITY_PROMPT_TIMEOUT = 60 -- seconds before an unanswered prompt denies by default
 local altairValues = {
-	altairVersion = "1.34",
+	altairVersion = "1.4",
 	altairName = "Altair",
 	releaseType = "Stable",
 	altairFolder = "Altair",
