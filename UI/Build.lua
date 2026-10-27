@@ -442,9 +442,9 @@ local function bindCapsules(context)
 		return object
 	end
 	local function set(object,property,value) if object[property]~=value then object[property]=value end end
-	local function tween(object,time,properties)
+	local function tween(object,time,properties,style,direction)
 		local old=controller.tweens[object];if old then old:Cancel() end
-		local animation=tweenService:Create(object,TweenInfo.new(time,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),properties)
+		local animation=tweenService:Create(object,TweenInfo.new(time,style or Enum.EasingStyle.Quint,direction or Enum.EasingDirection.Out),properties)
 		controller.tweens[object]=animation
 		animation.Completed:Once(function() if controller.tweens[object]==animation then controller.tweens[object]=nil end end)
 		animation:Play();return animation
@@ -517,17 +517,27 @@ local function bindCapsules(context)
 		VerticalAlignment=Enum.VerticalAlignment.Center,Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
 	local smartBar=root:FindFirstChild("SmartBar")
 	local barColor=smartBar and smartBar.BackgroundColor3 or Color3.fromRGB(30,30,30)
-	local baseColor=barColor:Lerp(Color3.new(0,0,0),.18)
+	local baseColor=barColor
 	local controlColor=smartBar and smartBar.Back.BackgroundColor3:Lerp(baseColor,.35) or Color3.fromRGB(40,40,41)
 	local surface=frame(host,"Surface",0,0,300,24,baseColor,20)
-	surface.BackgroundTransparency=.06
+	surface.BackgroundTransparency=.08
 	surface.AnchorPoint,surface.Position,surface.Visible,surface.ClipsDescendants=Vector2.new(.5,0),UDim2.fromScale(.5,0),false,true
 	-- Share the SmartBar's charcoal finish and fine border across both capsule states.
 	local sourceStroke=smartBar and smartBar:FindFirstChildOfClass("UIStroke")
 	local outline=surface:FindFirstChild("CapsuleOutline") or (sourceStroke and sourceStroke:Clone()) or Instance.new("UIStroke")
-	outline.Name="CapsuleOutline";outline.Color=white;outline.Transparency=.85;outline.Thickness=1
+	outline.Name="CapsuleOutline";outline.Color=white;outline.Transparency=.45;outline.Thickness=1
 	outline.Enabled=true;outline.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;outline.Parent=surface
-	local accentOutlines={outline}
+	local inner=frame(surface,"Back",5,5,0,0,smartBar and smartBar.Back.BackgroundColor3 or Color3.fromRGB(50,50,50),16)
+	inner.Size=UDim2.new(1,-10,1,-10);inner.BackgroundTransparency=.1
+	local innerStroke=make("UIStroke",inner,{Name="InnerOutline",Color=white,Thickness=1,Transparency=.65,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+	local accentOutlines={outline,innerStroke}
+	local function barTile(object,sourceName)
+		local source=smartBar and smartBar.Back.Buttons:FindFirstChild(sourceName)
+		local gradient=source and source:FindFirstChildOfClass("UIGradient")
+		object.BackgroundColor3=Color3.new(1,1,1)
+		make("UIGradient",object,{Name="TileGradient",Rotation=90,
+			Color=gradient and gradient.Color or ColorSequence.new(controlColor,barColor)})
+	end
 	local views,pills={},{}
 	local function view(name,w,h)
 		local v=make("CanvasGroup",surface,{Name=name,Size=UDim2.fromOffset(w,h),BackgroundTransparency=1,GroupTransparency=1,Visible=false})
@@ -575,37 +585,81 @@ local function bindCapsules(context)
 			task.delay(.18,function() if self.alive and transition==self.transition then compact.Visible=false end end)
 			local size=sizes[name]
 			surface.Visible=true;views[name].Visible=true;views[name].GroupTransparency=1
-			tween(surface,.36,{Size=UDim2.fromOffset(size.X,size.Y),Position=UDim2.fromScale(.5,0),BackgroundTransparency=.06})
-			tween(outline,.28,{Transparency=.85})
+			tween(surface,.36,{Size=UDim2.fromOffset(size.X,size.Y),Position=UDim2.fromScale(.5,0),BackgroundTransparency=.08})
+			tween(outline,.28,{Transparency=.45})
 			tween(views[name],.24,{GroupTransparency=0})
 		end
 		self.layoutAt=0
 	end
 	local function pill(name,text,width,color,action)
 		local p=button(strip,name,text,0,0,width,24,barColor,function(event)
-			-- Touch has no hover; tapping opens the same animated surface.
 			if event and event.UserInputType==Enum.UserInputType.Touch then action() end
 		end)
 		connect(p.MouseEnter,function()
 			controller.hoverSession=true;controller.hoverLeftAt=nil;action()
 		end)
-		p.BackgroundTransparency=.1
-		local edge=frame(p,"Edge",1,1,0,0,nil,11);edge.Size=UDim2.new(1,-2,1,-2)
+		local visual=p
+		if name=="Music" then
+			p.BackgroundTransparency=1;p.ClipsDescendants=true
+			visual=make("CanvasGroup",p,{Name="Visual",Size=UDim2.fromOffset(width,24),BackgroundColor3=barColor,
+				BackgroundTransparency=.08,BorderSizePixel=0,GroupTransparency=1})
+			corner(visual,12)
+		else p.BackgroundTransparency=.08 end
+		local back=frame(visual,"Back",2,2,0,0,controlColor,10);back.Size=UDim2.new(1,-4,1,-4)
+		barTile(back,({ControlCenter="Settings",Music="Home",Timer="Scripts",Stopwatch="Playerlist"})[name])
+		back.BackgroundTransparency=.18
+		local edge=frame(visual,"Edge",1,1,0,0,nil,11);edge.Size=UDim2.new(1,-2,1,-2)
 		accentOutlines[#accentOutlines+1]=make("UIStroke",edge,{Name="PillOutline",Color=white,Thickness=1,
-			Transparency=.85,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+			Transparency=.45,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+		if name~="Music" then
+			p.Text=""
+			local value=label(visual,"Value",text,0,0,width,24,8,white)
+			value.TextXAlignment=Enum.TextXAlignment.Center;value.FontFace=medium
+		end
 		p.LayoutOrder=#strip:GetChildren();p.TextSize=8;p.TextColor3=color or white
-		return p
+		return p,visual
 	end
 	local menuPill=pill("ControlCenter","",24,white,function() controller:Open("center") end)
 	icon(menuPill,"Chevron","chevron-down",6,6,12,white)
-	local musicPill=pill("Music","",62,white,function() controller:Open("music") end)
+	local musicPill,musicVisual=pill("Music","",62,white,function() controller:Open("music") end)
 	musicPill.Visible=false
 	local timerPill=pill("Timer","    05:00",50,amber,function() controller:Open("timer") end)
 	local watchPill=pill("Stopwatch","    00:00",50,green,function() controller:Open("watch") end)
-	for _,spec in ipairs({{timerPill,amber},{watchPill,green}}) do icon(spec[1],"ClockIcon","timer",5,6,12,spec[2]) end
+	for _,p in {timerPill,watchPill} do icon(p,"ClockIcon","timer",5,6,12,white) end
 	pills.center,pills.music,pills.timer,pills.watch=menuPill,musicPill,timerPill,watchPill
-	artwork(musicPill,2,3,18,9,6,7,10)
-	local compactTitle=label(musicPill,"Title","Spotify",24,0,60,24,7,white);compactTitle.FontFace=medium
+	artwork(musicVisual,2,3,18,9,6,7,10)
+	local compactTitle=label(musicVisual,"Title","Spotify",24,0,60,24,7,white);compactTitle.FontFace=medium
+	controller.musicShown=false;controller.musicTransition=0
+	musicPill.Size=UDim2.fromOffset(0,24)
+	local function animateMusic(active,width)
+		if active~=controller.musicShown then
+			controller.musicShown=active;controller.musicTransition+=1
+			local generation=controller.musicTransition
+			local wasVisible=musicPill.Visible
+			musicPill.Visible=true
+			if active then
+				if not wasVisible then
+					musicVisual.Position=UDim2.fromOffset(0,-10);musicVisual.GroupTransparency=1
+					musicPill.Size=UDim2.fromOffset(0,24)
+				end
+				controller.musicWidth=width
+				tween(musicVisual,.28,{Position=UDim2.fromOffset(0,0),GroupTransparency=0},Enum.EasingStyle.Quad)
+				tween(musicPill,.4,{Size=UDim2.fromOffset(width,24)},Enum.EasingStyle.Quart)
+			else
+				tween(musicVisual,.32,{Position=UDim2.fromOffset(0,-10),GroupTransparency=1},Enum.EasingStyle.Quad,Enum.EasingDirection.In)
+				tween(musicPill,.4,{Size=UDim2.fromOffset(0,24)},Enum.EasingStyle.Quart,Enum.EasingDirection.InOut)
+				task.delay(.42,function()
+					if controller.alive and generation==controller.musicTransition and not controller.musicShown then musicPill.Visible=false end
+				end)
+			end
+		elseif active and controller.musicWidth~=width then
+			controller.musicWidth=width;tween(musicPill,.2,{Size=UDim2.fromOffset(width,24)})
+		end
+		if active then
+			musicVisual.Size=UDim2.fromOffset(width,24)
+			compactTitle.Size=UDim2.fromOffset(width-30,24)
+		end
+	end
 	timerPill.Visible,watchPill.Visible=false,false
 	local function notifyError(message)
 		if os.clock()-controller.lastErrorAt<4 then return end
@@ -908,8 +962,10 @@ local function bindCapsules(context)
 	watchCancel.Text="";icon(watchCancel,"Close","x",5,5,10,white)
 	watchCancel.Visible=false
 	for _,tile in {timerTile,watchTile} do
+		barTile(tile,tile==timerTile and "Scripts" or "Playerlist")
+		tile.Label.TextColor3=white:Lerp(gray,.15)
 		accentOutlines[#accentOutlines+1]=make("UIStroke",tile,{Name="InsetOutline",Color=white,Thickness=1,
-			Transparency=.93,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+			Transparency=.55,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
 	end
 	label(timer,"Title","Timer",11,8,100,12,9,gray)
 	local timerTime=label(timer,"Time","05:00",11,22,120,21,18,amber);timerTime.FontFace=medium
@@ -1043,12 +1099,12 @@ local function bindCapsules(context)
 		local remaining,elapsed=clock:Remaining(),clock:Elapsed()
 		set(timerPill,"Visible",clock.timer~=nil);set(watchPill,"Visible",clock.watch.active)
 		local musicActive=controller.media.connected and controller.media.playing and (controller.media.duration or 0)>0
-		set(musicPill,"Visible",musicActive==true)
-		set(compactTitle,"Text",musicActive and controller.media.title or "")
+		-- Retain the title during exit so the whole pill fades as a single visual.
+		if musicActive then set(compactTitle,"Text",controller.media.title) end
 		if controller.view=="music" and not musicActive then controller:Open(nil) end
 		local pillWidth=math.clamp(compactTitle.TextBounds.X/math.max(.01,scale.Scale)+33,60,110)
-		set(musicPill,"Size",UDim2.fromOffset(pillWidth,24));compactTitle.Size=UDim2.fromOffset(pillWidth-30,24)
-		set(timerPill,"Text","    "..Clock.Format(remaining,false,true));set(watchPill,"Text","    "..Clock.Format(elapsed))
+		animateMusic(musicActive==true,pillWidth)
+		set(timerPill.Value,"Text","    "..Clock.Format(remaining,false,true));set(watchPill.Value,"Text","    "..Clock.Format(elapsed))
 		if controller.view=="duration" then
 			controller.rulerDisplay+=(controller.rulerTarget-controller.rulerDisplay)*(1-math.exp(-22*renderDt))
 			local base=math.floor(controller.rulerDisplay)
