@@ -516,15 +516,18 @@ local function bindCapsules(context)
 	make("UIListLayout",strip,{FillDirection=Enum.FillDirection.Horizontal,HorizontalAlignment=Enum.HorizontalAlignment.Center,
 		VerticalAlignment=Enum.VerticalAlignment.Center,Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
 	local smartBar=root:FindFirstChild("SmartBar")
-	local baseColor=smartBar and smartBar.BackgroundColor3:Lerp(Color3.new(0,0,0),.4) or Color3.fromRGB(18,18,18)
+	local barColor=smartBar and smartBar.BackgroundColor3 or Color3.fromRGB(30,30,30)
+	local baseColor=barColor:Lerp(Color3.new(0,0,0),.18)
+	local controlColor=smartBar and smartBar.Back.BackgroundColor3:Lerp(baseColor,.35) or Color3.fromRGB(40,40,41)
 	local surface=frame(host,"Surface",0,0,300,24,baseColor,20)
-	surface.BackgroundTransparency=.04
+	surface.BackgroundTransparency=.06
 	surface.AnchorPoint,surface.Position,surface.Visible,surface.ClipsDescendants=Vector2.new(.5,0),UDim2.fromScale(.5,0),false,true
-	-- Match the SmartBar finish on expanded surfaces; compact pills retain their styling.
+	-- Share the SmartBar's charcoal finish and fine border across both capsule states.
 	local sourceStroke=smartBar and smartBar:FindFirstChildOfClass("UIStroke")
 	local outline=surface:FindFirstChild("CapsuleOutline") or (sourceStroke and sourceStroke:Clone()) or Instance.new("UIStroke")
 	outline.Name="CapsuleOutline";outline.Color=white;outline.Transparency=.85;outline.Thickness=1
 	outline.Enabled=true;outline.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;outline.Parent=surface
+	local accentOutlines={outline}
 	local views,pills={},{}
 	local function view(name,w,h)
 		local v=make("CanvasGroup",surface,{Name=name,Size=UDim2.fromOffset(w,h),BackgroundTransparency=1,GroupTransparency=1,Visible=false})
@@ -572,20 +575,24 @@ local function bindCapsules(context)
 			task.delay(.18,function() if self.alive and transition==self.transition then compact.Visible=false end end)
 			local size=sizes[name]
 			surface.Visible=true;views[name].Visible=true;views[name].GroupTransparency=1
-			tween(surface,.36,{Size=UDim2.fromOffset(size.X,size.Y),Position=UDim2.fromScale(.5,0),BackgroundTransparency=.04})
+			tween(surface,.36,{Size=UDim2.fromOffset(size.X,size.Y),Position=UDim2.fromScale(.5,0),BackgroundTransparency=.06})
 			tween(outline,.28,{Transparency=.85})
 			tween(views[name],.24,{GroupTransparency=0})
 		end
 		self.layoutAt=0
 	end
 	local function pill(name,text,width,color,action)
-		local p=button(strip,name,text,0,0,width,24,Color3.fromRGB(10,10,11),function(event)
+		local p=button(strip,name,text,0,0,width,24,barColor,function(event)
 			-- Touch has no hover; tapping opens the same animated surface.
 			if event and event.UserInputType==Enum.UserInputType.Touch then action() end
 		end)
 		connect(p.MouseEnter,function()
 			controller.hoverSession=true;controller.hoverLeftAt=nil;action()
 		end)
+		p.BackgroundTransparency=.1
+		local edge=frame(p,"Edge",1,1,0,0,nil,11);edge.Size=UDim2.new(1,-2,1,-2)
+		accentOutlines[#accentOutlines+1]=make("UIStroke",edge,{Name="PillOutline",Color=white,Thickness=1,
+			Transparency=.85,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
 		p.LayoutOrder=#strip:GetChildren();p.TextSize=8;p.TextColor3=color or white
 		return p
 	end
@@ -884,7 +891,7 @@ local function bindCapsules(context)
 		if event.UserInputType==Enum.UserInputType.MouseWheel then controller:SetTimerDraft(controller.timerDraft+event.Position.Z*controller.timerUnit) end
 	end)
 	connect(input.WindowFocusReleased,function() controller.pickerDrag=nil;controller.dragging=false;syncDraft() end)
-	local timerTile=button(center,"TimerTile","",11,102,136,33,Color3.fromRGB(28,28,29),function()
+	local timerTile=button(center,"TimerTile","",11,102,136,33,controlColor,function()
 		if clock.timer then controller:Open("timer") else controller:BeginTimerEntry() end
 	end)
 	label(timerTile,"Label","Timer",10,3,90,12,9,gray)
@@ -892,7 +899,7 @@ local function bindCapsules(context)
 	timerCancel=button(timerTile,"Cancel","",110,7,20,20,Color3.fromRGB(40,40,41),function() clock:CancelTimer() end)
 	icon(timerCancel,"Close","x",5,5,10,white);timerCancel.Visible=false
 
-	local watchTile=button(center,"WatchTile","",153,102,136,33,Color3.fromRGB(28,28,29),function()
+	local watchTile=button(center,"WatchTile","",153,102,136,33,controlColor,function()
 		if not clock.watch.active then clock:ToggleWatch() else controller:Open("watch") end
 	end)
 	label(watchTile,"Label","Stopwatch",10,3,90,12,9,gray)
@@ -900,6 +907,10 @@ local function bindCapsules(context)
 	local watchCancel=button(watchTile,"Cancel","×",110,7,20,20,Color3.fromRGB(40,40,41),function() clock:ResetWatch() end)
 	watchCancel.Text="";icon(watchCancel,"Close","x",5,5,10,white)
 	watchCancel.Visible=false
+	for _,tile in {timerTile,watchTile} do
+		accentOutlines[#accentOutlines+1]=make("UIStroke",tile,{Name="InsetOutline",Color=white,Thickness=1,
+			Transparency=.93,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+	end
 	label(timer,"Title","Timer",11,8,100,12,9,gray)
 	local timerTime=label(timer,"Time","05:00",11,22,120,21,18,amber);timerTime.FontFace=medium
 	local timerPause=button(timer,"Pause","Ⅱ",153,11,22,22,Color3.fromRGB(65,45,7),function() clock:ToggleTimer() end)
@@ -1024,10 +1035,10 @@ local function bindCapsules(context)
 		renderAccumulator+=dt
 		if renderAccumulator<(controller.view and 1/60 or .1) or not host.Visible then return end
 		local renderDt=renderAccumulator;renderAccumulator=0
-		if surface.Visible then
+		do
 			local rainbow=get("Rainbow Mode",false)==true
 			local accent=rainbow and ((context.GetRainbowColor and context.GetRainbowColor()) or Color3.fromHSV((os.clock()/8)%1,.65,.8)) or white
-			set(outline,"Color",accent)
+			for _,stroke in ipairs(accentOutlines) do set(stroke,"Color",accent) end
 		end
 		local remaining,elapsed=clock:Remaining(),clock:Elapsed()
 		set(timerPill,"Visible",clock.timer~=nil);set(watchPill,"Visible",clock.watch.active)

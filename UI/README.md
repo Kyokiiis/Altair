@@ -66,8 +66,10 @@ volume drags show immediate feedback and send one command on release.
 
 Settings uses two columns of compact category cards with descriptions and
 subtle tinted borders. Seven categories fit within the existing 613×384 panel.
-Expanded capsule backgrounds are darker than the SmartBar, with a subtle 1px
-outline that follows Rainbow Mode. There is no simulated beat pulse.
+Capsules share the SmartBar's charcoal palette, rounded controls, and fine 1px
+outlines. Expanded panels stay slightly darker and less transparent than the
+SmartBar. Compact pills and inset timer/stopwatch controls also have subtle
+borders; all capsule borders follow Rainbow Mode. There is no simulated beat pulse.
 
 Icons are official Lucide SVG artwork rasterized to transparent PNGs for Roblox
 ImageLabels. Build.lua embeds losslessly optimized bytes and registers a local
