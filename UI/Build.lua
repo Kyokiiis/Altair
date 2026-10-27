@@ -1,3 +1,297 @@
+-- CLOCK MODEL BEGIN
+local Clock=(function()
+-- Monotonic timer/stopwatch model. No rendering, yields, or Roblox dependencies.
+local Clock = {}
+Clock.__index = Clock
+
+local function finite(value)
+	return type(value) == "number" and value == value and math.abs(value) < math.huge
+end
+
+function Clock.new(now)
+	return setmetatable({now = now or os.clock, timer = nil,
+		watch = {elapsed = 0, started = nil, laps = {}, splitAt = 0, active = false}, revision = 0}, Clock)
+end
+
+function Clock:StartTimer(seconds)
+	assert(finite(seconds) and seconds >= 1 and seconds <= 86400, "Timer must be between 1 second and 24 hours")
+	self.timer = {remaining = seconds, started = self.now(), duration = seconds, finished = false}
+	self.revision += 1
+end
+
+function Clock:Remaining()
+	local timer = self.timer
+	if not timer then return 0 end
+	return math.max(0, timer.remaining - (timer.started and math.max(0, self.now() - timer.started) or 0))
+end
+
+function Clock:ToggleTimer()
+	local timer = self.timer
+	if not timer or timer.finished then return end
+	if timer.started then timer.remaining = self:Remaining(); timer.started = nil
+	else timer.started = self.now() end
+	self.revision += 1
+end
+
+function Clock:CancelTimer()
+	self.timer = nil
+	self.revision += 1
+end
+
+function Clock:Elapsed()
+	local watch = self.watch
+	return watch.elapsed + (watch.started and math.max(0, self.now() - watch.started) or 0)
+end
+
+function Clock:ToggleWatch()
+	local watch = self.watch
+	watch.active = true
+	if watch.started then watch.elapsed = self:Elapsed(); watch.started = nil
+	else watch.started = self.now() end
+	self.revision += 1
+end
+
+function Clock:Lap()
+	local watch = self.watch
+	if not watch.started then return false end
+	local elapsed = self:Elapsed()
+	watch.laps[#watch.laps + 1] = {number = (watch.lapCount or 0) + 1, seconds = elapsed - watch.splitAt}
+	watch.lapCount = (watch.lapCount or 0) + 1
+	watch.splitAt = elapsed
+	if #watch.laps > 30 then table.remove(watch.laps, 1) end
+	self.revision += 1
+	return true
+end
+
+function Clock:ResetWatch()
+	self.watch = {elapsed = 0, started = nil, laps = {}, splitAt = 0, active = false, lapCount = 0}
+	self.revision += 1
+end
+
+function Clock:Tick()
+	local timer = self.timer
+	if timer and not timer.finished and self:Remaining() <= 0 then
+		timer.remaining, timer.started, timer.finished = 0, nil, true
+		self.revision += 1
+		return true -- Edge-triggered: exactly one completion per timer.
+	end
+	return false
+end
+
+function Clock.Format(seconds, hundredths, roundUp)
+	seconds = finite(seconds) and math.max(0, seconds) or 0
+	local whole = roundUp and math.ceil(seconds) or math.floor(seconds)
+	local hours, minutes, remainder = math.floor(whole / 3600), math.floor(whole / 60) % 60, whole % 60
+	local result = hours > 0 and string.format("%d:%02d:%02d", hours, minutes, remainder)
+		or string.format("%02d:%02d", math.floor(whole / 60), remainder)
+	if hundredths then result ..= string.format(".%02d", math.min(99,math.floor((seconds % 1) * 100 + 0.000001))) end
+	return result
+end
+
+return Clock
+
+end)()
+-- CLOCK MODEL END
+
+-- NOTIFICATIONS BEGIN
+local buildNotifications=(function()
+-- Reference: 300px black capsules; 20px corners, 8px stack spacing, content-sized height.
+return function(context)
+	local root, tweenService = context.Root, game:GetService("TweenService")
+	local textService = game:GetService("TextService")
+	local controller = {alive = true, active = {}, pending = {}, nextId = 0}
+	local builtHost=root:FindFirstChild("NotificationCapsules")
+	local template=builtHost and builtHost:FindFirstChild("CardTemplate")
+	if context.RequireBuiltUI then assert(template,"Build.lua is missing the notification card template") end
+	local font = template and template.Description.FontFace or Font.new("rbxasset://fonts/families/GothamSSm.json")
+	local titleFont=template and template.Title.FontFace or Font.new(font.Family,Enum.FontWeight.Medium)
+	local host = builtHost or Instance.new("Frame")
+	host.Name, host.BackgroundTransparency, host.Size, host.ZIndex = "NotificationCapsules", 1, UDim2.fromScale(1, 1), 350
+	host.Parent = root
+	local connections, tweens = {}, setmetatable({}, {__mode = "k"})
+	local function connect(signal, fn)
+		local connection = signal:Connect(fn); connections[#connections+1] = connection; return connection
+	end
+	local function tween(object, time, properties)
+		local old = tweens[object]; if old then old:Cancel() end
+		local animation = tweenService:Create(object, TweenInfo.new(time, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), properties)
+		tweens[object] = animation
+		animation.Completed:Once(function() if tweens[object]==animation then tweens[object]=nil end end)
+		animation:Play()
+	end
+	local function label(parent, name, text, size, color)
+		local object = Instance.new("TextLabel")
+		object.Name, object.Text, object.TextSize, object.TextColor3 = name, text, size, color
+		object.FontFace, object.BackgroundTransparency, object.TextXAlignment = font, 1, Enum.TextXAlignment.Left
+		object.TextYAlignment, object.RichText, object.TextWrapped = Enum.TextYAlignment.Top, false, true
+		object.ZIndex=351; object.TextTruncate=Enum.TextTruncate.AtEnd
+		object.Parent = parent; return object
+	end
+	local function dimensions(title, description, icon, width, measured)
+		local left = icon and 58 or 20
+		local available = width - left - 20
+		local titleHeight = math.max(17, textService:GetTextSize(title, 14, Enum.Font.GothamMedium, Vector2.new(available, 1000)).Y)
+		local descriptionHeight = description ~= "" and math.max(16,
+			textService:GetTextSize(description, 13, Enum.Font.Gotham, Vector2.new(available, 1000)).Y) or 0
+		if measured and measured.width==width then titleHeight,descriptionHeight=measured.title,measured.body end
+		titleHeight=math.min(titleHeight,34);descriptionHeight=math.min(descriptionHeight,112)
+		return descriptionHeight==0 and math.max(44,27+titleHeight) or 28+titleHeight+descriptionHeight+3, left, titleHeight, descriptionHeight
+	end
+	function controller:Layout(instant)
+		if not self.alive then return end
+		local viewport = root.AbsoluteSize
+		local width = math.min(300, math.max(160, viewport.X - 40))
+		local bottom = viewport.Y - 24
+		for index = #self.active, 1, -1 do
+			local record = self.active[index]
+			local height, left, titleHeight, descriptionHeight = dimensions(record.title, record.description, record.icon, width,record.measured)
+			record.height = height
+			record.group.Size = UDim2.fromOffset(width, height)
+			record.titleLabel.Position, record.titleLabel.Size = UDim2.fromOffset(left, 14), UDim2.new(1, -left-20, 0, titleHeight)
+			record.body.Position, record.body.Size = UDim2.fromOffset(left, 17+titleHeight), UDim2.new(1, -left-20, 0, descriptionHeight)
+			record.body.Visible = descriptionHeight > 0
+			local goal = UDim2.fromOffset(math.max(20, viewport.X - width - 24), bottom - height)
+			if instant then record.group.Position = goal else tween(record.group, 0.42, {Position = goal}) end
+			bottom -= height + 8
+		end
+	end
+	local pump
+	function controller:Dismiss(record)
+		if not self.alive or record.closing then return end
+		record.closing = true; record.generation += 1
+		if record.fade then record.fade:Cancel() end
+		local index = table.find(self.active, record)
+		if index then table.remove(self.active, index) end
+		for _, connection in ipairs(record.connections) do connection:Disconnect() end
+		tween(record.group, 0.28, {Position = record.group.Position + UDim2.fromOffset(60, 0), GroupTransparency = 1})
+		task.delay(0.3, function() if record.group.Parent then record.group:Destroy() end end)
+		self:Layout(); pump()
+	end
+	local function expiry(record, delay)
+		record.generation += 1
+		local generation = record.generation
+		record.deadline = os.clock() + delay
+		task.delay(delay, function()
+			if controller.alive and not record.closing and generation == record.generation and not record.hovered then
+				controller:Dismiss(record)
+			end
+		end)
+	end
+	local function spawnRecord(item)
+		local group = template and template:Clone() or Instance.new("CanvasGroup")
+		group.Visible=true
+		group.Name="Notification_"..item.id
+		if not template then group.BackgroundColor3,group.BorderSizePixel=Color3.fromRGB(17,17,17),0 end
+		group.Size, group.GroupTransparency, group.ZIndex = UDim2.fromOffset(300, 64), 1, 350
+		if not template then
+			local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(0,20);corner.Parent=group
+			local gradient=Instance.new("UIGradient");gradient.Rotation=90
+			gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(115,115,115));gradient.Parent=group
+		end
+		item.group,item.generation,item.connections=group,0,{}
+		item.titleLabel=group:FindFirstChild("Title") or label(group,"Title",item.title,14,Color3.fromRGB(250,250,250))
+		item.titleLabel.Text=item.title;item.titleLabel.FontFace=titleFont
+		item.body=group:FindFirstChild("Description") or label(group,"Description",item.description,13,Color3.fromRGB(174,174,178))
+		item.body.Text=item.description
+		local icon=group:FindFirstChild("Icon")
+		if not icon then
+			icon=Instance.new("ImageLabel");icon.Name="Icon";icon.BackgroundTransparency=1
+			icon.Size,icon.Position,icon.AnchorPoint=UDim2.fromOffset(22,22),UDim2.new(0,20,.5,0),Vector2.new(0,.5)
+			icon.ImageColor3,icon.ZIndex,icon.Parent=Color3.new(1,1,1),351,group
+		end
+		local friend,staff=group:FindFirstChild("FriendIcon"),group:FindFirstChild("StaffIcon")
+		local friendIcon=friend and item.icon and item.icon:find("4370335364",1,true)~=nil
+		local staffIcon=staff and item.icon and item.icon:find("3944670656",1,true)~=nil
+		if friend then friend.Visible=friendIcon==true end
+		if staff then staff.Visible=staffIcon==true end
+		icon.Visible=item.icon~=nil and not friendIcon and not staffIcon;icon.Image=item.icon or ""
+		local button=group:FindFirstChild("Dismiss")
+		if not button then
+			button=Instance.new("TextButton");button.Name="Dismiss";button.Text="";button.BackgroundTransparency=1
+			button.AutoButtonColor=false;button.Size=UDim2.fromScale(1,1);button.ZIndex=354;button.Parent=group
+		end
+		group.Position, group.Parent = UDim2.new(1,60,1,-100), host
+		controller.active[#controller.active+1] = item
+		controller:Layout()
+		-- Opacity has its own tween so a stack reflow cannot cancel the fade.
+		item.fade = tweenService:Create(group, TweenInfo.new(0.28), {GroupTransparency=0}); item.fade:Play()
+		item.connections[1] = button.Activated:Connect(function() controller:Dismiss(item) end)
+		item.connections[2] = button.MouseEnter:Connect(function()
+			item.hovered, item.remaining = true, math.max(0.5, item.deadline - os.clock()); item.generation += 1
+		end)
+		item.connections[3] = button.MouseLeave:Connect(function() item.hovered = false; expiry(item, item.remaining or 2) end)
+		expiry(item, item.duration)
+	end
+	pump = function()
+		if not controller.alive then return end
+		local used=0
+		for _,record in ipairs(controller.active) do used+=record.height+8 end
+		while #controller.pending>0 and #controller.active<5 do
+			local item=controller.pending[1]
+			if not item.ready then break end
+			local height=dimensions(item.title,item.description,item.icon,math.min(300,math.max(160,root.AbsoluteSize.X-40)),item.measured)
+			if #controller.active>0 and used+height>root.AbsoluteSize.Y-48 then break end
+			spawnRecord(table.remove(controller.pending,1));used+=height+8
+		end
+	end
+	function controller:Notify(title, description, icon, options)
+		if not self.alive then return nil end
+		options = type(options) == "table" and options or {}
+		title, description = tostring(title or "Altair"):sub(1,160), tostring(description or ""):sub(1,1200)
+		if icon ~= nil and icon ~= false and icon ~= "" then
+			icon = tonumber(icon) and ("rbxassetid://" .. tostring(icon)) or tostring(icon)
+		else icon = nil end
+		self.nextId += 1
+		local item = {id=self.nextId,title=title,description=description,icon=icon,
+			duration=math.clamp(tonumber(options.Duration) or (2.5+#description*0.045),2.5,12)}
+		if #self.pending >= 24 then table.remove(self.pending,1) end
+		self.pending[#self.pending+1] = item
+		task.spawn(function()
+			-- Measure the actual FontFace once, outside layout/render loops.
+			local width=math.min(300,math.max(160,root.AbsoluteSize.X-40))
+			local params=Instance.new("GetTextBoundsParams")
+			params.Width=width-(icon and 58 or 20)-20;params.RichText=false
+			local ok,measured=pcall(function()
+				params.Font=titleFont;params.Size=14;params.Text=title
+				local titleHeight=math.max(17,math.ceil(textService:GetTextBoundsAsync(params).Y))
+				params.Font=font;params.Size=13;params.Text=description
+				return {width=width,title=titleHeight,body=description~="" and math.max(16,math.ceil(textService:GetTextBoundsAsync(params).Y)) or 0}
+			end)
+			params:Destroy()
+			if not self.alive then return end
+			if ok then item.measured=measured end
+			item.ready=true;pump()
+		end)
+		return {Dismiss=function()
+			local pending = table.find(self.pending,item)
+			if pending then table.remove(self.pending,pending) elseif item.group then self:Dismiss(item) end
+		end}
+	end
+	function controller:GetObstacles()
+		local objects = {}
+		for _, item in ipairs(self.active) do objects[#objects+1] = item.group end
+		return objects
+	end
+	function controller:Destroy()
+		if not self.alive then return end
+		self.alive = false
+		for _, connection in ipairs(connections) do connection:Disconnect() end
+		for _, item in ipairs(self.active) do
+			item.generation += 1
+			if item.fade then item.fade:Cancel() end
+			for _, connection in ipairs(item.connections) do connection:Disconnect() end
+		end
+		for _, animation in pairs(tweens) do animation:Cancel() end
+		table.clear(self.active); table.clear(self.pending); host:Destroy()
+	end
+	connect(root:GetPropertyChangedSignal("AbsoluteSize"), function() controller:Layout(); pump() end)
+	connect(root.Destroying, function() controller:Destroy() end)
+	return controller
+end
+
+end)()
+-- NOTIFICATIONS END
+
 --!nocheck
 -- Altair UI, captured in Studio from the current interface on 2026-10-23.
 -- Returns a factory: local root = require(UI.Build)().
@@ -22,22 +316,22 @@ local attributeSets = {
 local nodes = {
 {0,4,"Altair",1},{1,1,"Character",2,1},{2,10,"UICorner",3},{2,8,"Title",4},{2,1,"Interactions",5},{5,8,"PropertiesTitle",6},{5,8,"ActionsTitle",7},{5,2,"Reset",8},{5,1,"Serverhop",9},{9,10,"UICorner",10},{9,7,"Interact",11},{9,8,"Title",12},{9,16,"UIStroke",13},{9,3,"Icon",14},{5,1,"Rejoin",15},{15,10,"UICorner",10},{15,7,"Interact",11},{15,8,"Title",16},{15,16,"UIStroke",13},{15,3,"Icon",17},{5,1,"Sliders",18},{21,13,"UIListLayout",19},{21,1,"Template",20},{23,16,"UIStroke",21},{23,10,"UICorner",22},{23,1,"Progress",23},{26,10,"UICorner",24},{26,11,"UIGradient",25},{26,1,"Knob",26},{29,10,"UICorner",27},{29,1,"Center",28},{31,10,"UICorner",10},{29,3,"Glow",29},{23,8,"Information",30},{23,3,"Shadow",31},{35,10,"UICorner",32},{23,7,"Interact",33},{23,1,"Track",34},{38,10,"UICorner",24},{23,6,"Value",35},{40,10,"UICorner",10},{5,1,"Grid",36},{42,12,"UIGridLayout",37},{42,1,"Template",38},{44,10,"UICorner",10},{44,3,"Shadow",39},{46,10,"UICorner",40},{44,7,"Interact",11},{44,3,"Icon",41},{44,16,"UIStroke",13},{44,8,"Title",42},{5,1,"HeaderDivider",43},{5,1,"ActionsDivider",44},{5,1,"PropertiesDivider",45},{5,1,"Toggles",46},{55,13,"UIListLayout",47},{55,1,"Template",48},{57,10,"UICorner",10},{57,3,"Shadow",39},{59,10,"UICorner",40},{57,7,"Interact",49},{57,3,"Icon",50},{57,16,"UIStroke",51},{57,8,"Title",52},{57,8,"Subtitle",53},{57,3,"Glow",54,2},{2,2,"Icon",55},{2,16,"UIStroke",56},{2,11,"UIGradient",57},{2,8,"Subtitle",58},{2,1,"Pointer",59,3},{1,1,"Toasts",60},{72,13,"UIListLayout",61},{72,1,"Template",62},{74,8,"Title",63},{1,1,"Disconnected",64},{76,10,"UICorner",65},{76,8,"Content",66},{76,7,"Action",67},{79,10,"UICorner",68},{76,8,"Title",69},{76,11,"UIGradient",70},{1,1,"ScriptSearch",71},{83,10,"UICorner",3},{83,6,"SearchBox",72},{83,3,"Icon",73},{83,5,"List",74},{87,13,"UIListLayout",75},{87,1,"Placeholder",76},{87,1,"Placeholder",77},{87,1,"Template",78},{91,10,"UICorner",10},{91,8,"ScriptName",79},{91,8,"ScriptDescription",80},{91,8,"ScriptAuthor",81},{91,1,"Tags",82},{96,13,"UIListLayout",83},{96,1,"Verified",84},{98,10,"UICorner",68},{98,8,"Title",85},{98,3,"Shadow",86},{101,10,"UICorner",40},{96,1,"Review",87},{103,10,"UICorner",68},{103,8,"Title",88},{103,3,"Shadow",86},{106,10,"UICorner",40},{96,1,"Patched",89},{108,10,"UICorner",68},{108,8,"Title",90},{108,3,"Shadow",86},{111,10,"UICorner",40},{91,7,"Execute",91},{113,10,"UICorner",68},{83,8,"NoScriptsTitle",92},{83,8,"NoScriptsDesc",93},{83,11,"UIGradient",94},{83,16,"UIStroke",56},{1,1,"CustomScriptPrompt",95},{119,10,"UICorner",65},{119,8,"Title",96},{119,2,"Close",97},{119,8,"Subtitle",98},{119,11,"UIGradient",99},{119,1,"IDBox",100},{125,6,"IDTextBox",101},{125,10,"UICorner",102},{119,1,"DescBox",103},{128,6,"DescTextBox",104},{128,10,"UICorner",102},{119,1,"ScriptBox",105},{131,10,"UICorner",102},{131,6,"ScriptTextBox",106},{119,7,"Submit",107},{134,10,"UICorner",68},{1,1,"Settings",108},{136,10,"UICorner",3},{136,8,"Title",109},{136,1,"SettingTypes",110},{139,12,"UIGridLayout",111},{139,1,"Template",112},{141,10,"UICorner",113},{141,16,"UIStroke",114},{143,11,"UIGradient",115},{141,11,"UIGradient",116},{141,8,"Title",117},{141,3,"Shadow",118},{147,11,"UIGradient",115},{141,7,"Interact",119},{136,8,"Subtitle",120},{136,2,"Back",121},{136,1,"SettingLists",122},{152,15,"UIPageLayout",123},{152,5,"Template",124},{154,1,"SwitchTemplate",125},{155,10,"UICorner",40},{155,8,"Title",126},{155,16,"UIStroke",127},{155,1,"Switch",128},{159,10,"UICorner",129},{159,16,"UIStroke",130},{159,1,"Indicator",131},{162,10,"UICorner",68},{162,16,"UIStroke",132},{155,7,"Interact",133},{155,8,"Description",134},{155,8,"LicenseDisplay",135},{154,13,"UIListLayout",136},{154,1,"Placeholder",137},{154,1,"InputTemplate",125},{170,10,"UICorner",40},{170,16,"UIStroke",127},{170,8,"Title",138},{170,1,"InputFrame",139},{174,6,"InputBox",140},{174,10,"UICorner",32},{174,16,"UIStroke",141},{170,8,"Description",134},{170,8,"LicenseDisplay",135},{154,1,"DropdownTemplate",142},{180,10,"UICorner",24},{180,5,"List",143},{182,1,"Template",144},{183,10,"UICorner",32},{183,16,"UIStroke",145},{183,8,"Title",146},{183,7,"Interact",147},{182,13,"UIListLayout",19},{182,1,"Placeholder",148},{180,8,"Selected",149},{180,2,"Toggle",150},{180,7,"Interact",151},{180,16,"UIStroke",127},{180,8,"Title",152},{154,1,"ButtonTemplate",153},{195,10,"UICorner",40},{195,16,"UIStroke",127},{195,8,"Note",154},{195,7,"Interact",155},{195,8,"Title",156},{195,8,"Description",157},{195,8,"LicenseDisplay",135},{154,1,"Placeholder",158},{136,11,"UIGradient",159},{136,16,"UIStroke",56},{1,1,"Starlight",160},{206,10,"UICorner",161},{206,8,"AutoComplete",162},{206,8,"CompleteNote",163},{206,6,"CommandBox",164},{206,1,"RayfieldView",165},{211,1,"Toggle",166},{212,8,"Title",167},{212,7,"Interact",168},{212,1,"Switch",169},{215,10,"UICorner",129},{215,16,"UIStroke",170},{215,3,"Shadow",171},{218,10,"UICorner",129},{215,1,"Indicator",172},{220,10,"UICorner",68},{220,16,"UIStroke",173},{212,10,"UICorner",161},{211,1,"Slider",166},{224,1,"Main",174},{225,16,"UIStroke",175},{225,10,"UICorner",40},{225,1,"Progress",176},{228,10,"UICorner",40},{228,16,"UIStroke",177},{225,8,"Information",178},{225,3,"Shadow",179},{232,10,"UICorner",40},{225,7,"Interact",180},{224,8,"Title",181},{224,10,"UICorner",161},{211,1,"Input",166},{237,10,"UICorner",161},{237,1,"InputFrame",182},{239,6,"InputBox",183},{239,16,"UIStroke",170},{239,10,"UICorner",32},{237,8,"Title",184},{211,1,"Keybind",166},{244,10,"UICorner",161},{244,1,"KeybindFrame",185},{246,6,"KeybindBox",186},{246,16,"UIStroke",170},{246,10,"UICorner",32},{244,8,"Title",184},{211,1,"Button",166},{251,10,"UICorner",161},{251,8,"ElementIndicator",187},{251,7,"Interact",188},{251,8,"Title",184},{206,3,"Shadow",189},{206,1,"BlurModule",190},{1,1,"Status",191},{258,8,"Title",192},{258,1,"Line",193},{1,1,"GameDetection",194},{261,10,"UICorner",65},{261,3,"Thumbnail",195},{263,10,"UICorner",65},{261,1,"Layer",196},{265,7,"Run",197},{266,10,"UICorner",68},{266,16,"UIStroke",198},{265,8,"ScriptSubtitle",199},{265,2,"Close",97},{261,8,"ScriptTitle",200},{261,1,"Warning",201},{272,8,"Subtitle",202},{272,11,"UIGradient",203},{272,8,"Title",204},{272,10,"UICorner",113},{272,3,"Shadow",205},{261,3,"Shadow",206},{1,1,"SecurityPrompt",207},{279,8,"FoundLink",208},{279,11,"UIGradient",209},{279,8,"Title",210},{279,10,"UICorner",65},{279,8,"Subtitle",211},{279,1,"Buttons",212},{285,7,"Template",213},{286,10,"UICorner",68},{285,13,"UIListLayout",214},{1,1,"SmartBar",215},{289,10,"UICorner",216},{289,16,"UIStroke",217},{289,1,"Back",218},{292,10,"UICorner",219},{292,16,"UIStroke",220},{292,1,"Buttons",221},{295,1,"Home",222},{296,10,"UICorner",22},{296,2,"Icon",223},{296,16,"UIStroke",224},{299,11,"UIGradient",225},{296,11,"UIGradient",226},{296,7,"Interact",227},{295,1,"Character",228},{303,10,"UICorner",22},{303,2,"Icon",229},{303,7,"Interact",227},{303,11,"UIGradient",230},{303,16,"UIStroke",224},{308,11,"UIGradient",231},{295,1,"Scripts",232},{310,10,"UICorner",22},{310,2,"Icon",233},{310,16,"UIStroke",224},{313,11,"UIGradient",234},{310,7,"Interact",227},{310,11,"UIGradient",235},{295,1,"Playerlist",236},{317,10,"UICorner",22},{317,2,"Icon",237},{317,16,"UIStroke",224},{320,11,"UIGradient",238},{317,7,"Interact",227},{317,11,"UIGradient",239},{295,13,"UIListLayout",240},{295,1,"Settings",241},{325,10,"UICorner",22},{325,2,"Icon",242},{325,7,"Interact",227},{325,11,"UIGradient",243},{325,16,"UIStroke",224},{330,11,"UIGradient",244},{295,1,"Placeholder",245},{295,1,"Placeholder",246},{292,8,"Time",247},{334,8,"AMPM",248},{289,3,"CircleGradient",249},{289,3,"Shadow",250},{1,1,"ModeratorDetectionPrompt",251},{338,8,"Subtitle",252},{338,11,"UIGradient",253},{338,8,"Title",254},{338,10,"UICorner",129},{338,3,"Avatar",255},{343,10,"UICorner",68},{343,16,"UIStroke",256},{338,8,"DisplayName",257},{338,7,"Serverhop",258},{347,10,"UICorner",68},{338,8,"ServersAvailableFade",259},{338,8,"Rank",260},{338,2,"Close",261},{338,1,"Leave",262},{352,10,"UICorner",68},{352,7,"Leave",263},{354,10,"UICorner",68},{352,16,"UIStroke",114},{356,11,"UIGradient",264},{338,3,"CircleGradient",265},{338,1,"Stroke",266},{338,3,"TitleGradient",267},{338,16,"UIStroke",268},{1,1,"Playerlist",269},{362,10,"UICorner",3},{362,8,"Title",270},{362,1,"Interactions",271},{365,5,"List",272},{366,1,"Template",273,4},{367,10,"UICorner",10},{367,16,"UIStroke",274},{369,11,"UIGradient",275},{367,8,"Role",276},{367,3,"Icon",277},{372,10,"UICorner",68},{367,8,"NoActions",278},{367,7,"DisplayName",279},{367,1,"PlayerInteractions",280},{376,1,"Kill",281},{377,10,"UICorner",10},{377,3,"Shadow",282},{379,10,"UICorner",22},{377,7,"Interact",283},{377,3,"Icon",284},{377,16,"UIStroke",285},{376,13,"UIListLayout",214},{376,1,"Teleport",286},{385,10,"UICorner",10},{385,3,"Shadow",282},{387,10,"UICorner",22},{385,7,"Interact",283},{385,3,"Icon",287},{385,16,"UIStroke",285},{376,1,"Placeholder",288},{376,1,"Spectate",289},{393,10,"UICorner",10},{393,3,"Shadow",282},{395,10,"UICorner",22},{393,7,"Interact",283},{393,3,"Icon",290},{393,16,"UIStroke",285},{376,1,"Locate",291},{400,10,"UICorner",10},{400,3,"Shadow",282},{402,10,"UICorner",22},{400,7,"Interact",283},{400,3,"Icon",292},{400,16,"UIStroke",285},{367,3,"Avatar",293},{407,10,"UICorner",294},{407,16,"UIStroke",295},{367,7,"Interact",296},{367,3,"CircleGradient",297},{367,1,"StatusDot",298},{412,10,"UICorner",294},{367,11,"UIGradient",299},{366,13,"UIListLayout",19},{366,1,"Placeholder",300},{366,1,"Placeholder",301},{366,1,"Template",273,4},{418,10,"UICorner",10},{418,16,"UIStroke",274},{420,11,"UIGradient",275},{418,8,"Role",276},{418,3,"Icon",277},{423,10,"UICorner",68},{418,8,"NoActions",278},{418,7,"DisplayName",279},{418,1,"PlayerInteractions",280},{427,1,"Kill",281},{428,10,"UICorner",10},{428,3,"Shadow",282},{430,10,"UICorner",22},{428,7,"Interact",283},{428,3,"Icon",284},{428,16,"UIStroke",285},{427,13,"UIListLayout",214},{427,1,"Teleport",286},{436,10,"UICorner",10},{436,3,"Shadow",282},{438,10,"UICorner",22},{436,7,"Interact",283},{436,3,"Icon",287},{436,16,"UIStroke",285},{427,1,"Placeholder",288},{427,1,"Spectate",289},{444,10,"UICorner",10},{444,3,"Shadow",282},{446,10,"UICorner",22},{444,7,"Interact",283},{444,3,"Icon",290},{444,16,"UIStroke",285},{427,1,"Locate",291},{451,10,"UICorner",10},{451,3,"Shadow",282},{453,10,"UICorner",22},{451,7,"Interact",283},{451,3,"Icon",292},{451,16,"UIStroke",285},{418,3,"Avatar",293},{458,10,"UICorner",294},{458,16,"UIStroke",295},{418,7,"Interact",296},{418,3,"CircleGradient",297},{418,1,"StatusDot",298},{463,10,"UICorner",294},{418,11,"UIGradient",299},{366,1,"Template",273,4},{466,10,"UICorner",10},{466,16,"UIStroke",274},{468,11,"UIGradient",275},{466,8,"Role",276},{466,3,"Icon",277},{471,10,"UICorner",68},{466,8,"NoActions",278},{466,7,"DisplayName",279},{466,1,"PlayerInteractions",280},{475,1,"Kill",281},{476,10,"UICorner",10},{476,3,"Shadow",282},{478,10,"UICorner",22},{476,7,"Interact",283},{476,3,"Icon",284},{476,16,"UIStroke",285},{475,13,"UIListLayout",214},{475,1,"Teleport",286},{484,10,"UICorner",10},{484,3,"Shadow",282},{486,10,"UICorner",22},{484,7,"Interact",283},{484,3,"Icon",287},{484,16,"UIStroke",285},{475,1,"Placeholder",288},{475,1,"Spectate",289},{492,10,"UICorner",10},{492,3,"Shadow",282},{494,10,"UICorner",22},{492,7,"Interact",283},{492,3,"Icon",290},{492,16,"UIStroke",285},{475,1,"Locate",291},{499,10,"UICorner",10},{499,3,"Shadow",282},{501,10,"UICorner",22},{499,7,"Interact",283},{499,3,"Icon",292},{499,16,"UIStroke",285},{466,3,"Avatar",293},{506,10,"UICorner",294},{506,16,"UIStroke",295},{466,7,"Interact",296},{466,3,"CircleGradient",297},{466,1,"StatusDot",298},{511,10,"UICorner",294},{466,11,"UIGradient",299},{366,1,"Template",273,4},{514,10,"UICorner",10},{514,16,"UIStroke",274},{516,11,"UIGradient",275},{514,8,"Role",276},{514,3,"Icon",277},{519,10,"UICorner",68},{514,8,"NoActions",278},{514,7,"DisplayName",279},{514,1,"PlayerInteractions",280},{523,1,"Kill",281},{524,10,"UICorner",10},{524,3,"Shadow",282},{526,10,"UICorner",22},{524,7,"Interact",283},{524,3,"Icon",284},{524,16,"UIStroke",285},{523,13,"UIListLayout",214},{523,1,"Teleport",286},{532,10,"UICorner",10},{532,3,"Shadow",282},{534,10,"UICorner",22},{532,7,"Interact",283},{532,3,"Icon",287},{532,16,"UIStroke",285},{523,1,"Placeholder",288},{523,1,"Spectate",289},{540,10,"UICorner",10},{540,3,"Shadow",282},{542,10,"UICorner",22},{540,7,"Interact",283},{540,3,"Icon",290},{540,16,"UIStroke",285},{523,1,"Locate",291},{547,10,"UICorner",10},{547,3,"Shadow",282},{549,10,"UICorner",22},{547,7,"Interact",283},{547,3,"Icon",292},{547,16,"UIStroke",285},{514,3,"Avatar",293},{554,10,"UICorner",294},{554,16,"UIStroke",295},{514,7,"Interact",296},{514,3,"CircleGradient",297},{514,1,"StatusDot",298},{559,10,"UICorner",294},{514,11,"UIGradient",299},{366,1,"Template",273,4},{562,10,"UICorner",10},{562,16,"UIStroke",274},{564,11,"UIGradient",275},{562,8,"Role",276},{562,3,"Icon",277},{567,10,"UICorner",68},{562,8,"NoActions",278},{562,7,"DisplayName",279},{562,1,"PlayerInteractions",280},{571,1,"Kill",281},{572,10,"UICorner",10},{572,3,"Shadow",282},{574,10,"UICorner",22},{572,7,"Interact",283},{572,3,"Icon",284},{572,16,"UIStroke",285},{571,13,"UIListLayout",214},{571,1,"Teleport",286},{580,10,"UICorner",10},{580,3,"Shadow",282},{582,10,"UICorner",22},{580,7,"Interact",283},{580,3,"Icon",287},{580,16,"UIStroke",285},{571,1,"Placeholder",288},{571,1,"Spectate",289},{588,10,"UICorner",10},{588,3,"Shadow",282},{590,10,"UICorner",22},{588,7,"Interact",283},{588,3,"Icon",290},{588,16,"UIStroke",285},{571,1,"Locate",291},{595,10,"UICorner",10},{595,3,"Shadow",282},{597,10,"UICorner",22},{595,7,"Interact",283},{595,3,"Icon",292},{595,16,"UIStroke",285},{562,3,"Avatar",293},{602,10,"UICorner",294},{602,16,"UIStroke",295},{562,7,"Interact",296},{562,3,"CircleGradient",297},{562,1,"StatusDot",298},{607,10,"UICorner",294},{562,11,"UIGradient",299},{366,1,"Template",273,4},{610,10,"UICorner",10},{610,16,"UIStroke",274},{612,11,"UIGradient",275},{610,8,"Role",276},{610,3,"Icon",277},{615,10,"UICorner",68},{610,8,"NoActions",278},{610,7,"DisplayName",279},{610,1,"PlayerInteractions",280},{619,1,"Kill",281},{620,10,"UICorner",10},{620,3,"Shadow",282},{622,10,"UICorner",22},{620,7,"Interact",283},{620,3,"Icon",284},{620,16,"UIStroke",285},{619,13,"UIListLayout",214},{619,1,"Teleport",286},{628,10,"UICorner",10},{628,3,"Shadow",282},{630,10,"UICorner",22},{628,7,"Interact",283},{628,3,"Icon",287},{628,16,"UIStroke",285},{619,1,"Placeholder",288},{619,1,"Spectate",289},{636,10,"UICorner",10},{636,3,"Shadow",282},{638,10,"UICorner",22},{636,7,"Interact",283},{636,3,"Icon",290},{636,16,"UIStroke",285},{619,1,"Locate",291},{643,10,"UICorner",10},{643,3,"Shadow",282},{645,10,"UICorner",22},{643,7,"Interact",283},{643,3,"Icon",292},{643,16,"UIStroke",285},{610,3,"Avatar",293},{650,10,"UICorner",294},{650,16,"UIStroke",295},{610,7,"Interact",296},{610,3,"CircleGradient",297},{610,1,"StatusDot",298},{655,10,"UICorner",294},{610,11,"UIGradient",299},{365,1,"SearchFrame",302},{658,10,"UICorner",40},{658,16,"UIStroke",303},{658,6,"SearchBox",304},{658,3,"Icon",305},{365,8,"Title",306},{365,8,"Value",307},{365,1,"SelectedPlayer",308,5},{665,10,"UICorner",102},{665,16,"UIStroke",274},{667,11,"UIGradient",275},{665,11,"UIGradient",299},{665,3,"Avatar",309},{670,10,"UICorner",294},{665,8,"DisplayName",310},{665,8,"Username",311},{665,1,"Friend",312},{674,10,"UICorner",102},{674,16,"UIStroke",313},{674,11,"UIGradient",314},{674,8,"Title",315},{674,3,"Icon",316},{665,1,"InServer",317},{680,10,"UICorner",102},{680,16,"UIStroke",318},{680,11,"UIGradient",319},{680,8,"Title",320},{680,3,"Icon",321},{665,1,"Premium",322},{686,10,"UICorner",102},{686,16,"UIStroke",323},{686,11,"UIGradient",324},{686,8,"Title",325},{686,3,"Icon",326},{665,1,"AvatarBackdrop",327},{692,10,"UICorner",294},{692,11,"UIGradient",328},{665,1,"OnlineDot",329},{695,10,"UICorner",294},{665,3,"StatusGlow",330},{365,1,"SelectedActions",331,6},{698,8,"Title",332},{698,1,"Spectate",333},{700,10,"UICorner",102},{700,16,"UIStroke",334},{700,3,"Icon",335},{700,8,"Title",336},{700,7,"Interact",337},{700,11,"UIGradient",338},{698,1,"Teleport",339},{707,10,"UICorner",102},{707,16,"UIStroke",334},{707,3,"Icon",340},{707,8,"Title",341},{707,7,"Interact",342},{707,11,"UIGradient",338},{698,1,"Bring",343},{714,10,"UICorner",102},{714,16,"UIStroke",334},{714,11,"UIGradient",338},{714,3,"Icon",344},{714,8,"Title",345},{714,7,"Interact",342},{698,1,"ViewProfile",346},{721,10,"UICorner",102},{721,16,"UIStroke",334},{721,3,"Icon",347},{721,8,"Title",348},{721,7,"Interact",342},{721,11,"UIGradient",338},{362,2,"Icon",349},{728,3,"CircleGradient",350},{362,16,"UIStroke",351},{362,1,"Stroke",352},{362,1,"Stroke2",353},{362,8,"Subtitle",354},{362,1,"Pointer",355},{734,11,"UIGradient",356},{362,11,"UIGradient",57},{1,1,"Notifications",357},{737,1,"Template",358},{738,10,"UICorner",219},{738,3,"Icon",359},{740,3,"CircleGradient",360},{738,7,"Interact",361},{738,16,"UIStroke",362},{738,8,"Description",363},{738,8,"Title",364},{738,1,"BlurFrame",365},{738,3,"CircleGradient",366},{737,13,"UIListLayout",367},{1,1,"Home",368,7},{749,1,"Dim",369},{749,1,"Sidebar",370},{751,10,"UICorner",371},{751,16,"UIStroke",372},{751,7,"Home",373,8},{754,10,"UICorner",374},{754,3,"Icon",375},{754,8,"Title",376},{751,7,"Friends",377,9},{758,10,"UICorner",374},{758,3,"Icon",378},{758,8,"Title",379},{751,7,"Games",380,10},{762,10,"UICorner",374},{762,3,"Icon",381},{762,8,"Title",382},{751,1,"Profile",383},{766,3,"Avatar",384},{767,10,"UICorner",385},{766,8,"DisplayName",386},{766,8,"Status",387},{766,7,"Interact",388},{766,10,"UICorner",27},{766,16,"UIStroke",389},{766,11,"UIGradient",390},{766,8,"Membership",391},{766,8,"Stats",392},{766,8,"StatValues",393},{751,11,"UIGradient",394},{749,1,"Pages",395},{779,1,"Home",396},{780,1,"NowPlaying",397,11},{781,10,"UICorner",27},{781,3,"Artwork",398},{783,10,"UICorner",161},{783,16,"UIStroke",399},{781,1,"Readability",400},{786,10,"UICorner",401},{786,11,"UIGradient",402},{781,3,"GameIcon",403},{789,10,"UICorner",404},{781,8,"Eyebrow",405},{781,8,"GameName",406},{781,8,"Creator",407},{781,1,"FriendsPlaying",408,12},{794,8,"Summary",409},{794,3,"Chevron",410},{794,5,"List",411},{797,13,"UIListLayout",412},{797,14,"UIPadding",413},{797,1,"Template",414,13},{800,3,"Avatar",415},{801,10,"UICorner",385},{801,9,"UIAspectRatioConstraint",10},{800,7,"Interact",416},{797,1,"Preview_1",417,14},{805,3,"Avatar",418},{806,10,"UICorner",385},{806,9,"UIAspectRatioConstraint",10},{805,7,"Interact",416},{797,1,"Preview_2",419,14},{810,3,"Avatar",415},{811,10,"UICorner",385},{811,9,"UIAspectRatioConstraint",10},{810,7,"Interact",416},{797,1,"Preview_3",420,14},{815,3,"Avatar",421},{816,10,"UICorner",385},{816,9,"UIAspectRatioConstraint",10},{815,7,"Interact",416},{794,7,"ViewFriends",422},{781,11,"UIGradient",423},{781,16,"UIStroke",389},{781,8,"SessionPills",424},{781,1,"Divider",425},{781,1,"Divider",426},{780,1,"SessionStatus",427},{826,10,"UICorner",371},{826,16,"UIStroke",428},{826,8,"Time",429},{826,8,"Date",430},{826,8,"Status",431},{826,8,"Game",432},{826,11,"UIGradient",394},{780,1,"Server",433},{834,10,"UICorner",27},{834,16,"UIStroke",389},{834,3,"Icon",434},{834,8,"Title",435},{834,8,"PlayerCount",436},{834,1,"Region",437},{840,1,"Divider",438},{840,3,"Icon",439},{840,8,"Label",440},{840,8,"Value",441},{834,1,"Ping",442},{845,1,"Divider",438},{845,3,"Icon",443},{845,8,"Label",444},{845,8,"Value",445},{834,1,"Uptime",446},{850,1,"Divider",438},{850,3,"Icon",447},{850,8,"Label",448},{850,8,"Value",449},{834,11,"UIGradient",423},{780,1,"Friends",450},{856,10,"UICorner",27},{856,16,"UIStroke",389},{856,8,"Title",451},{856,2,"ViewAll",452},{856,5,"List",453},{861,14,"UIPadding",454},{861,1,"Template",455,15},{863,3,"Avatar",456},{864,10,"UICorner",385},{864,16,"UIStroke",457},{863,8,"DisplayName",458},{863,1,"StatusDot",459},{868,10,"UICorner",385},{863,8,"Status",460},{863,7,"Interact",461},{863,8,"Location",462},{861,13,"UIListLayout",463},{861,1,"Preview_1",464,16},{874,3,"Avatar",465},{875,10,"UICorner",385},{875,16,"UIStroke",457},{874,8,"DisplayName",466},{874,1,"StatusDot",459},{879,10,"UICorner",385},{874,8,"Status",467},{874,7,"Interact",461},{874,8,"Location",462},{861,1,"Preview_2",468,16},{884,3,"Avatar",456},{885,10,"UICorner",385},{885,16,"UIStroke",457},{884,8,"DisplayName",469},{884,1,"StatusDot",459},{889,10,"UICorner",385},{884,8,"Status",470},{884,7,"Interact",461},{884,8,"Location",471},{861,1,"Preview_3",472,16},{894,3,"Avatar",473},{895,10,"UICorner",385},{895,16,"UIStroke",457},{894,8,"DisplayName",474},{894,1,"StatusDot",475},{899,10,"UICorner",385},{894,8,"Status",476},{894,7,"Interact",461},{894,8,"Location",477},{856,11,"UIGradient",423},{780,1,"RecentlyPlayed",478},{905,10,"UICorner",129},{905,16,"UIStroke",479},{905,8,"Title",480},{905,2,"ViewAll",481},{905,5,"List",482},{910,14,"UIPadding",454},{910,1,"Template",483,17},{912,3,"Icon",484},{913,10,"UICorner",485},{912,8,"Title",486},{912,8,"LastPlayed",487},{912,7,"Interact",488},{910,13,"UIListLayout",489},{910,1,"Preview_1",490,18},{919,3,"Icon",491},{920,10,"UICorner",485},{919,8,"Title",492},{919,8,"LastPlayed",487},{919,7,"Interact",488},{910,1,"Preview_2",493,18},{925,3,"Icon",494},{926,10,"UICorner",485},{925,8,"Title",495},{925,8,"LastPlayed",487},{925,7,"Interact",488},{910,1,"Preview_3",496,18},{931,3,"Icon",497},{932,10,"UICorner",485},{931,8,"Title",498},{931,8,"LastPlayed",487},{931,7,"Interact",488},{905,11,"UIGradient",499},{780,1,"RecentActivity",500},{938,10,"UICorner",27},{938,16,"UIStroke",389},{938,11,"UIGradient",390},{938,8,"Title",501},{938,5,"List",502},{943,13,"UIListLayout",503},{943,1,"Template",504},{945,3,"Icon",505},{946,10,"UICorner",404},{945,8,"Title",506},{945,8,"Description",507},{943,1,"Preview_1",508,19},{950,3,"Icon",505},{951,10,"UICorner",404},{950,8,"Title",509},{950,8,"Description",510},{943,1,"Preview_2",511,19},{955,3,"Icon",505},{956,10,"UICorner",404},{955,8,"Title",512},{955,8,"Description",513},{943,1,"Preview_3",514,19},{960,3,"Icon",505},{961,10,"UICorner",404},{960,8,"Title",515},{960,8,"Description",516},{779,1,"Friends",517,20},{965,1,"Browser",518},{966,10,"UICorner",27},{966,16,"UIStroke",389},{966,8,"Title",519},{966,8,"Subtitle",520},{966,6,"SearchBox",521},{971,10,"UICorner",404},{971,14,"UIPadding",522},{966,1,"Filters",523},{974,7,"All",524,21},{975,10,"UICorner",404},{975,8,"Title",525},{974,7,"InGame",526,22},{978,10,"UICorner",404},{978,8,"Title",527},{974,7,"Online",528,23},{981,10,"UICorner",404},{981,8,"Title",529},{974,7,"Offline",530,24},{984,10,"UICorner",404},{984,8,"Title",531},{966,5,"List",532},{987,13,"UIListLayout",503},{987,14,"UIPadding",533},{987,1,"Template",534,25},{990,10,"UICorner",404},{990,11,"UIGradient",535},{990,16,"UIStroke",536},{990,3,"Avatar",537},{994,10,"UICorner",216},{990,1,"StatusDot",538},{996,10,"UICorner",385},{990,8,"DisplayName",539},{990,8,"Username",540},{990,3,"GameIcon",541},{1000,10,"UICorner",40},{990,8,"Status",542},{990,8,"Location",543},{990,7,"Interact",544},{990,7,"Join",545},{1005,10,"UICorner",404},{1005,8,"Title",546},{990,7,"More",547},{1008,10,"UICorner",404},{1008,8,"Title",548},{987,1,"Preview_1",549,26},{1011,10,"UICorner",404},{1011,11,"UIGradient",535},{1011,16,"UIStroke",550},{1011,3,"Avatar",537},{1015,10,"UICorner",216},{1011,1,"StatusDot",551},{1017,10,"UICorner",385},{1011,8,"DisplayName",552},{1011,8,"Username",553},{1011,3,"GameIcon",541},{1021,10,"UICorner",40},{1011,8,"Status",542},{1011,8,"Location",543},{1011,7,"Interact",544},{1011,7,"Join",545},{1026,10,"UICorner",404},{1026,8,"Title",546},{1011,7,"More",547},{1029,10,"UICorner",404},{1029,8,"Title",548},{987,1,"Preview_2",554,26},{1032,10,"UICorner",404},{1032,11,"UIGradient",535},{1032,16,"UIStroke",536},{1032,3,"Avatar",555},{1036,10,"UICorner",216},{1032,1,"StatusDot",551},{1038,10,"UICorner",385},{1032,8,"DisplayName",556},{1032,8,"Username",557},{1032,3,"GameIcon",558},{1042,10,"UICorner",40},{1032,8,"Status",559},{1032,8,"Location",560},{1032,7,"Interact",544},{1032,7,"Join",545},{1047,10,"UICorner",404},{1047,8,"Title",561},{1032,7,"More",547},{1050,10,"UICorner",404},{1050,8,"Title",548},{987,1,"Preview_3",562,26},{1053,10,"UICorner",404},{1053,11,"UIGradient",535},{1053,16,"UIStroke",536},{1053,3,"Avatar",563},{1057,10,"UICorner",216},{1053,1,"StatusDot",564},{1059,10,"UICorner",385},{1053,8,"DisplayName",565},{1053,8,"Username",566},{1053,3,"GameIcon",558},{1063,10,"UICorner",40},{1053,8,"Status",567},{1053,8,"Location",568},{1053,7,"Interact",544},{1053,7,"Join",545},{1068,10,"UICorner",404},{1068,8,"Title",561},{1053,7,"More",547},{1071,10,"UICorner",404},{1071,8,"Title",548},{987,1,"Preview_4",569,26},{1074,10,"UICorner",404},{1074,11,"UIGradient",535},{1074,16,"UIStroke",536},{1074,3,"Avatar",570},{1078,10,"UICorner",216},{1074,1,"StatusDot",551},{1080,10,"UICorner",385},{1074,8,"DisplayName",571},{1074,8,"Username",572},{1074,3,"GameIcon",573},{1084,10,"UICorner",40},{1074,8,"Status",542},{1074,8,"Location",574},{1074,7,"Interact",544},{1074,7,"Join",545},{1089,10,"UICorner",404},{1089,8,"Title",546},{1074,7,"More",547},{1092,10,"UICorner",404},{1092,8,"Title",548},{987,1,"Preview_5",575,26},{1095,10,"UICorner",404},{1095,11,"UIGradient",535},{1095,16,"UIStroke",536},{1095,3,"Avatar",576},{1099,10,"UICorner",216},{1095,1,"StatusDot",551},{1101,10,"UICorner",385},{1095,8,"DisplayName",577},{1095,8,"Username",578},{1095,3,"GameIcon",558},{1105,10,"UICorner",40},{1095,8,"Status",559},{1095,8,"Location",560},{1095,7,"Interact",544},{1095,7,"Join",545},{1110,10,"UICorner",404},{1110,8,"Title",561},{1095,7,"More",547},{1113,10,"UICorner",404},{1113,8,"Title",548},{987,1,"Preview_6",579,26},{1116,10,"UICorner",404},{1116,11,"UIGradient",535},{1116,16,"UIStroke",536},{1116,3,"Avatar",580},{1120,10,"UICorner",216},{1116,1,"StatusDot",564},{1122,10,"UICorner",385},{1116,8,"DisplayName",581},{1116,8,"Username",582},{1116,3,"GameIcon",558},{1126,10,"UICorner",40},{1116,8,"Status",567},{1116,8,"Location",568},{1116,7,"Interact",544},{1116,7,"Join",545},{1131,10,"UICorner",404},{1131,8,"Title",561},{1116,7,"More",547},{1134,10,"UICorner",404},{1134,8,"Title",548},{966,1,"States",583},{1137,8,"Loading",584},{1137,8,"Empty",585},{1137,8,"Error",586},{966,11,"UIGradient",423},{965,1,"Details",587,5},{1142,10,"UICorner",27},{1142,16,"UIStroke",389},{1142,3,"Avatar",588},{1145,10,"UICorner",589},{1142,8,"DisplayName",590},{1142,8,"Username",591},{1142,1,"Activity",592},{1149,10,"UICorner",404},{1149,11,"UIGradient",535},{1149,16,"UIStroke",536},{1149,3,"GameIcon",593},{1153,10,"UICorner",10},{1149,8,"Status",594},{1149,8,"GameName",595},{1149,7,"Join",596},{1157,10,"UICorner",404},{1157,8,"Title",597},{1142,8,"AboutTitle",598},{1142,8,"About",599},{1142,8,"Availability",600},{1142,7,"ViewProfile",601},{1163,10,"UICorner",404},{1163,8,"Title",602},{1142,7,"More",603},{1166,10,"UICorner",404},{1166,8,"Title",604},{1142,11,"UIGradient",423},{965,1,"InThisSession",450},{1170,10,"UICorner",27},{1170,16,"UIStroke",389},{1170,8,"Title",605},{1170,2,"ViewAll",452},{1170,5,"List",453},{1175,14,"UIPadding",454},{1175,1,"Template",455,15},{1177,3,"Avatar",456},{1178,10,"UICorner",385},{1178,16,"UIStroke",457},{1177,8,"DisplayName",458},{1177,1,"StatusDot",459},{1182,10,"UICorner",385},{1177,8,"Status",460},{1177,7,"Interact",461},{1177,8,"Location",462},{1175,13,"UIListLayout",463},{1175,1,"Preview_1",464,16},{1188,3,"Avatar",465},{1189,10,"UICorner",385},{1189,16,"UIStroke",457},{1188,8,"DisplayName",466},{1188,1,"StatusDot",459},{1193,10,"UICorner",385},{1188,8,"Status",467},{1188,7,"Interact",461},{1188,8,"Location",462},{1175,1,"Preview_2",468,16},{1198,3,"Avatar",456},{1199,10,"UICorner",385},{1199,16,"UIStroke",457},{1198,8,"DisplayName",469},{1198,1,"StatusDot",459},{1203,10,"UICorner",385},{1198,8,"Status",470},{1198,7,"Interact",461},{1198,8,"Location",471},{1175,1,"Preview_3",472,16},{1208,3,"Avatar",473},{1209,10,"UICorner",385},{1209,16,"UIStroke",457},{1208,8,"DisplayName",474},{1208,1,"StatusDot",475},{1213,10,"UICorner",385},{1208,8,"Status",476},{1208,7,"Interact",461},{1208,8,"Location",477},{1170,11,"UIGradient",423},{779,1,"Games",517,27},{1219,1,"Browser",518},{1220,10,"UICorner",27},{1220,16,"UIStroke",389},{1220,8,"Title",606},{1220,8,"Subtitle",607},{1220,6,"SearchBox",608},{1225,10,"UICorner",404},{1225,14,"UIPadding",522},{1220,1,"Filters",523},{1228,7,"Favorites",526,28},{1229,10,"UICorner",404},{1229,8,"Title",609},{1228,7,"Recent",524,29},{1232,10,"UICorner",404},{1232,8,"Title",610},{1220,5,"List",532},{1235,13,"UIListLayout",503},{1235,14,"UIPadding",533},{1235,1,"Template",611,30},{1238,10,"UICorner",404},{1238,11,"UIGradient",535},{1238,16,"UIStroke",536},{1238,3,"Icon",612},{1242,10,"UICorner",404},{1238,8,"Title",613},{1238,8,"Creator",614},{1238,8,"LastPlayed",615},{1238,7,"Interact",616},{1238,7,"Play",617},{1248,10,"UICorner",404},{1248,8,"Title",618},{1238,7,"Favorite",619},{1251,10,"UICorner",404},{1251,8,"Title",620},{1235,1,"Preview_1",621,31},{1254,10,"UICorner",404},{1254,11,"UIGradient",535},{1254,16,"UIStroke",550},{1254,3,"Icon",612},{1258,10,"UICorner",404},{1254,8,"Title",622},{1254,8,"Creator",623},{1254,8,"LastPlayed",624},{1254,7,"Interact",616},{1254,7,"Play",617},{1264,10,"UICorner",404},{1264,8,"Title",618},{1254,7,"Favorite",619},{1267,10,"UICorner",404},{1267,8,"Title",620},{1235,1,"Preview_2",625,31},{1270,10,"UICorner",404},{1270,11,"UIGradient",535},{1270,16,"UIStroke",536},{1270,3,"Icon",626},{1274,10,"UICorner",404},{1270,8,"Title",627},{1270,8,"Creator",628},{1270,8,"LastPlayed",629},{1270,7,"Interact",616},{1270,7,"Play",617},{1280,10,"UICorner",404},{1280,8,"Title",618},{1270,7,"Favorite",619},{1283,10,"UICorner",404},{1283,8,"Title",620},{1235,1,"Preview_3",630,31},{1286,10,"UICorner",404},{1286,11,"UIGradient",535},{1286,16,"UIStroke",536},{1286,3,"Icon",631},{1290,10,"UICorner",404},{1286,8,"Title",632},{1286,8,"Creator",633},{1286,8,"LastPlayed",634},{1286,7,"Interact",616},{1286,7,"Play",617},{1296,10,"UICorner",404},{1296,8,"Title",618},{1286,7,"Favorite",619},{1299,10,"UICorner",404},{1299,8,"Title",620},{1235,1,"Preview_4",635,31},{1302,10,"UICorner",404},{1302,11,"UIGradient",535},{1302,16,"UIStroke",536},{1302,3,"Icon",612},{1306,10,"UICorner",404},{1302,8,"Title",622},{1302,8,"Creator",623},{1302,8,"LastPlayed",636},{1302,7,"Interact",616},{1302,7,"Play",617},{1312,10,"UICorner",404},{1312,8,"Title",618},{1302,7,"Favorite",619},{1315,10,"UICorner",404},{1315,8,"Title",620},{1220,1,"States",583},{1318,8,"Loading",584},{1318,8,"Empty",585},{1318,8,"Error",586},{1220,11,"UIGradient",423},{1219,1,"Details",587,32},{1323,10,"UICorner",27},{1323,16,"UIStroke",389},{1323,3,"Artwork",637},{1326,10,"UICorner",161},{1323,8,"Title",638},{1323,8,"Creator",639},{1323,8,"DescriptionTitle",640},{1323,8,"Description",641},{1323,7,"Play",642},{1332,10,"UICorner",404},{1332,8,"Title",643},{1323,7,"Favorite",644},{1335,10,"UICorner",404},{1335,8,"Title",645},{1323,11,"UIGradient",423},{1323,1,"Divider",646},{1219,1,"ContinuePlaying",450},{1340,10,"UICorner",27},{1340,16,"UIStroke",389},{1340,8,"Title",647},{1340,2,"ViewAll",648},{1340,5,"List",649},{1345,14,"UIPadding",454},{1345,1,"Template",650,17},{1347,3,"Icon",651},{1348,10,"UICorner",102},{1347,8,"Title",652},{1347,8,"LastPlayed",653},{1347,7,"Interact",654},{1345,13,"UIListLayout",463},{1345,1,"Preview_1",655,18},{1354,3,"Icon",656},{1355,10,"UICorner",102},{1354,8,"Title",657},{1354,8,"LastPlayed",653},{1354,7,"Interact",654},{1345,1,"Preview_2",658,18},{1360,3,"Icon",659},{1361,10,"UICorner",102},{1360,8,"Title",660},{1360,8,"LastPlayed",653},{1360,7,"Interact",654},{1345,1,"Preview_3",661,18},{1366,3,"Icon",662},{1367,10,"UICorner",102},{1366,8,"Title",663},{1366,8,"LastPlayed",653},{1366,7,"Interact",654},{1340,11,"UIGradient",423},{1,1,"Scripts",664},{1373,10,"UICorner",3},{1373,16,"UIStroke",665},{1373,2,"Icon",666},{1373,8,"Title",667},{1373,1,"Interactions",668},{1378,1,"Selection",669},{1379,1,"Library",670},{1380,10,"UICorner",102},{1380,11,"UIGradient",671},{1380,16,"UIStroke",672},{1380,1,"IconBadge",673},{1384,10,"UICorner",10},{1380,2,"Icon",674},{1380,8,"Title",675},{1380,8,"Subtitle",676},{1380,8,"Chevron",677},{1380,7,"Interact",678},{1379,1,"Reprompt",679},{1391,10,"UICorner",102},{1391,11,"UIGradient",680},{1391,16,"UIStroke",681},{1391,1,"IconBadge",682},{1395,10,"UICorner",10},{1391,2,"Icon",683},{1391,8,"Title",684},{1391,8,"Subtitle",685},{1391,8,"Chevron",686},{1391,7,"Interact",678},{1379,1,"UniversalScripts",687},{1402,10,"UICorner",102},{1402,11,"UIGradient",688},{1402,16,"UIStroke",689},{1402,1,"IconBadge",690},{1406,10,"UICorner",10},{1402,2,"Icon",691},{1402,8,"Title",692},{1402,8,"Subtitle",693},{1402,8,"Chevron",694},{1402,7,"Interact",678},{1379,1,"CustomScripts",695},{1413,10,"UICorner",102},{1413,11,"UIGradient",696},{1413,16,"UIStroke",697},{1413,1,"IconBadge",698},{1417,10,"UICorner",10},{1413,2,"Icon",699},{1413,8,"Title",700},{1413,8,"Subtitle",701},{1413,8,"Chevron",702},{1413,7,"Interact",678},{1379,1,"V4",703},{1424,10,"UICorner",102},{1424,11,"UIGradient",704},{1424,16,"UIStroke",705},{1424,1,"IconBadge",706},{1428,10,"UICorner",10},{1424,2,"Icon",707},{1424,8,"Title",708},{1424,8,"Subtitle",709},{1424,8,"Chevron",710},{1424,7,"Interact",678},{1378,1,"Universal",711},{1435,5,"List",712},{1436,1,"Template",713},{1437,10,"UICorner",404},{1437,8,"Title",714},{1437,7,"Run",715},{1440,10,"UICorner",404},{1437,8,"Subtitle",716},{1436,13,"UIListLayout",717},{1373,1,"Pointer",718},{1373,11,"UIGradient",57},{1,1,"Drag",719},{1446,10,"UICorner",219},{1446,7,"Interact",720},{1446,1,"Drag",721},{1449,10,"UICorner",219},{1,2,"Toggle",722},}
 
--- Official Lucide artwork. PNGs are rasterized from the unchanged SVG paths in UI/Icons.
+-- Official Lucide artwork. PNGs are rasterized from the unchanged SVG paths in UI/Development/Lucide.
 -- Embedded bytes keep first-run icons independent of HTTP and public Roblox assets.
 local lucidePNGs={
-	["chevron-down"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAACw0lEQVR4nO3U7W0UQRCE4Z4IfGRwISwZ+CIwoUAkEIqJgMkAh3BEwBKBqZIbyT+M78O7Wz1WPVJr/sBdX7+SW5iUA4g5gJgDiDmAmAOIOYCYA4g5gJgDiDmAmAOIOYCYA4g5gJgDiDmAmAOIOYCYA4g5gJgDiDmAmAOIOYCYA4g5gJgDiDmAmAOIOYCYA4itEuDx8XEfEV8xt/GkR8SX1toxBrDl/osHyOV/YnaY52bMobX2gLcs7D/h+YHZYZ6bMR+x/zEWtEaAezx3mJfMmEMrGgG7T3heOv4/37H7J7yLWSPAbzw7zP/MmEMrFgF7T3heOz7N2PsD3sWsEWDGc4N5Df/NoRWJgJ0nPKeOT79aa/tYUMMsCj/mHs8d5pQZc2jiCNh3wnPO8WmIP0H7iHjA3GBOmTGHJoqAXSc85x7/D2bCrsdY0OIBKH9Yj8IRcsdLjn+7xo6rBKD8gT0KRsjd5Men1QJQ/tAehSLkTiWOT6sGoPzBPQpEyF3KHJ9WD0D5w3sII+QOpY5PmwSgPEAPQYT87nLHp80CUB6ix4YR8jtLHp82DUB5kB4bRMjvKnt82jwA5WF6rBghv6P08UkSgPJAPVaIkJ9d/vgkC0B5qB4LRsjPHOL4JA1AebAeC0TIzxrm+CQPQHm4Hm+IkJ8x1PGpRADKA/a4IkL+3+GOT2UCUB6yxwURMDTk8alhSrkiAu0wp5Q7PpULQBdGOEfJ41PJALRghLLHp7IBaIEIpY9PpQPQGyKUPz6VD0BXRBji+DREALogwjDHp2EC0BkRhjo+DRWAXokw3PFpuACECPuI+Ia5jSc9Ij7j+McYzJAB3hMHEHMAMQcQcwAxBxBzADEHEHMAMQcQcwAxBxBzADEHEHMAMQcQcwAxBxBzADEHEHMAMQcQcwAxBxBzADEHEHMAMQcQcwAxBxBzADEHEPsLmpI9cHHw8PkAAAAASUVORK5CYII=",
-	["eighth-note"]="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",
-	["pause"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAFkElEQVR4nO2dwW0cRxQFZyOwnAkzMB2B6EhMReB1BKIjsZQBHYGZiakI6PrQ7UHL1arecuYwBQyalyq9RoO68rDsrMr+ACuzP8DK7A+wMvsDrMz+ACuzP8DK7A+wMvUHeHl5ueF4z3e7LMv8/I7vEp75nvgel2X5fDgc5ucfZmt7kuoDcNnfOR74WjzzHbn0X5wXs7U936L2AFz2b447vmvwiUv/xvndbG3PKSoPwGXvOT7yXZMPXPqB8yxb2/Ma+gG47A3Hv3zX5pnv18OZ/4O3tuccjQc4LsvyB99b8OfhcDgur7C1PedoPMDjsiy/8L0F/xwOh9vlFba25xyNB/iP4x3fW/DMhX/mPMnW9pyj8QAvHCdh4EX/BjnVQ1d+Qq7aS5Q8sK86kJzqoSs/IVftJUoe2FcdSE710JWfkKv2EiUP7KsOJKd66MpPyFV7iZIH9lUHklM9dOUn5Kq9RMkD+6oDyakeuvITctVeouSBfdWB5FQPXfkJuWovUfLAvupAcqqHrvyEXLWXKHlgX3UgOdVDV35CrtpLlDywrzqQnOqhKz8hV+0lSh7YVx1ITvXQlZ+Qq/YSJQ/sqw4kp3royk/IVXuJkgf2VQeSUz105Sfkqr1EyQP7qgPJqR668hNy1V6i5IF91YHkVA9d+Qm5ai9R8sC+6kByqoeu/IRctZcoeWBfdSA51UNXfkKu2kuUPLCvOpCc6qErPyFX7SVKHthXHUhO9dCVn5Cr9hIlD+yrDiSneujKT8hVe4mSB/ZVB5JTPXTlJ+SqvUTJA/uqA8mpHrryE3LVXqLkgX3VgeRUD135CblqL1HywL7qQHKqh678hFy1lyh5YF91IDnVQ1d+Qq7aS5Q8sK86kJzqoSs/IVftJUoe2FcdSE710JWfkKv2EiUP7KsOJKd66MpPyFV7iZIH9lUHklM9dOUn5Kq9RMkD+6oDyakeuvITctVeouSBfdWB5FQPXfkJuWovUfLAvupAcqqHrvyEXLWXKHlgX3UgOdVDV35CrtpLlDywrzqQnOqhKz8hV+0lSh7YVx1ITvXQlZ+Qq/YSJQ/sqw4kp3royk/IVXuJkgf2VQeSUz105Sfkqr1EyQP7qgPJqR668hNy1V6i5IF91YHkVA9d+Qm5ai9R8sC+6kByqoeu/IRctZcoeWBfdSA51UNXfkKu2kuUPLCvOpCc6qErPyFX7SVKHthXHUhO9dCVn5Cr9hIlD+yrDiSneujKT8hVe4mSB/ZVB5JTPXTlJ+SqvUTJA/uqA8mpHrryE3LVXqLkgX3VgeRUD135CblqL1HywL7qQHKqh678hFy1lyh5YF91IDnVQ1d+Qq7aS5Q8sK86kJzqoSs/IVftJUoe2FcdSE710JWfkKv2EiUP7KsOJKd66MpPyFV7iZIH9lUHklM9dOUn5Kq9RMkD+6oDyakeuvITctVeouSBfdWB5FQPXfkJuWovUfLAvupAcqqHrvyEXLWXKHlgX3UgOdVDV35CrtpLlDywrzqQnOqhKz8hV+0lSh7YVx1ITvXQlZ+Qq/YSJQ/sqw4kp3royk/IVXuJkgf2VQeSUz105Sfkqr1EyQP7qgPJqR668hNy1V6i5IF91YHkVA9d+Qm5ai9R8sC+6kByqoeu/IRctZcoeWDfM8dPfG/BF+77jvMkW9tzjsYDPC4b+pMhW9tzjsYDHJcN/dGcre05R+MBbjgel+v/2n/hu+XCT5wn2dqec+gHGLj0PcdHvmvygcs+cJ5la3teo/IAA5f+xPGe7xp85rJ3nN/N1vacovYAA5e+5zguvV//+TU/ctkHzovZ2p5vUX2AgUvfcNzx3S5f/3zspZefSz7xPS5f/2jm/PzDbG1PUn+AncvYH2Bl9gdYmf0BVmZ/gJXZH2Bl9gdYmf0BVuZ/lSm0nUOQ18wAAAAASUVORK5CYII=",
-	["play"]="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",
-	["settings"]="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",
-	["skip-back"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAHxElEQVR4nO2c4XHbRhCF9yowU4GgCqJUEKQC0R1IFZipgHAFkSsw1YFUgaEKLFYQdRCqgsu3A2uGUXALgEvyQBrfzM77sYN9u3vQybZEB5nIynQAmZkOIDPTAWRmOoDMTAeQmekAMjMdQGamA8jMdACZmQ4gM9MBZKbXAcQYCxH5iyiloRaRP0MIL3LGMPcM+USUInJFzAhlQzwTtYh8YQ8bdCc6D4AmChH5TsyIbTbEb5i/yJnxY+YlcSP9WEnzQupOBtHnAB6Qa6KNR0zn6NnAvLr4BTEjhrAhPrKPWgbQ5wD+QWZEGxsMf0FPHuYsReQrUYiPzyGESnoSCBMai0gSzDprjBnGK6T5/jYn9sVtCGElPehcHg2e7QEw2hJZEDNin2yIP0IIz6hJ5/JoMiJJMOmsMTYYqZT9XDcWj6xmjpoEwoRmI5IEk84aY4FRCtn/dWNxGTr+lNi5PJo+iwNgjCWyIGbEUNZExagPqNaaIysR+UBYfOGZBZqkc3mYRSQJBp01ckL7pex+3bwSFSPeof+BulfISkR+JVI8hRBKMQiECUYRSYJBZ40c0HYhvuvmnlgw3gZtBY8baQ43xVP4GQ+AlpfIgpgRQ1kTuvhaOsCnEJG/iSTUMfdjJhVMIpKE+p01jgWtltK8kYUM55WoGOcO7Q2eEUlCvYAkMZMK9V0Gx4AWCznwdZMCb9d+zKRCfZfBoaG9JbIgZsRQ1oQuvpYdwT8iSaht7sdMKtR3GRwK2irlyNdNG/QRkSR4BCSJmVSo7zLYN7RTSKbrpg36ce3HTCrUdxnsE1pZIgtiRgxlTejia9kj9BSRJPiZ+zGTCvVdBvuAFkoZwXXTBr1FJAm+AUliJhXquww8YF3IiK6bNujRtR8zqVDfZbAr2C6RBTEjhrImdPG1HBj6jEgSejD3YyYV6rsMhoJdKSO9btqg34gkoZeAJDGTCvVdBn3BppCRXzdt0LdrP2ZSob7LoA9YLJEFMSOGsiZ08bVkgN4jkoS+zP2YSYX6LgMLSpdyQtdNG8wQkST0F5AkZlKhvsugDUoWcoLXTRvM4tqPmVSo7zJ4D+XmyFdiRgxlTejiaxkJzBORJPRq7sdMKtR3GWxDqSVSyXBeiQqrO3RUMFNEktCzuR8zqVDfZfAGZW6kefOHck/oW79BRwdzRSQJfQckiZlUqO8yUChxhXwjZkRf1oQuvpYRw2wRSUL/5n7MpEJ9l4FCiW9IKf14JSrK3qGjh9kikoQ5zP2YSYX6LgMeL6Tj56Zb3BP61m/Qk4D5IpKEWQKSxEwq1HcZ8Pgd8omw0Ld+TqlaTgzmc+3HTCrUdxnweC0ivxMp1kRJmQ16cjBfRJIwl7kfM6lQ32XA49+RKyLFbej5m8RjhPlc+zGTCvVdBjxuPg+XoeP3J8cM45nzMZu5HzOpUN9lwOPm83AZpgNIQ32XAY8/I78SKW7DdAWlob7LgMdrsb8J6wHdhh4fZhgjzBeRJMxl7sdMKtR3GfB4Jc0nDi02xEdK1XJiMF9EkjCTuR8zqVDfZcDjhfT/i9hKdvy4Zy6YLyJJmMXcj5lUqO8yUChRi30NbaPLryj7BR09zBaRJMxh7sdMKtR3GSiUuEJq6f5EyTbPhH411DJimM21HzOpUN9l8AZlbmS3f45eSXMQG3R0MFdEktC3uR8zqVDfZbANpSrp/obchi6/wmp01xIzRSQJPZv7MZMK9V0G76FcKSIPxJDr6I1nQr8aahkJzOPaj5lUqO8yaIOShYjcEdfELqykOYgNmhVmce3HTCrUdxlYULqUZpkXxFB0+RX2Wa8lZohIEvoz92MmFeq7DPqARSX8IIb4QAzlmdCvhloyQO+u/ZhJhfoug75gU8gJXkv07dqPmVSo7zIYCnalNMu8IIaiy69o6WjXEv1GJAm9mPsxkwr1XQa7gm0lJ3At0adrP2ZSob7LwAPWhYz8WqJH137MpEJ9l8E+oIVSmmVeEEPR5Ve0eZBrid4ikgRfcz9mUqG+y2Cf0EolI7uW6Mm1HzOpUN9lsG9op5ARXUv049qPmVSo7zI4FLRVSrPMC2IouvyK1t3XEn1EJAke5n7MpEJ9l8Ghob1KMl5L+Lv2YyYV6rsMjgEtFpLpWsLbtR8zqVDfZXBMaLWUZpkXxFB0+RXjDLqW8IxIEuqZ+zGTCvVdBjmg5UqOcC3hU0jHz7upY+7HTCqYRCQJ9Ttr5IC2CznwtYTHjdg/5XsKP+N/WbYN7ZfSLPOCGIouv2LE/11L1L1CvhKqKZ7Cz34AbzBGJb5r6Y5R71GtdY2spPsTP59Dx/8jHQgTzM7iABRGKYRFErrAY3AZOn7vtXN5NH02B/AGI5XSvMEXxKF4ZDVz1KRzeTQbkSSYdNYYK4xWye7XksUrUbKaZ9Skc3k0ebYHoDBeIfu/lm5Dz9/47lweDW6QD0QbrxjN0JOHOUvZz7X0OXR8492mzwE8INdEG4+YzdGzgXkr2e1a0mtnzj5qGUCfAyik+WPY+4bU8ArDFzkzfsxcCQsl3s/dxj2xYBcbdBCB6ORHQ3dEKQ21NIYvcsYw9wxZEKXwshFvh6Ev3zPxQKzYwwbdiV4HMHE4pgPIzHQAmZkOIDPTAWRmOoDMTAeQmekAMjMdQGamA8jMdACZmQ4gM/8Cw/a6jgLzq3cAAAAASUVORK5CYII=",
-	["skip-forward"]="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",
-	["sun"]="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",
-	["timer"]="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",
-	["user"]="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",
-	["volume-2"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAIjUlEQVR4nO2cjXHbRhCFdysQXEGoCgxVELKCyBVEqkB0BYEqEFWBqQqkVCCwAkIViK7AUAXIdybpiDzeHUDyCMiDb+bNS2aIx7e3/LcTlZ5W6RfQMv0CWqZfQMv0C2iZfgEt0y+gZfoFtEy/gJbpF9Ay/QJapl9Ay3R2AVVV/YMNZSnDQkSe0L2qLuQ3oXML4OBT7BsyvosSTVjCLf7hUdQZVof/jBIUwjwTxviHpjMLaHj4ay5YQoF/WDqxgD0P3/CgqlfygWl9AQccvqFgARf4h6XVBRx4+D9hASebgb6m52c0FJGcu57hB6GoFRgmxQ46fAOHcJIZVn0f0UD+p0DXesD7kKKTsxrm4MM3MHz0Gehres7RQGwKNFLVEm+MopPCMClW9/Df0BlywuDRZ6DzJfaIXOTUGOGNUXQyGCTFmhz+UJaPPCcMHn0Gemci8g/yMaXKNd4IRSeBIVLsGSUoxM/DZ6CC6yr+2Qm3iT4DFa5k+e08xLWqTqUB0csbGCDFnlGCQvw6fNxcW2FOuF30GaiQYAsJvByuGKlqLjU5RfkUe0YJCrFx+AaurzAn3Db6DAZqDGU5R4gSjfTdDD6ilqd0ipnSCQphHb6BjApzwu2jzvAeqoyxOxQip9YID6IoCpQdyvKTQ4JC7Dx8AzmdWYCBOlMR+RuFGGmNl6Jgee4wxf5CQ1n+RJygY+I8fAP3X2FOuC44w7Ghkun6Gfmo9TOJtzx3dINNUCze0JCiBb4TOnRxAQlWoD+Qj2sNfCpyludOHrFLFIvg4RvoUWFOuN45Q0yolWJz5GNBvXPciSILwsfYHYpFrcM30KWTCzBQbSrh94NbVc3EgVWe0BSbo1jUPnwDfSrMCTnWDCGIHMjym+0lMjyhe6IKvDarnFfko0Tn6vityCpPaCbLcjF4QVeUKfBa0KfCnJBlzeCDuBR7Rgl6T4kuiFtIA8jLJHxeX8h9wi2s8gTmIvInOja36nkquqBPhTkh05rBB3FTcb9s5MSN8NqQl2AL8X9LflDHn9wp2oDAH5gJPRTzaF/I8tPClAIL2QP6VJgTcq0ZfBAXmu8rkRO8NmRm4n8WlGR+wi2s8oRVmBOCrGtiQp2j9iHOmwclOlfHa/YuiBxI+L3ggswC38AqT1iFOSHEuiYm1DlqH+Km4n4JWnNP7BivDbkF9hm52JlplSeowpwQYl0TE+octQ9xAwk/Wkt0rs2eBRPsBrkoyLvAN7DKE1RhTgixrokJdY7eh8iphJ8F1xr4FvseMlNsjnyc69Z7oVWeoApzQoB1TUyoc/Q+RA4k/CzY+Yj1QW6JnSEXI936gc4qT0iFOSHAuiYm1InSh9gJdoN8fCK+xGtB5lT8z6yv5E3wX1jlCakwJwRY18SEOlH6EJtgC/E/Yr8Q/4TXgsxM/B9Hb3Xru5BVnpAKc0KAdU1MqBOtD9G5+L903hM/xmtBXib9AupDdCb+A5up6lBqQt5Qlj9zuJjpVp5VnpAKc0KAdU1MqBOtD9Hm0X2HXMx068B8kDeUfgH1IXoo/gNbEH+O14K8FJsjF9YnK0UbEFJhTgiwrokJdaL1ITrBfiAnxDfKJ7NR341/MXB9o4DYUCdaH6L7BYSgTrQ+RA/F/xL0XVUHUhPyUmyOXLyQZ27zC0UbEFJhTgiwrokJdaL1IXqM3SEXM9160/RB3lD8C53pVp5VnpAKc0KAdU1MqBOtD9GZ9B9D/VAnWh+ic+m/iPmhTpQ+xCbYKzLu4gvxT3gtyMykX0A9iJ1gN8jHJ+JLvBZkTqX/MS4MkQNZPvp9vBCd4rUh9weWIBcj7X+O/pk5Ff8j1XCt/R/IHL8PcQMJP/rf0IDoEq8FuRPsBrnY+YyyyhNUYU4Isa6JCXWO2oe4qYQf/ffEjvHakDvHUuTiVrfegA1WeYIqzAkh1jUxoc5R+xDnzYN9Hv0DCT+rLsgs8A2s8oSV2Bk6lAItZOn/7rrzOtCnwpyQa83gg7gS8833lcgJXhsyM/F//HwjM8EtrPKE5eL/crIvGSVu8UbQp8KckKlYbYibivslaKZb31RDkGcO9hUZd/GgDf5qYib+bR5Cga61wbOBPhXmhCxrBh/EpVgu9rPAvPSkxC2kAeRlEj6vL+Q+4RZWeQJTLBe74LEo0UhrLoE+FeaEHGuGEEQOhGekbP719IyohTRglfOKfJjFDsgucYud5QkeY3coFiUaaY0l0KXCnJCxc4ZTQLWpuF/O1tzqjk8/a5zlCX/C/kKxKNFIA0ugR4U54XrnDDGhVorNkY/vqjoQD4qccCdjLJMWX47o0LkFUCnB5mggfq418G1akRfuLMUu0VB4k0Jn6JiUaKSOJXD/XVzAHEuRjxeqhW4TXsC+UHIoyze3MxSiRCPdsQRyOrUA6nzDriTMSLd+eNtF1PKUTbFcDlgCGRXmhNtHneE9VBljdyjETGt+n4hentIplsueS+D6TiyAGpfYIwphPnYOqVXgQU5VPsVy2WMJXNv6AqiQYK/IeIiR1njpWRO9/BqGSLFcGi6B6yr+2Qm3iT4DFa7kI/8Pm9YwSIrl0mAJaI6cMLBiUaF3JuGfGx7U8XuPj+jlt2GYFMul/hIS5ISho89A50vsEbmYac033W2il98FA6VYLvWW4IXBo89A3wQr0B9omxc0pEaJNyZ6eRcMlWK5HLgEBj/JDKu+U9n8T1HN4V9RocD34iTlXayGyuWAJTD8yWagb4KlKxXcdS4HcrLyLhjKDJPLfkuo9XW/y7S+AMMBS3jQPT55dIlOLMCw5xIuWECBf1g6swBDwyXcc/hj/EPTqQUYVkuYyuanjfe8oQmHn8lvQOcWsIZFZLL8c4j1Ir6jXPgDIg5/Ib8JinpapF9Ay/QLaJl+AS3TL6Bl+gW0TL+AlukX0DL9AlqmX0DL9AtomX4BLfMfqsUOnTm5FbwAAAAASUVORK5CYII=",
-	["volume-x"]="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",
-	["x"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAEDklEQVR4nO2c4U0bQRCF3xYQAR24hKOBiKvAlJJUkpRiKsgoDYQSTAUcSgHkTZiV+GHsM969mZPmk0bzB9++fZ9kmz8uSFxJAc6kAGdSgDMpwJkU4EwKcCYFOJMCnEkBzqQAZ1KAMynAmRTgTApwJgU4kwKcSQHOpABnUoAzXQS8vr5uAPzg3OENAfC9lLLHClgyf3MBFv4P55rznokzllIeucPC/APXL8415z0T55b592hIDwE7ri3nEBNnLEElMPvAdaj8ygOz33M3o4eAZ65rzkdMnLEEk8DcA9ex8pWJuW+4m9FDwMR1xTmG/s1Ygkhg5oHrVPnKUyllg4YUTlN4mR3XlnOKiTMWZwnMO3DNKV9ZxVvQBsAj54pziokzFicJzDpwzS3/hTMw6x4NaS5AsYsJAkuwjOeUf9cjYxcBil1QEFCCZXMvX+kmQLGLCgJJsEwhyle6ClDswoIAEixLmPKV7gIUu7jAUYJlCFW+sogAxQoQOEiws8OVrywmQLEiBAtKsDNDlq8sKkCxQgQLSLCzwpavLC5AsWIEHSXYGaHLV1wEKFaQoIMEe3b48hU3AYoVJWgowZ65ivIVVwGKFSZoIMGetZryFXcBihUnuECCPWNV5SshBChWoOATEuy1qytfCSNAsSIFZ0jgKKssXymcUJwp4S9H+cI5RbjylXAClDMlzCFk+UpIAUpDCWHLV8IKUBpICF2+ElqAcoGE8OUr4QUoJuE3Z86HraIfzl+jl6+kAGfCC7Dy537Pf8/EGUtwCaEFXFB+ZeKMJbCEsAIalF+ZOGMJKiGkgIblVybOWAJKCCfgzPL1w1aZ8+E8ccYSTEIoAWeW//97Pt4QzPs/YeKMJZCEMAI+U34t0l4rWKGEEAKswE+VX7FnCFYmwV2AFXdR+RV7lmBFElwFWGFNyq/YMwUrkeAmwIpqWn7Fni1YgQQXAVZQl/IrdoYguITFBVgxXcuv2FmCwBIWFWCFLFJ+xc4UBJWwmAArYtHyK3a2IKCERQRYAS7lVyyDIJiE7gLs4q7lVyyLIJCErgLswiHKr1gmQRAJ3QTYRUOVX7FsggASugiwC4Ysv2IZBc4SmgvgxTY4/HtBh3Apv8KsA5dgvoRbZt2jIT0E7Li2nFO4ll9h3oFLME/CA/Peczejh4BnrmvOMUKUX2HmgUtwWsLEzDfczeghYOI6dpEXTpjyK8w9cAmOZ38qpWzQkMJpCi+y49pyDhGy/AqzD1yCjyWs4i1og8O/FxS6/ArzD1yCw/kH5t+jIc0FKLzEBsBPzh3eEADfWofvxZL5uwhI5pMCnEkBzqQAZ1KAMynAmRTgTApwJgU4kwKcSQHOpABnUoAzKcCZFOBMCnAmBTiTApxJAc6kAGf+AeKiSn+pQYOwAAAAAElFTkSuQmCC",
+	["chevron-down"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAAA+0lEQVR42u3Y2w3DIBAFUZdCCe7clJQOoIObn0SKFcCvJV6UOQXgO7LlD6YJAAAAAAAAAACgSkGLkpIWhQHPV1DSW9Jsfv68Ot8+QVGfjBNW8yUp2gesH2Ca8DVfSvYBWeqTUJgvPXp/QmYJxfldPqFQeAeXEyrzc5//0GydUJ0/T33YJvx8vm3CLfPtEm6bb5Nw6/zrCbfPv5bgYv75BDfzzyW4mn88wd38Ywku5+9PcDt/X4Lr+dsJ7ue3E4aY30wYY34jYZT5uxP8zt+V4Hv+ZoL/+c2EMeZXE8aZX0wYa/5XwnjzX1dhUVlZsc91PAAAAAAAAAAA+FdPDxjr4SxRlCQAAAAASUVORK5CYII=",
+	["eighth-note"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAAChklEQVR42u2bwZGbQBBFv1wOgAxMBiaDJQNtBksGDmHJYJUBZLCEIEcg+eYbOALh297+Hqx1lWGAAYSm29X/RpWAfuLPwHT3ACaT6Q7iN55Ikic+6Qs+uQb/oRMTTeFHnfBJ8sJMD0BOtwpGOgCOHJIOK3FMGqzEKUm3Eqcl20r0kWQr0VdSrdQLNGOrykrdKAEmPCuyUh8AYMRSjZVcAACgxkpDAGqsNAygxEpjACqsNAUwYaVEAcColUoVACNWuqgBGLKSIgCnlUpVAD0rtYzVAQCMWbJly9In/N32AJ0b3viOn7SnzAzAAAzAAAzAAAzAAAzAAAzAAAzAAAzAAMLoM1Y10mCPFECEBMAZLYAK33dn8dyMWbAerK7ULD6yauKStQAjPnuVrp8ZCQRgxot39f3CTBiA538/orDWKUjNADcIPyDAYO+bDoD+YLyq4YHpn2IoE6Y8sBEIwMg58zTuhgBmYxBy7FMNtwIwYiUIgPGSAvRQ6ToEQLmsfu5+CiEA6p73I8+R0wgAYNLvelszd4UfwM2ss5utAaYXNGnnuJp1/QriVmTqAL50jmdZCO3WALutWwWs1WA1wK/ue3nmsv9f/b4/QNfzswDQfeX9DD8LPa769dv9AboT4X7W9ff3nla3/pQI0Qfa+xyovT/m6jWfIbcbA8feMC68rl30BnwFSFnQFItyGDEgZ0n5OrqkfHWckYdMabXOFK5zZyqfnGnfNmg7/WBapeYLH/6mVR74MpizzgCZmzr9lCO8RnZbTKkEZNQFliGUgvYlLTBSDlka2fPimnkyQOImc7/nkAveaMuY5UgKt+HhXm/d3coya4pHABG+AvhxLbMeFZRZTab/Ru/wdwisOMtWrQAAAABJRU5ErkJggg==",
+	["pause"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAABJ0lEQVR42u3bwRGCMBCF4YfjXe0kJdCBdgKdiR1QAp0QK1jPMqJshmWc4X/n5JFv4uTkSoQQQvacaulCS7qqVtJ5ZkHWoF6PatimxxlrbFlGa7bo8R7/bp7co3u8x2/Nmzayx3v8ZP6MlqJ6pjn8FNwK1OcPu9bqcQPqoourw3q8z6iNsw/et+TqEtPjB9hkQ1W2bq0e/0/ozwMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADE5/hzxVMnffl//+yuqB73DZQNpA1hPW5AX/ThPqxH/jGs7B6fyh/HsFbp2d8gnCRZ5/psF91Tdgt54aW3W/SoaBz3plrp/TF8e/AG9eoWjOOu0kMIIYRI0gti5EF6F7huogAAAABJRU5ErkJggg==",
+	["play"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAACiElEQVR42u2b3XHCMBCEL5kU4BJcgkugg9ABdEA6gA6gA9wBdGCnAugAOrA72DzEzBDbyLKtn1VG++yHW8n6dJLuRKKioqKiorSFBFsUqAAAFQpskYQU/BF9OiINIfxlM+79Yp8J7DGkG1a84a+hpwIZY/iZ8ufprgi2nwkFxqnChin8FFN0w4LFwKETXI1lw6Wr0sSJAq8oW2Fdn8PCF2qlCf947RhYd7a3AzVeOwGlvZwqafHajkWxU98p8aprQAQJdsoV4Qev+gYa6J7J8DrOgIgIFlR4HW+ADK/TDBDhdaoBGrzOMUCB17kGRES84tWEARGkyD3h1YwBj3g1Z6A5nLrGq1kDHvBq2kCzItzh1YYBp3i1ZcAZXm0acIJXuwY08ZpQG9DAa/V7D0JsQAOve3IDGnhd0xsYwGs1aXdwbUCJ1yIQAwq8poEYaPDanYddQAZEkHV2iLL9zbsQ6+0qB/JUYvzrRFAzoCN2A+1U7jsoA8hkMKH+IA5/ISdp56FlOBvZKdiNDAm2L16mz2Ekc7cXyVxNn8whUz6qr9kPNOqCkh33kXKjrMeoZxztnRzqL8qxPxMf6l/i8qE78bWKApePH+eL+2rxphz7nPhqcQCXQEl8uTuIy/tE3jt64NgMlK/tiB84NHCZivA+8tnGpT0DjnBp8aHbDS4tlRq4w6WFYg+3uDRcbuMel0YLnnzg0ljJmS9cGin684lLA2WXfnE5s/DVPy5nlB5z4FLbwOVP8TcPLkeU31f4FBHBigqXhhsg7jQNED0/0ZD84FKZktUjws8JO8q027BKyjasF0uZDZcaB5OaGpdaGX7eu2TzIJpBn7o0ymYuapRBjHxUVFRU1D/WD9GyiR/sEGpBAAAAAElFTkSuQmCC",
+	["settings"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAAE/UlEQVR42u1c23XbOBC9zMn/soNlKjC3AtEViB2IHUQdiB1ErsDswHQFgisQU4G4FQip4O6Hdc7KBEA8CFlUovkUIWCAGWDuXAwJ3OUuf7Ykl+mWGZYokCIH0EFC4DXpb2RNWHBHnexY3IL6zxyT53krn3JPm+yZ3rL6c56CwfO1u2GO6q/pI9X83OfoNYFjLDf6EmkGJVSFnvCIb/iGRzwpz1KU87LAcPtK5h+e55Sz3geKi6zte2RO6ucuyimTzOezB4aqvGlbvVn+dcUJDDek0LYSln9dzYEyxTm0qrFS2kU4Sr86qbhAASBHB6BLXj/6P9TzpNN2o/564GPy4VcukQMoIACI5C3G6j4rIerIZy5P4WulCWBG3M9eE9BW73bg0jBSPiW6/mCIGGGCxolc5EeQqzHnIWi40bxLYwMXOXjbgbkntvlfCku2FiZHrykwDVx9B5QZ6EbkwcOR+BI4SO3Uex3Y+4t7Uh7k++5GZhG4F4rwzKplxYIVO23HkrXfScGUtYJP30WcRmo1z3dhcfXDzJlxfTaNniI8u2JFcWYLwTUziydkCNhklemkiodmp+py/qdm6DxXxVntQJvGjkaHRmquihQbi3Z2MJe0ISAEC5TIkCED0KNHjxZvifSmblvvxI1iWuLHbIRcfHbYhON5nPD3uioy/Nv4HLjKNm7946QzERifWtRAmjogQXcb0Av+OUEz7YK4HN2aCGidQnxmTqu+2yGgBVujiNzZeZwXxZCN1K6eJ7VrZjxBuI2LXZlp7Smdtz9LH1Jci57IjjULpkxZsDaAwMyLqPehYQyYfe0EPkhyq1hVZ6XGg6ivfQOIdidoHc5xrbR21TjFBO93SP5KB7W2HnuldJpmFY7XrUZXHKgbPR467/4s6o9yo0mjXE1kVvQ6EuwTqTy19/eUNFPI3eGAD0qLv52IXdPTv5QWD+4L4hYTLMy/H2Ebu794d2RXky+eVxe/lBb/el1bDJ/+VFr88rsGsU2gslLkQy50nLsZPpVWEr6aMAFWWFnUVX9Zmr2WKZbe/a1iRoFbCmTa5LD/FCihox03vupvJ4K5waWEIVu+FJgzUODCC07vueGCKVMuuDEkPJkbM+IJpw3poRxJaOroCY2cUCCiVaezpJSdt/qdJaXsw1PKo99gI2moWaRDj+qiHIPqHuzqG+pRxtR3o1W6AFpFcSDhQUN1051n0KPwJ7amUYv27VxfmlqcTu42RuWb+OTuV0SWpEfFNQqUyJDiAcBPSPRoIfzp9RAIISawMfG1KW0WUNGo9IOzF5bKil5/v0s++zXr9zNkc+COq2DFV9yd0Vh7fo9wzWqAUi9cccGVAZQd/e5dAKbcGAj5/WmkF3c4GafU4OD+dgCLwGKSIvR21lWc0g5uAntvfQzcc27lNr2Xk3pBs88oeJIhNVuB5WGjvR4uXcpjv5T4/KK/7YT6UmZsFGeSbN4BBlNWGlc7eKy/ZHUquywNI2UR3iNjgQJAhh6ASMQgigqFY/4n6bTxdq/QkuWg8HVkpEu+veHkRJcpPY7ATicSr9ZrCx1N+xoDXseh11sngjePenXxu7wAcX8F5aReN16Poqllaec1gUpL8C6YM+dCS+xWmNmLcJGZuXnY4HZeRRwhxRmcWV3BjSJTi/OcwnzVd6re2gK38FEAYSisL3BDn2UoUSA9lR5LCLQ381mGu9zlpuQ/annII2SGwpwAAAAASUVORK5CYII=",
+	["skip-back"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAACgElEQVR42u2b0XGCQBCG10zekxJIB5RAB7GDpAPtQEqwA+xAOpAOklQQO4AO/jyYyeiBwMHt3pLZ/81BzvvwU7jbOyKLxWKxWCwWy1WQ4IgaNY5IxD/7GTucUAMAapyww7N/9y+nX5pIRC9cga4UXhAob04uxbq/u7pwbmpk4xu6baYW6XyGbwwlH9uYE5Ff3Li8KwToFactUqoKYJQ48P5FygB4iHObRAXAgDifWBMRYY2mdWwfHWBAnAbbq/em+HSOV1EBBsU5uLcsvCsCGBQn60T27Q8PgI84M/sTHsBfHFUAU8RRAzBdHAUA88SJDjBXnKgAIcSJBhBKnEgA4cSJABBWHGGA8OKIAnCIIwbAJY4IAKc4AgBYc4rDDoAdrzjMAK1xUnBxWAGQ3pUnmDi8ACd+cRgB2qNUDnE4AfYd1z4jtgz159G7RXd+8ouyVUPR8uB9xpPzeh+z+0Sr9lfmvGHVf5xeVmfW+euB/jzQwuMP8OW8zpYG4Bq/GVV2UARQtf6VTsgUOTXxRlYs5kZGhOpOBWuzFIC0o3JyycciHuYGHqcL9Y/TRETIe8uhG/UARMjuihRUJt5Bfdk7qC9UD+r/voczr0wSE1s5p0xSU4tsMklO7rLIJDu9ziCTfIEjsExxSkwBZYpV5AsmU8wyaxCZYhe6Z8sUf6nBTJl0LPaYIZOe5TYTZVICMFUmNQuepsqkasmZv0xI8aEOYJRMb0REeO2oBOV6Fr6WC174Okom3UuPR8rkVoJSncvvy7DL72+vSCO0AeIcbgNErC0ofTL5lBGRXDXUCG8COnRC+JZwkaBEgwZllG1YOapfjAYVtlzT9haLxWKxWCz/IT9UB40uDmzDngAAAABJRU5ErkJggg==",
+	["skip-forward"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAACZ0lEQVR42u2b3ZWCMBBGx63AEiiBEuxg7WDtYLcD6cDtQDuQDmAr0A60g6SDb198QJCfmMwkOWe+Z0Ny4XoIzECk0Wg0Go1GoxkJ1tijgQEAGDTYYy2+hgJnGBicUbgu/ohhDI6OB/JdvunMvXxmbDsDhxB7MYD6aeZ66bAD5nLDRgTg+TSaZYN2WJYzv0z9KZcMKSfkEZfpHYAGbmGVyRkABd4Jm0zuAL+DxVlsH/+Mq7xM7gBtb8S1e27xAysrkz/AbnB7O0nK5A7Qz4vlYCMnkzfA6O+EZGIDkJKJEUBGJmYAfpkEAHhlEgHglEkMgEsmUQAOmYQBwssUASCsTJEAwskUDSCUTFEBQsgUHcBXpgQAFsm0SRxggUz75AFmZdolDzAjk0GZAcCkTHUmABMyFZkAPGQaXocqIwAilLj3pmtd1/NBEbO6UuV9jCFx7wcr1mtQ0G16vrn1RL0CIRIboL+F+MsKACUdMr4C2FBD/aJtG6Ok896N7JjxjQzfI1W4Oo/N3GVkM2eT38yNipPHdnpUnJFdUGqPlJeJxdukHylnxAHqpB/qZ8S5J/1aZVacKu1Xix7ixH+56ylO7Nfr3uLELHAEESdWiSmYOHGKfAHFkS+zBhZHttDNII5kqwGLOFLNHmziSLTbsIrD3/DELA5vy5mAOCEBLt0nVSlxwrZdGnwSEeFLThz5xtc6mcbXFxLN5Z5U6zERyslyqIg4nnuzxe33dZLt90REqOKK01nJsw3WrwQnJo73JygTpVCLk/BHQLYzd+H+bqFC+ziERYsqymdYNSysxD9Oo9FoNBqNJq/8Azwcu2dhSMdKAAAAAElFTkSuQmCC",
+	["sun"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAADo0lEQVR42u1c65miMBQNUwHbASXQAZQwHYwdrB1IB2MH2AFMBdKBbAW4FRArOPNj0RFIQp4Qv839N0rgnOE+ch+RkCBBgjgSJKjQo0eF5DXh97hL/4IUUONZ6tcj0I8I9K6eEzkjgMmDHD3p7dVdRSAQCAQC/wcBZOvGUiTI7N3sMASjC1KFVXQUyKjCyhSXYdXBBvziOZ7KU9DdSiAdxfDCQkQdbwlkKSB5egdUVgEn8DGN5+rwc8CAQg0KilofPoDc1JigT0HxWSz4MHYeaNehwIHf2rgxdU+BA59aeQqHwsUqgYsz+AIK1t4Bw1VIw5eKxFFLcnKbfRw7DMU3kketbSOjlv0D39dRJ35uQqF2VgJwA3+gcHeqNWLhdQeccR5M84IzzvgtgoX4QaF1Bv8BLucrDxKU6MCTDqVwbe4Y/AK1+LFvFcsBMfFPsGOGIrb02PkG/wBVOfgDPkYJHSk9USVN+ABQ+gC/gIkU25suW6443p0iUuQ44sq5cret9vdM8DsO2SvTI8V+qY8gRj/FWx/UiJlunhZXnRykjZoETurwGQUXADhuQ6Cb6X4saTlTW+i2gJ/q+xOG70q3N+Cr0urpO9gT8+Lu0Neduzl2n3dacFJLcKZXv3P7zLJ4Rn3d+aLZEjQmFbRZGt+Y4iFMDy1IIGcmnBhZ0EUXT/TT1xVWGWj0y24bdWm9LJ43yY5xtLqXkMTzQ6ARLph/+3eqs2oqNPngj8QTxd+O6vnzKtkWRiyF5/EGoitJyRej/nYjXySNlr38u5KCLF5tjGfxf7g32Q7MfNiehK2EOoXZlkx6M9eZbEPsNbqnhpcQuSS9JInRNsRpQlNq1TC2SWg4KWUlTCkrryoTiJm+usMH8+oPZtmXblre4pZVOnwie5RVMnxya9a7UNhykNzLyokQP4q7ehROHvUJNBSpIMS3BgeVBk+9a3AMqiT3HoptHWcmGj9DghO3Dv2vZi1am1kcNFsYBqsW2qx7NGiGpmyLBg32C23WSmewzWSipLJ678r5PBJjICZxllvYp+BgGMzSYNubZA3hzKjSUIfmFpOzzWkhN8Ng6wy2OR0GW2OwzfEwmOvBNmbaSJ2NXVLr6SbDP1CFwVfFc2RMCrnd0WMV+BrnyOYU7G6U6SrD39TypvtBQWkYTP8c2dNgm72cQTRmJqV6UHYeeTgIR8IhoEAgEAgEXpnATfDXSxBoiHzXl/j5owAa58h8o6B4jixIkCDq8g3S8DtFND2NFAAAAABJRU5ErkJggg==",
+	["timer"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAAD20lEQVR42u1b3ZGjMAwWO/e+vgo2HSwdhA6WDsJVEDoIJVwHoYOwFYSrIKSC0AFOBbqHy24mIH5sSw43g94yQ2zJ1r8+Ayy00EJMhCs8YINj1OABV/Nkf5z5uxDzEwELNKGCa9+ATYAGlMHnOvjJs+8LPOco2A6OT4BS8GtPRqwnW4Ceqx8qJgihsZgl+wsttNBCC/2XFHAviGsIQQFABAAKQgCoQN+SBw1V8Geu5YzCDe4nFTR73KCaF+tbPKIpHXE7CzFwZ1CJdW9j91zmN3hBV7rg5jnMRwzM34WIfLO/R27a+zTaI0rQ0caojeMAhrCHcPCTMxRffj+oAPAeF2J4H/xnBb+CSlrzm8FaKxk+RVSYDNZtjag1YDLAfGa0UjYgRCJ3+r3Mm2svKsx6RZC4BQx7lMehRMdVTz+vwZDf85zIrVLnlVNy3RNzmkE6To0xy9oxaQ9H6bBV810zhlgLhjbSeGveK0ZFisBjzETOo9mNDDAkFOkk5ftjkPBzsUhMIM4/BSEiPNLFdcmMf7Zym6WRszIiLmRuptVwN8YfAmJnVoYrIqgpzivNmON5MeHO7VW2E321m/Mk0pELcettb1TaKxDr+ZPZVD3J7hSPA9UCySDpEjp3kNgN+SK+wRyGcCTGsFdIJ40AI8vJL1dQ6Tn93njeufuGJwNSftgnrS8yV6H28udAsypP1F++BxrOI9xMEKC9aeGLfXI35S6A9sg+S2JVuubm5ro/YIGlPFaik7L5Of1+Ad5av2vDlX87sd9W2FfzE2yRcxQxrONc93cXQLuVoe4CtIvslRMEzZT9sLV7ZW4DbZ03LWRSuDqY7mQnLuaFghpC+IQrXOETQjm//wP6e/XrVjAvjUWw715MzoRfJjuyOU12rVTowytfH86JDF86zVLM2pQ0JoWd8CRI26lQO6WNvSlQPD2VfzEAp669CbBmqca52yoO7Uxb68OKsc1n384s7d1o3okFqfgFpDzFbF+bT/jpAtHcdWtnEvp4EBXgwG53xOzK54CjXkZM5B00IkO+bhFayY1ZL+xj1osgZgJzUgTOQTfFfi7Z5vqnSFxQA6oBVnLHx4oEZWydV96S61bsMZ+cpCOiy8NCXBF+XwgJMAR4QtxZAZ52XgFPI5AzQwzuIN43kQX96cF3qptR0N9m8M2rNj19G9hlPgqe/IJdXm+wy9dv2OUYYDPxMTlQpFN1p9Ijmp0MbW6UA/gGf9dszFfewd/fXsldiNpfu8Ycgzv+MDQDmMMTlNTCrEtM5/aSJsF80nPcfAwi/txnWNHDM6x3ADg/PMMqYaGFFmKkvytMplsF/+rnAAAAAElFTkSuQmCC",
+	["user"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAACqklEQVR42u1abXXjMBDchMCZQc3gzKBmkDBoIJRBwqBhYDOoIaQMWgROEUSHYO5H+/ruFKnRyl5JaXb++T3J2rFXX7NDpFAoFIpbxkLipWhoRS0RVdQQ0SsZIhroZfFa/PdAjQ4jfBjRoS43+ApbhGCLqsTwNzghFCdsSgt/Cy62JaVOhxh0haRSZPgA0JUQ/g5TsMs/dd04Yo8WzceugBZ7HD0tN3mz/+QMfuMhe3SuSFVZ6TP4A0KFoaA0Qu0Ipr/Yq3f0yrM7O0Lpg/qd/4V9HgLjWe5XgTPHngtjjvCb+PXEsXY1+SfwkdXb/gePsXEsoxm01vPA6m23XqcnQLMSoPQE7qxnVgqRsZ5/Jb9SAtaLFmn7z59CmRBP4N3el5nX/v/xlp6AnfO840B1YU5kSKG1YGsRAvZCuGL1Xkktq7dzlHAcB8bgw9w45Rgy3xw4nE3jsEt6dzbhB6JSLjRdlIaR50LjuVI+f3ulfC5KmUAF45RwH5ytH5yyr8kqb3lllRFPuP+SVe7x5NWsc8oqP0DY8uoMYeiJyhB34yj0BdUJIhJpR1RagcMEB2+KK3B8plLYf9gVWWL62p17rw79oVnX11FmbWlNRBX9JqK3zzLr4QrKrAqFQqGgG/ILWb4gLnL6iC74grhI6yMK9gWx/StJDnksXxAX8j4ioW+fxkcU7QsqxUeUKHwpH9FE+ST3jTnEFxQh0KfyEfF8QREfR9pHxPUFRXwgSR9RnC9oFn2vzuoLYo8zCI0T6wuKSCQJH9GUYt4Ma12T2Rc0uXD4OL3I11LKghzbR7QU9gWJv30p7Avigu0jWqTy9Uj5iG7YL6QElIASUAJKIIjAn2+eJMAcb8n0ZR3ECcw9Hup/KvBGXoIVGA81BhgYDGkU5NTjKRQKheKa8ReddoJLiFWApAAAAABJRU5ErkJggg==",
+	["volume-2"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAADUUlEQVR42u1b0ZGbMBBdMvmPOggdhA5MCS7BHcQdmA7iVGBSQZwKTAfmKjCpQLiCl4/c+XxCQhIsIGb0vu4YjXgPrVar3TVRREREREREREQEC3DABQBwww+kayOf4YpnSBzWRV+ii+O66QNAtm76QLlu+sB13fQBDJxXYIMDNovTHyYAGW5vKzjhLnKhP0QAxIP+fwliTvotg4CtMsVlTvoZg4CiM+9pNvpEDAJ2mrl3M9FnESC6hgggn4U+hwAi5Jo3SBZ/ZKPPI4AIe81bxm9m5Db6XAKIUA40I2Q44OLi4XX0+QQQoR4QmOA7/NCqlskoQKDx9Eb4PZY+pwCi7qmCm+/G8aTPK0C7Ewp3tQPo+whAihMkJE5mB4lU406F6wHeh9r0UlcBHxyyNKcANLy2+oGVB/2i57u6CijdfLzmXNbf8pwcZ40ziv6EibMA9X175zWQNM52LdvOVYCrbev2wZP5flrsNvpL+V+QwTCThl6UR7sQViD1WIOjw4k8twCtj985u/g0BAGpe6zT8UT58nuAkoZ+Ko8y4wX+rI4MQAARFXRXnpgC5qaz5UMQkLRUOwowYtkVIKpMpmEZl4cioB07wdICVBP66ij0y8MM392fYp/JUDfqMw8ESbfxpnmXXgFauwmpm/av6SxWHryEKqAxjBOmPbG0ALF2E8otXsk0rgpCAAR9sxxYga9A0TEhk4DUegAGEU7XzjfoIEKJ7hXyaHSiwuqtArhSts5XyjqEPdD9/mViCu02lutNEGmVdlha5fPjr/t7hKcLnl69dEM1/UlqhhVQ3keF8furV/279v1eqcUDe2qx6kktSrfUol9y98qQ3G2fzCel0cndTFvcNEMypNdLtGhR9tD38FX+BQ4ZVIGDiAjn8RImLjE19vrsSENiLfLdBrQcIEOBykOGnKzMenWPldwL3a1NAtuBeJqkX8Lgq+QsrQYVEU+3RK8ElmaPrXtVlF0CS7uNnLDdxiZhBQ1P/RImaTkrp+ma00vgb/qriKbqW2wnartsPtSmBdGCEgbOW9taGmaTMDiMyLFn9TwDJdQUenY6qSnvlOrsqUIKrYe9XfEPIHokrOUnKIrneItdClobULyKaPruuREREREREREREVz4B9zju6y1QN8pAAAAAElFTkSuQmCC",
+	["volume-x"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAACa0lEQVR42u2b73HCMAzFBRMwQkbICIzQTcoGYYRuABskG5QNkk5ilwVev3AtEMt/CIelnt4n7gjk/RLHlmSFyGQymUwmk8n0FKHDCABwOKDRZr69mP9Tp8u+w1wH3fYBYKvbPnDUbR8YddsHoNy+aIAc+4IBGPteCQBrv1UBwNsnUgAQs68AIG5fPEDKvnAAbFP2BQCgRYfPnBk+ZL86AN5Rpjv7lQHQL7VfFQC75fYrAszX0Efsvx5g/fvpreh3X7RdTbKmyFPB1d9H/qfoDqBBDweHPl7FyDgua+KcMGCfOFUBAJqrs7rwkJwtn445/7PGbhHAcHMogzBb/Qc5APd3PYAQCF6cHIBZ+nOPEIy9vNQhNENgQkdBQ6gJ3INfBDbylfMQE6HlENKBuwgAFuGMc5H9egAsQpn9mgCZCHH7dQEyEFL2awMkENL26wMQoQ0+uMA5Zn9N/0UChhAfDzvxQyhZ6XaiH+KsQr0TO43m7TMkESqGEi47lHDiQonIPkMbi1TlhNOxQj2H0MhOaPxNQuNlJzQuWSoOIQjOiX0wqfdacmLPllV8zhDKSSpG9OjiC8rDObGPFrZ8OicuKS12TywtDvDwGJKlxdRx2BfVpkfuetUsr/siBCejvL5kg8OJ2uBgF5ZChNqbfLulA0nCNusepwIMJ2qbNbnRnYwQ5bcaJBA0NHtEEXS028SK4koanlgEPS1nXF1fUdNfGEFV22XGaiG98dWrBshB0ND8HUOYXtet8qBWE23pm/16ItLxBoFX/AJEBOFIpOktmim/q0gmwgYfFwiPo7rXsK4wNmQymUwmk8mkQz9L4pdh9wXOvwAAAABJRU5ErkJggg==",
+	["x"]="iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAQAAABIkb+zAAABjElEQVR42u2a0W3DMAwFg06iEbx5PFI3EOEFXn9aoEZlW7ZJ6rl4N4ByhwSBRPD1EkIIIYQQQgghxAEoeKOi4o3ywPNRUPFDxeR+/rQ63z8BM37jnLDSB4DZP2D9Aa4Jf/SB6h9gQExCQx/4jP4JuSU09UN+QqXxHdxO2NC3mP+hyTthU396xeCbkK7vmzBE3y9hmL5PwlD9+wnD9e8lUOhfT6DRv5ZApX8+gU7/XAKlfn8CrX5fArX+cQK9/n7CI/R3EhYsj9DfSXiKfncCr35XArf+YQK//nfC0tRfIvQ/NPPtu/OEzVQz9fkTDvW5E7r0eRM29NtXicp4E9q4svkPJFP1Y2aqqfr0CX33fdqE/ucKZcK51xZdwvnHIlXCtbcuTcL1pzpFwr1Jw/CE+4OSoQk+c55hCX5jqiEJvlO29AT/IWFqwmpfyG1QsplQcpY9zGXZw3KWPWrUmKqZkLAvZK4LT5a9L2TuK2eWuS9kIUt/Fr0vVDDDYJjD1i5DzxdCCCGEEEIIIf4XX83XPbAq1sRyAAAAAElFTkSuQmCC",
 }
 local lucideAssets={}
 local function lucideAsset(name)
@@ -65,6 +359,25 @@ local function lucideAsset(name)
  end)
  if ok and type(asset)=="string" then lucideAssets[name]=asset;return asset end
  return ""
+end
+
+local function styleSettings(root)
+	local panel=root.Settings;local types=panel.SettingTypes;local template=types.Template
+	types.Position=UDim2.fromOffset(24,86);types.Size=UDim2.new(1,-48,1,-108);types.ClipsDescendants=false
+	local grid=types.UIGridLayout
+	grid.CellSize=UDim2.new(.5,-9,0,58);grid.CellPadding=UDim2.fromOffset(10,10)
+	grid.HorizontalAlignment=Enum.HorizontalAlignment.Center
+	grid.FillDirectionMaxCells=2;grid.SortOrder=Enum.SortOrder.LayoutOrder
+	template.UICorner.CornerRadius=UDim.new(0,11)
+	template.Title.Position=UDim2.fromOffset(14,9);template.Title.Size=UDim2.new(1,-28,0,20)
+	template.Title.TextXAlignment=Enum.TextXAlignment.Left;template.Title.TextYAlignment=Enum.TextYAlignment.Center
+	template.Title.TextSize=13;template.Title.FontFace=Font.new(Font.fromEnum(Enum.Font.Roboto).Family,Enum.FontWeight.Medium)
+	template.Shadow.Visible=false;template.UIStroke.Thickness=1;template.UIStroke.Transparency=.4
+	local description=Instance.new("TextLabel")
+	description.Name="Description";description.BackgroundTransparency=1;description.Position=UDim2.fromOffset(14,31)
+	description.Size=UDim2.new(1,-28,0,15);description.TextSize=10;description.FontFace=Font.fromEnum(Enum.Font.Roboto)
+	description.TextColor3=Color3.fromRGB(210,210,218);description.TextXAlignment=Enum.TextXAlignment.Left
+	description.TextTruncate=Enum.TextTruncate.AtEnd;description.Text="";description.ZIndex=template.Title.ZIndex;description.Parent=template
 end
 
 -- CAPSULES BEGIN: layout, Lucide vectors, and bindings are authored here.
@@ -221,10 +534,12 @@ local function bindCapsules(context)
 	local music=view("music",220,82)
 	local timer=view("timer",208,68)
 	local watch=view("watch",208,94)
+	local duration=view("duration",300,166)
 	local sizes={}
 	for name,group in pairs(views) do sizes[name]=Vector2.new(group.Size.X.Offset,group.Size.Y.Offset) end
 	function controller:Open(name)
 		assert(name==nil or sizes[name],"Unknown capsule view")
+		if self.picker and name~="duration" then return end
 		if name==self.view then return end
 		local previous=self.view
 		self.view=name;self.transition=(self.transition or 0)+1
@@ -277,6 +592,7 @@ local function bindCapsules(context)
 	local menuPill=pill("ControlCenter","",24,white,function() controller:Open("center") end)
 	icon(menuPill,"Chevron","chevron-down",6,6,12,white)
 	local musicPill=pill("Music","",62,white,function() controller:Open("music") end)
+	musicPill.Visible=false
 	local timerPill=pill("Timer","    05:00",50,amber,function() controller:Open("timer") end)
 	local watchPill=pill("Stopwatch","    00:00",50,green,function() controller:Open("watch") end)
 	for _,spec in ipairs({{timerPill,amber},{watchPill,green}}) do icon(spec[1],"ClockIcon","timer",5,6,12,spec[2]) end
@@ -469,36 +785,113 @@ local function bindCapsules(context)
 	end)
 	local speaker=icon(center,"VolumeIcon","volume-2",163,77,12,gray)
 	local mute=icon(center,"VolumeMute","volume-x",163,77,12,gray)
-	local timerEntry,timerSummary,timerCancel
-	local function editTimer()
-		if clock.timer then controller:Open("timer");return end
-		controller.picker=true;timerSummary.Visible=false;timerEntry.Visible=true;timerCancel.Visible=true
-		timerEntry.Text="05:00";timerEntry:CaptureFocus()
+	local timerSummary,timerCancel
+	controller.timerDraft=300;controller.timerUnit=60;controller.rulerTarget=5;controller.rulerDisplay=5
+	local timerEntry=make("TextBox",duration,{Name="Duration",Text="05:00",ClearTextOnFocus=false,
+		Position=UDim2.fromOffset(11,32),Size=UDim2.fromOffset(278,30),BackgroundTransparency=1,
+		TextColor3=amber,TextSize=24,FontFace=medium,TextXAlignment=Enum.TextXAlignment.Center})
+	label(duration,"Title","Set timer",12,9,135,16,11,white)
+	local minutesButton,secondsButton
+	local function syncDraft()
+		if input:GetFocusedTextBox()~=timerEntry then timerEntry.Text=Clock.Format(controller.timerDraft,false,true) end
+		controller.rulerTarget=controller.timerUnit==60 and math.floor(controller.timerDraft/60) or controller.timerDraft%60
 	end
-	local timerTile=button(center,"TimerTile","",11,102,136,33,Color3.fromRGB(28,28,29),editTimer)
-	label(timerTile,"Label","Timer",10,3,90,12,9,gray)
-	 timerSummary=label(timerTile,"Value","Set",10,15,90,15,12,white);timerSummary.FontFace=medium
-	 timerEntry=make("TextBox",timerTile,{Name="Duration",Text="05:00",PlaceholderText="mm:ss",ClearTextOnFocus=false,
-		Position=UDim2.fromOffset(10,14),Size=UDim2.fromOffset(90,17),BackgroundTransparency=1,
-		TextColor3=amber,TextSize=12,FontFace=medium,TextXAlignment=Enum.TextXAlignment.Left,Visible=false})
-	local function cancelTimerEntry()
-		controller.picker=false;timerEntry.Visible=false;timerSummary.Visible=true;timerCancel.Visible=clock.timer~=nil
+	function controller:SetTimerDraft(seconds)
+		if type(seconds)~="number" or seconds~=seconds then return end
+		self.timerDraft=math.clamp(math.floor(seconds+.5),1,86400);syncDraft()
 	end
-	 timerCancel=button(timerTile,"Cancel","×",110,7,20,20,Color3.fromRGB(40,40,41),function()
-		if clock.timer then clock:CancelTimer() end;cancelTimerEntry()
-	end)
-	timerCancel.Text="";icon(timerCancel,"Close","x",5,5,10,white)
-	timerCancel.Visible=false
+	local function selectUnit(unit)
+		controller.timerUnit=unit;syncDraft();controller.rulerDisplay=controller.rulerTarget
+		for _,spec in {{minutesButton,60},{secondsButton,1}} do
+			local selected=unit==spec[2]
+			tween(spec[1],.16,{BackgroundColor3=selected and white or Color3.fromRGB(32,32,33),TextColor3=selected and Color3.fromRGB(20,20,20) or gray})
+		end
+	end
+	minutesButton=button(duration,"Minutes","Min",196,8,42,19,white,function() selectUnit(60) end)
+	secondsButton=button(duration,"Seconds","Sec",244,8,42,19,Color3.fromRGB(32,32,33),function() selectUnit(1) end)
+	minutesButton.TextColor3=Color3.fromRGB(20,20,20);minutesButton.TextSize=9;secondsButton.TextSize=9
+	local pickerRuler=frame(duration,"Ruler",11,76,278,35);pickerRuler.ClipsDescendants=true
+	local rulerInput=button(pickerRuler,"Input","",0,0,278,35,nil,function() end);rulerInput:SetAttribute("NoHover",true)
+	rulerInput.ZIndex=295
+	local pickerTicks={}
+	for i=1,61 do
+		local tick=frame(pickerRuler,"Tick"..i,0,0,1,9,amber)
+		local caption=label(pickerRuler,"Label"..i,"",0,16,26,12,8,gray);caption.TextXAlignment=Enum.TextXAlignment.Center
+		pickerTicks[i]={tick=tick,label=caption}
+	end
+	icon(duration,"Selection","chevron-down",145,64,10,amber)
+	label(duration,"Hint","Drag the ruler or scroll to adjust",11,109,278,12,8,gray).TextXAlignment=Enum.TextXAlignment.Center
+	function controller:EndTimerEntry(start)
+		self.picker=false;self.dragging=false;self.pickerDrag=nil
+		if input:GetFocusedTextBox()==timerEntry then timerEntry:ReleaseFocus() end
+		if start then clock:StartTimer(self.timerDraft) end
+		self.hoverLeftAt=nil;self:Open("center")
+	end
+	function controller:BeginTimerEntry()
+		self.picker=true;self.hoverLeftAt=nil
+		self:SetTimerDraft(clock.timer and clock:Remaining() or self.timerDraft)
+		self:Open("duration")
+	end
+	button(duration,"Cancel","Cancel",11,128,136,27,Color3.fromRGB(32,32,33),function() controller:EndTimerEntry(false) end).TextSize=10
+	local startTimer=button(duration,"Start","Start timer",153,128,136,27,amber,function() controller:EndTimerEntry(true) end)
+	startTimer.TextSize=10;startTimer.TextColor3=Color3.fromRGB(25,20,10)
 	connect(timerEntry.FocusLost,function(enter)
 		if not controller.picker then return end
-		if not enter then cancelTimerEntry();return end
-		local minutes,seconds=timerEntry.Text:match("^(%d+):(%d%d?)$")
-		local duration=minutes and tonumber(minutes)*60+tonumber(seconds) or tonumber(timerEntry.Text)
-		if not duration or duration~=duration or duration<1 or duration>86400 or (seconds and tonumber(seconds)>59) then
-			context.Notify("Timer","Enter minutes:seconds, from 00:01 to 1440:00.");cancelTimerEntry();return
+		local hours,minutes,seconds=timerEntry.Text:match("^%s*(%d+):(%d%d?):(%d%d?)%s*$")
+		local total
+		if hours then
+			if tonumber(minutes)<60 and tonumber(seconds)<60 then total=tonumber(hours)*3600+tonumber(minutes)*60+tonumber(seconds) end
+		else
+			minutes,seconds=timerEntry.Text:match("^%s*(%d+):(%d%d?)%s*$")
+			total=minutes and tonumber(seconds)<60 and tonumber(minutes)*60+tonumber(seconds) or (not minutes and tonumber(timerEntry.Text) or nil)
 		end
-		clock:StartTimer(duration);cancelTimerEntry()
+		if total and total>=1 and total<=86400 then
+			controller:SetTimerDraft(total)
+			if enter then controller:EndTimerEntry(true) end
+		else
+			timerEntry.Text=Clock.Format(controller.timerDraft,false,true)
+			context.Notify("Timer","Enter minutes:seconds, from 00:01 to 1440:00.")
+		end
 	end)
+	local function changeRuler(position)
+		local drag=controller.pickerDrag;if not drag then return end
+		local value=drag.value-(position.X-drag.x)/(7*math.max(.01,scale.Scale))
+		value=math.clamp(value,0,controller.timerUnit==60 and 1440 or 59)
+		local rounded=math.floor(value+.5)
+		local total=controller.timerUnit==60 and rounded*60+drag.remainder or drag.minutes*60+rounded
+		controller:SetTimerDraft(total);controller.rulerTarget=value
+	end
+	connect(rulerInput.InputBegan,function(event)
+		if event.UserInputType~=Enum.UserInputType.MouseButton1 and event.UserInputType~=Enum.UserInputType.Touch then return end
+		local position=event.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation()
+		controller.pickerDrag={input=event,x=position.X,value=controller.rulerTarget,remainder=controller.timerDraft%60,minutes=math.floor(controller.timerDraft/60)}
+		controller.dragging=true
+	end)
+	connect(input.InputChanged,function(event)
+		local drag=controller.pickerDrag
+		if drag and (event==drag.input or event.UserInputType==Enum.UserInputType.MouseMovement) then
+			changeRuler(event.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation())
+		end
+	end)
+	connect(input.InputEnded,function(event)
+		local drag=controller.pickerDrag
+		if drag and (event==drag.input or event.UserInputType==Enum.UserInputType.MouseButton1) then
+			changeRuler(event.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation())
+			controller.pickerDrag=nil;controller.dragging=false;syncDraft()
+		end
+	end)
+	connect(rulerInput.InputChanged,function(event)
+		if event.UserInputType==Enum.UserInputType.MouseWheel then controller:SetTimerDraft(controller.timerDraft+event.Position.Z*controller.timerUnit) end
+	end)
+	connect(input.WindowFocusReleased,function() controller.pickerDrag=nil;controller.dragging=false;syncDraft() end)
+	local timerTile=button(center,"TimerTile","",11,102,136,33,Color3.fromRGB(28,28,29),function()
+		if clock.timer then controller:Open("timer") else controller:BeginTimerEntry() end
+	end)
+	label(timerTile,"Label","Timer",10,3,90,12,9,gray)
+	timerSummary=label(timerTile,"Value","Set",10,15,90,15,12,white);timerSummary.FontFace=medium
+	timerCancel=button(timerTile,"Cancel","",110,7,20,20,Color3.fromRGB(40,40,41),function() clock:CancelTimer() end)
+	icon(timerCancel,"Close","x",5,5,10,white);timerCancel.Visible=false
+
 	local watchTile=button(center,"WatchTile","",153,102,136,33,Color3.fromRGB(28,28,29),function()
 		if not clock.watch.active then clock:ToggleWatch() else controller:Open("watch") end
 	end)
@@ -579,7 +972,8 @@ local function bindCapsules(context)
 	end
 	connect(surface.MouseEnter,function() controller.hoverSession=true;controller.hoverLeftAt=nil end)
 	connect(input.InputBegan,function(event)
-		if controller.view and (event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch)
+		if controller.picker and event.KeyCode==Enum.KeyCode.Escape then controller:EndTimerEntry(false);return end
+		if controller.view and not controller.picker and not input:GetFocusedTextBox() and (event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch)
 			and not inside(surface,event.Position) and not inside(compact,event.Position) then controller:Open(nil) end
 	end)
 	local renderAccumulator=0
@@ -590,7 +984,7 @@ local function bindCapsules(context)
 			if controller.view~="timer" then controller:Open("timer") end
 		end
 		local now=os.clock()
-		if controller.hoverSession and controller.view and not controller.picker and not controller.dragging then
+		if controller.hoverSession and controller.view and not controller.picker and not controller.dragging and not input:GetFocusedTextBox() then
 			local pointer=input:GetMouseLocation()
 			local inset=root.IgnoreGuiInset and Vector2.zero or game:GetService("GuiService"):GetGuiInset()
 			pointer-=inset
@@ -634,11 +1028,28 @@ local function bindCapsules(context)
 		end
 		local remaining,elapsed=clock:Remaining(),clock:Elapsed()
 		set(timerPill,"Visible",clock.timer~=nil);set(watchPill,"Visible",clock.watch.active)
-		set(compactTitle,"Text",controller.media.connected and controller.media.title or "Spotify")
+		local musicActive=controller.media.connected and controller.media.playing and (controller.media.duration or 0)>0
+		set(musicPill,"Visible",musicActive==true)
+		set(compactTitle,"Text",musicActive and controller.media.title or "")
+		if controller.view=="music" and not musicActive then controller:Open(nil) end
 		local pillWidth=math.clamp(compactTitle.TextBounds.X/math.max(.01,scale.Scale)+33,60,110)
 		set(musicPill,"Size",UDim2.fromOffset(pillWidth,24));compactTitle.Size=UDim2.fromOffset(pillWidth-30,24)
 		set(timerPill,"Text","    "..Clock.Format(remaining,false,true));set(watchPill,"Text","    "..Clock.Format(elapsed))
-		if controller.view=="timer" then
+		if controller.view=="duration" then
+			controller.rulerDisplay+=(controller.rulerTarget-controller.rulerDisplay)*(1-math.exp(-22*renderDt))
+			local base=math.floor(controller.rulerDisplay)
+			for index,row in ipairs(pickerTicks) do
+				local value=base+index-31
+				local x=139+(value-controller.rulerDisplay)*7
+				local valid=value>=0 and value<=(controller.timerUnit==60 and 1440 or 59)
+				local fade=math.clamp(math.abs(x-139)/139,0,1)^2
+				row.tick.Visible=valid;row.label.Visible=valid and value%5==0
+				row.tick.Position=UDim2.fromOffset(x,value%5==0 and 0 or 4)
+				row.tick.Size=UDim2.fromOffset(1,value%5==0 and 13 or 7)
+				row.tick.BackgroundTransparency=.15+.8*fade
+				row.label.Position=UDim2.fromOffset(x-13,17);row.label.Text=tostring(value);row.label.TextTransparency=fade
+			end
+		elseif controller.view=="timer" then
 			set(timerTime,"Text",Clock.Format(remaining,false,true))
 			renderTimerPause(clock.timer~=nil and clock.timer.started~=nil)
 			set(timerTime,"TextTransparency",clock.timer and not clock.timer.started and .25 or 0)
@@ -714,8 +1125,9 @@ end
 
 -- CAPSULES END
 
+local bindings={Capsules=bindCapsules,Clock=Clock,Notifications=buildNotifications}
 return function(options)
-	if options and options.BindingsOnly then return {Capsules=bindCapsules} end
+	if options and options.BindingsOnly then return bindings end
 	local objects = table.create(#nodes)
 	local ok, result = pcall(function()
 		for index, node in ipairs(nodes) do
@@ -741,6 +1153,8 @@ return function(options)
 		for index = 2, #nodes do
 			objects[index].Parent = objects[nodes[index][1]]
 		end
+		styleSettings(objects[1])
+		objects[1]:SetAttribute("AltairUIRevision",4)
 		bindCapsules({Root=objects[1],BuildOnly=true})
 		return objects[1]
 	end)
@@ -748,5 +1162,5 @@ return function(options)
 		for _, object in ipairs(objects) do object:Destroy() end
 		error("Altair UI | Construction failed: " .. tostring(result), 2)
 	end
-	return result, {Capsules=bindCapsules}
+	return result, bindings
 end

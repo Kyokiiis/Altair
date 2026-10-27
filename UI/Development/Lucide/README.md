@@ -2,9 +2,10 @@
 
 The SVG files are the official Lucide icons from
 https://github.com/lucide-icons/lucide/tree/main/icons, retrieved 2026-10-27.
-Their path data is unchanged. See `../LUCIDE-LICENSE.txt`.
+Their path data is unchanged. See `LICENSE.txt`.
 
-The matching transparent PNG files are 96px rasterizations made with resvg.
+The matching transparent PNG files are 96px rasterizations made with resvg,
+then losslessly optimized as grayscale plus alpha images.
 Only `currentColor` is resolved to white so Roblox can tint each ImageLabel.
 Build.lua embeds these PNG bytes and registers them through the executor's
 local asset API. No geometry is approximated using Roblox Frames or text.

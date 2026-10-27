@@ -1,4 +1,4 @@
-local Clock=require('./Clock')
+return function(Clock)
 local now=0
 local clock=Clock.new(function() return now end)
 clock:StartTimer(10)
@@ -18,3 +18,5 @@ clock:ResetWatch();assert(clock:Elapsed()==0 and not clock.watch.active)
 assert(Clock.Format(3661)=='1:01:01' and Clock.Format(9.01,false,true)=='00:10')
 assert(Clock.Format(9.999999999,true)=='00:09.99')
 print('Clock: countdown, pause/resume, expiry, laps, bounds and formatting passed')
+
+end

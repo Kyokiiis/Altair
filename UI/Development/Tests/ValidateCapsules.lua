@@ -1,6 +1,6 @@
 -- Studio client tests use simulated media and never authorize an account.
 return function()
-	local root,bindings=require(script.Parent.Build)()
+	local root,bindings=require(script.Parent.Parent.Parent.Build)()
 	root.Name="AltairCapsuleValidation";root.Enabled=true
 	root.Parent=game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
 	for _,child in root:GetChildren() do
@@ -14,8 +14,8 @@ return function()
 		local linked=false
 		local media={connected=false,title='Simulated test track',artist='Validation only',duration=100,progress=5,playing=true,volume=.8}
 		local commands={}
-		notifications=require(script.Parent.Notifications)({Root=root,RequireBuiltUI=true})
-		controller=bindings.Capsules({Root=root,RequireBuiltUI=true,Clock=require(script.Parent.Clock),
+		notifications=bindings.Notifications({Root=root,RequireBuiltUI=true})
+		controller=bindings.Capsules({Root=root,RequireBuiltUI=true,Clock=bindings.Clock,
 			GetSetting=function(name,fallback) local value=settings[name];if value==nil then return fallback end;return value end,
 			Notify=function(...) return notifications:Notify(...) end,Notifications=notifications,
 			MediaAdapter=function(_,path,body)
@@ -41,6 +41,15 @@ return function()
 		expect(linked and controller.media.connected,'Link did not refresh playback')
 		controller:Open('music');task.wait(.45)
 		controller:Open('music');expect(controller.view=='music','Repeated hover unexpectedly collapsed the panel')
+		controller:BeginTimerEntry();controller:SetTimerDraft(90)
+		controller:Open(nil);expect(controller.picker and controller.view=='duration','Entry collapsed while editing')
+		controller:EndTimerEntry(true);expect(controller.clock.timer.duration==90,'Picker did not start the draft duration')
+		controller.clock:CancelTimer()
+		media.playing=false;controller:SetMedia(media);task.wait(.15)
+		expect(not root.TopCapsules.Compact.Pills.Music.Visible,'Idle Spotify pill remained visible')
+		media.playing=true;controller:SetMedia(media);task.wait(.15)
+		expect(root.TopCapsules.Compact.Pills.Music.Visible,'Playing Spotify pill did not return')
+		controller:Open('music');task.wait(.45)
 		local surface=root.TopCapsules.Surface
 		expect(surface.music.Title.Text=='Simulated test track','Music did not render')
 		expect(surface.BackgroundTransparency<.1 and math.abs(surface.CapsuleOutline.Transparency-.85)<.00001,'Expanded finish changed')

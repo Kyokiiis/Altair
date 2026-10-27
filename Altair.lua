@@ -986,7 +986,7 @@ end)()
 local guiParent = getHiddenUI and getHiddenUI() or (useStudio and localPlayer:WaitForChild("PlayerGui")) or coreGui
 
 function altairValues.loadUIModule(name)
-	assert(({Build=true, Notifications=true, Clock=true})[name], "Unknown Altair UI module")
+	assert(({Build=true})[name], "Unknown Altair UI module")
 	if useStudio then
 		local container = script and script.Parent
 		local folder = (script and script:FindFirstChild("UI")) or (container and container:FindFirstChild("UI"))
@@ -1013,7 +1013,7 @@ local function loadInterface()
 	local build=altairValues.loadUIModule("Build")
 	assert(type(build)=="function", "UI/Build.lua must return a UI factory function")
 	local root, bindings = build()
-	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function") then
+	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=4) then
 		if typeof(root)=="Instance" then root:Destroy() end
 		altairValues.remoteInterface=true
 		root,bindings=altairValues.loadUIModule("Build")()
@@ -1548,7 +1548,7 @@ local function blurSignature(value)
 end
 
 notificationContainer.Visible = false
-altairValues.notificationController = altairValues.loadUIModule("Notifications")({Root=UI,RequireBuiltUI=true})
+altairValues.notificationController = altairValues.interfaceBindings.Notifications({Root=UI,RequireBuiltUI=true})
 local function queueNotification(Title, Description, Image, options)
 	return altairValues.notificationController:Notify(Title, Description, Image, options)
 end
@@ -9371,7 +9371,7 @@ local function openSettings()
 	settingsPanel.Title.Position = UDim2.new(0.045, 0, 0.057, 0)
 
 	settingsPanel.Title.Text = "Settings"
-	settingsPanel.Subtitle.Text = "Adjust your preferences, set new keybinds, test out new features and more."
+	settingsPanel.Subtitle.Text = "Choose a category to customize Altair."
 
 	tweenService:Create(settingsPanel, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 613, 0, 384) }):Play()
 	tweenService:Create(settingsPanel, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
@@ -9388,9 +9388,10 @@ local function openSettings()
 			tweenService:Create(settingType.Shadow.UIGradient, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Rotation = gradientRotation }):Play()
 			tweenService:Create(settingType.UIStroke.UIGradient, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Rotation = gradientRotation }):Play()
 			tweenService:Create(settingType, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-			tweenService:Create(settingType.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0.7 }):Play()
-			tweenService:Create(settingType.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Transparency = 0 }):Play()
+			tweenService:Create(settingType.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
+			tweenService:Create(settingType.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Transparency = 0.4 }):Play()
 			tweenService:Create(settingType.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.2 }):Play()
+			tweenService:Create(settingType.Description, TweenInfo.new(0.35, Enum.EasingStyle.Quint), { TextTransparency = 0.1 }):Play()
 
 			task.wait(0.02)
 		end
@@ -9418,6 +9419,7 @@ closeSettings = function()
 			tweenService:Create(settingType.Shadow, TweenInfo.new(0.05, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
 			tweenService:Create(settingType.UIStroke, TweenInfo.new(0.05, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
 			tweenService:Create(settingType.Title, TweenInfo.new(0.05, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
+			tweenService:Create(settingType.Description, TweenInfo.new(0.05, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
 		end
 	end
 
@@ -9598,7 +9600,7 @@ local function assembleSettings()
 		tweenService:Create(settingsPanel.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = UDim2.new(0.045, 0, 0.057, 0) }):Play()
 		tweenService:Create(settingsPanel.UIGradient, TweenInfo.new(1, Enum.EasingStyle.Exponential), { Offset = Vector2.new(0, 1.3) }):Play()
 		settingsPanel.Title.Text = "Settings"
-		settingsPanel.Subtitle.Text = "Adjust your preferences, set new keybinds, test out new features and more"
+		settingsPanel.Subtitle.Text = "Choose a category to customize Altair."
 		settingsPanel.SettingTypes.Visible = true
 		settingsPanel.SettingLists.Visible = false
 	end)
@@ -9607,9 +9609,14 @@ local function assembleSettings()
 		if category.hidden then continue end
 		local newCategory = settingsPanel.SettingTypes.Template:Clone()
 		newCategory.Name = category.name
-		newCategory.Title.Text = string.upper(category.name)
+		newCategory.Title.Text = category.name
+		local cardDescriptions={General="Appearance and everyday preferences",Keybinds="Shortcuts for actions and controls",Performance="Performance and rendering options",Detections="Protection and detection options",Logging="Activity and notification logs",Developer="Diagnostics and development tools",["Capsules & Spotify"]="Music, timers, and top capsules"}
+		newCategory.Description.Text = cardDescriptions[category.name] or category.description
+		newCategory.LayoutOrder = #settingsPanel.SettingTypes:GetChildren()
 		newCategory.Parent = settingsPanel.SettingTypes
-		newCategory.UIGradient.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0.0392157, 0.0392157, 0.0392157)), ColorSequenceKeypoint.new(1, category.color) })
+		newCategory.BackgroundColor3 = Color3.new(1,1,1)
+		newCategory.UIGradient.Color = ColorSequence.new(Color3.fromRGB(20,20,23), Color3.fromRGB(20,20,23):Lerp(category.color,.55))
+		newCategory.UIGradient.Offset=Vector2.new(0,.1)
 
 		newCategory.Visible = true
 
@@ -9620,7 +9627,7 @@ local function assembleSettings()
 		val = math.clamp(val + 0.2, 0, 1)
 
 		local newColor = Color3.fromHSV(hue, sat, val)
-		newCategory.UIStroke.UIGradient.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0.117647, 0.117647, 0.117647)), ColorSequenceKeypoint.new(1, newColor) })
+		newCategory.UIStroke.UIGradient.Color = ColorSequence.new(Color3.fromRGB(135,135,145),newColor)
 		newCategory.Shadow.UIGradient.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0.117647, 0.117647, 0.117647)), ColorSequenceKeypoint.new(1, newColor) })
 
 		local newList = settingsPanel.SettingLists.Template:Clone()
@@ -9637,7 +9644,7 @@ local function assembleSettings()
 
 		newCategory.Interact.MouseButton1Click:Connect(function()
 			if settingsPanel.SettingLists:FindFirstChild(category.name) then
-				settingsPanel.UIGradient.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0.0470588, 0.0470588, 0.0470588)), ColorSequenceKeypoint.new(1, category.color) })
+				settingsPanel.UIGradient.Color = ColorSequence.new(Color3.fromRGB(17,17,19),Color3.fromRGB(17,17,19):Lerp(category.color,.07))
 				settingsPanel.SettingTypes.Visible = false
 				settingsPanel.SettingLists.Visible = true
 				settingsPanel.SettingLists.UIPageLayout:JumpTo(settingsPanel.SettingLists[category.name])
@@ -9658,14 +9665,14 @@ local function assembleSettings()
 
 		newCategory.MouseEnter:Connect(function()
 			tweenService:Create(newCategory.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-			tweenService:Create(newCategory.UIGradient, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.4) }):Play()
+			tweenService:Create(newCategory.UIGradient, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0) }):Play()
 			tweenService:Create(newCategory.UIStroke.UIGradient, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.2) }):Play()
 			tweenService:Create(newCategory.Shadow.UIGradient, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.2) }):Play()
 		end)
 
 		newCategory.MouseLeave:Connect(function()
 			tweenService:Create(newCategory.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.2 }):Play()
-			tweenService:Create(newCategory.UIGradient, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.65) }):Play()
+			tweenService:Create(newCategory.UIGradient, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.1) }):Play()
 			tweenService:Create(newCategory.UIStroke.UIGradient, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.4) }):Play()
 			tweenService:Create(newCategory.Shadow.UIGradient, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.4) }):Play()
 		end)
@@ -10106,7 +10113,7 @@ altairAPI.Destroy = altairAPI.Unload
 altairAPI.Toast = Toast
 altairAPI.QueueNotification = queueNotification
 altairAPI.Notify = queueNotification
-altairValues.capsules = altairValues.interfaceBindings.Capsules({Root=UI, RequireBuiltUI=true, Clock=altairValues.loadUIModule("Clock"),
+altairValues.capsules = altairValues.interfaceBindings.Capsules({Root=UI, RequireBuiltUI=true, Clock=altairValues.interfaceBindings.Clock,
 	GetSetting=settingValue, Request=originalRequest, Notify=queueNotification, Alive=checkAltair,
 	GetRainbowColor=function() return altairValues.rainbowColor end,
 	Notifications=altairValues.notificationController})
@@ -10819,7 +10826,7 @@ track(userInputService.InputBegan:Connect(function(input, processed)
 		return
 	end
 
-	if processed then
+	if processed or userInputService:GetFocusedTextBox() then
 		return
 	end
 
