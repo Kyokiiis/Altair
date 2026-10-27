@@ -9504,9 +9504,10 @@ function altairValues.settingsStore:write(encoded)
 	end
 	return false
 end
-local function saveSettings()
+local function saveSettings(notifyUser)
 	if not writefile then
-		return
+		if notifyUser then queueNotification("Settings updated","",nil,{Key="settings-update",Duration=3}) end
+		return false
 	end
 
 
@@ -9525,7 +9526,9 @@ local function saveSettings()
 		return
 	end
 
-	altairValues.settingsStore:write(encoded)
+	local saved=altairValues.settingsStore:write(encoded)
+	if saved and notifyUser then queueNotification("Settings saved","",nil,{Key="settings-update",Duration=3}) end
+	return saved
 end
 
 local function assembleSettings()
@@ -9558,7 +9561,7 @@ local function assembleSettings()
 		end
 	end
 
-	saveSettings() -- write back, picking up any settings added since the file was created
+	saveSettings() -- write back quietly, picking up settings added since the file was created
 
 	local function licenseLocked(tier)
 		return (tier == "Pro" and not Pro) or (tier == "Essential" and not (Pro or Essential))
@@ -9719,14 +9722,14 @@ local function assembleSettings()
 						local previousValue = setting.current
 						setting.current = not setting.current
 						altairValues.activity:record("Setting changed", setting.name .. (setting.current and " · Enabled" or " · Disabled"))
-						saveSettings()
+						saveSettings(true)
 						if type(setting.onChanged) == "function" then
 							task.spawn(setting.onChanged, setting.current, previousValue)
 						end
 
 						local enabled = setting.current
 						local indicator = newSwitch.Switch.Indicator
-						Toast(setting.name .. (enabled and " has been enabled." or " has been disabled."))
+						-- saveSettings emits the compact notification confirmation.
 						tweenService:Create(indicator, TweenInfo.new(enabled and 0.5 or 0.45, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
 							Position = UDim2.new(1, enabled and -20 or -40, 0.5, 0),
 						}):Play()
@@ -9757,9 +9760,9 @@ local function assembleSettings()
 							box.Text = truncateForDisplay(setting.current)
 							return
 						end
-						if box.Text ~= "" then
+						if box.Text ~= "" and box.Text~=tostring(setting.current) then
 							setting.current = box.Text
-							saveSettings()
+							saveSettings(true)
 						end
 						box.Text = truncateForDisplay(setting.current)
 					end)
@@ -9779,11 +9782,11 @@ local function assembleSettings()
 							local nextValue = setting.values and math.clamp(inputValue, setting.values[1], setting.values[2]) or inputValue
 							if nextValue ~= oldValue then
 								setting.current = nextValue
-								saveSettings()
+								saveSettings(true)
 								if type(setting.onChanged) == "function" then
 									task.spawn(setting.onChanged, nextValue, oldValue)
 								end
-								Toast(setting.name .. " set to " .. tostring(nextValue), category.color)
+								-- Confirmation uses the notification stack, not a SmartBar toast.
 							end
 						end
 						box.Text = truncateForDisplay(setting.current)
@@ -10815,7 +10818,7 @@ track(userInputService.InputBegan:Connect(function(input, processed)
 			end
 			checkingForKey = nil
 			capture.object.InputFrame.InputBox:ReleaseFocus()
-			saveSettings()
+			saveSettings(true)
 		end
 
 		return
@@ -11273,6 +11276,13 @@ local function runtime()
 	local function teardown()
 		if altairValues.runtimeCleaned then return end
 		altairValues.runtimeCleaned = true
+		-- Stop character forces before disconnecting their update callbacks.
+		for _, index in {2,6} do
+			local action=altairValues.actions[index]
+			if action.enabled then action.enabled=false;pcall(action.callback,false) end
+		end
+		for _, mover in ipairs(movers) do pcall(mover.Destroy,mover) end
+		table.clear(movers)
 		developerTools:Stop("altair-teardown")
 		homeController.destroy()
 		if espContainer then
@@ -11377,21 +11387,13 @@ local function runtime()
 		noclipWasActive = noclipActive
 	end))
 
-	track(runService.Heartbeat:Connect(function(dt)
+	track(runService.Heartbeat:Connect(function()
 		if not checkAltair() then
 			return
 		end
 
 		local flightActive = altairValues.actions[2].enabled
 		local flingActive = altairValues.actions[6].enabled
-		if not flightActive and not flingActive then
-			for _, mover in ipairs(movers) do
-				if mover and mover.Parent then
-					mover.Parent = nil
-				end
-			end
-			return
-		end
 
 		local character = localPlayer.Character
 		local primaryPart = character and character.PrimaryPart
@@ -11400,6 +11402,11 @@ local function runtime()
 		end
 
 		local bodyVelocity, bodyGyro, bodyAngularVelocity = unpack(movers)
+		-- Sirius recreates cached forces when a respawn destroys the old instances.
+		if bodyVelocity and not pcall(function() bodyVelocity.Parent=bodyVelocity.Parent end) then
+			table.clear(movers)
+			bodyVelocity,bodyGyro,bodyAngularVelocity=nil,nil,nil
+		end
 		if not bodyVelocity or not bodyGyro or not bodyAngularVelocity then
 			bodyVelocity = Instance.new("BodyVelocity")
 			bodyVelocity.MaxForce = Vector3.one * 9e9
@@ -11446,13 +11453,12 @@ local function runtime()
 				velocity -= Vector3.yAxis
 			end
 
-			local alpha = 1 - math.exp(-12 * dt)
 			local targetVelocity = velocity * altairValues.sliders[3].value * 45
-			bodyVelocity.Velocity = bodyVelocity.Velocity:Lerp(targetVelocity, alpha)
+			tweenService:Create(bodyVelocity,TweenInfo.new(.5),{Velocity=targetVelocity}):Play()
 			bodyVelocity.Parent = primaryPart
 
 			if not flingActive then
-				bodyGyro.CFrame = bodyGyro.CFrame:Lerp(rotation, alpha)
+				tweenService:Create(bodyGyro,TweenInfo.new(.5),{CFrame=rotation}):Play()
 				bodyGyro.Parent = primaryPart
 			else
 				bodyGyro.Parent = nil
@@ -11750,6 +11756,9 @@ local function runtime()
 	end
 end
 
+-- Physics must start independently of optional developer checks and welcome UI.
+task.spawn(runtime);
+
 (function()
 	if developerTools:IsAvailable() and type(isfile) == "function" and type(readfile) == "function" then
 		local okExists, exists = pcall(isfile, settingsPath())
@@ -11770,5 +11779,3 @@ if not altairValues.continuation.quiet then
 	Toast("Welcome back. Nice to see you, "..lowerDisplayName)
 end
 --[[]]
-
-runtime()

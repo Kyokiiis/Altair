@@ -130,29 +130,81 @@ return function(context)
 	local function dimensions(title, description, icon, width, measured)
 		local left = icon and 58 or 20
 		local available = width - left - 20
-		local titleHeight = math.max(17, textService:GetTextSize(title, 14, Enum.Font.GothamMedium, Vector2.new(available, 1000)).Y)
-		local descriptionHeight = description ~= "" and math.max(16,
-			textService:GetTextSize(description, 13, Enum.Font.Gotham, Vector2.new(available, 1000)).Y) or 0
-		if measured and measured.width==width then titleHeight,descriptionHeight=measured.title,measured.body end
+		local titleHeight,descriptionHeight
+		if measured and measured.width==width then titleHeight,descriptionHeight=measured.title,measured.body
+		else
+			titleHeight=math.max(17,textService:GetTextSize(title,14,Enum.Font.GothamMedium,Vector2.new(available,1000)).Y)
+			descriptionHeight=description~="" and math.max(16,textService:GetTextSize(description,13,Enum.Font.Gotham,Vector2.new(available,1000)).Y) or 0
+		end
 		titleHeight=math.min(titleHeight,34);descriptionHeight=math.min(descriptionHeight,112)
 		return descriptionHeight==0 and math.max(44,27+titleHeight) or 28+titleHeight+descriptionHeight+3, left, titleHeight, descriptionHeight
 	end
 	function controller:Layout(instant)
-		if not self.alive then return end
-		local viewport = root.AbsoluteSize
-		local width = math.min(300, math.max(160, viewport.X - 40))
-		local bottom = viewport.Y - 24
-		for index = #self.active, 1, -1 do
-			local record = self.active[index]
-			local height, left, titleHeight, descriptionHeight = dimensions(record.title, record.description, record.icon, width,record.measured)
-			record.height = height
-			record.group.Size = UDim2.fromOffset(width, height)
-			record.titleLabel.Position, record.titleLabel.Size = UDim2.fromOffset(left, 14), UDim2.new(1, -left-20, 0, titleHeight)
-			record.body.Position, record.body.Size = UDim2.fromOffset(left, 17+titleHeight), UDim2.new(1, -left-20, 0, descriptionHeight)
-			record.body.Visible = descriptionHeight > 0
-			local goal = UDim2.fromOffset(math.max(20, viewport.X - width - 24), bottom - height)
-			if instant then record.group.Position = goal else tween(record.group, 0.42, {Position = goal}) end
-			bottom -= height + 8
+		if not self.alive or #self.active==0 then return end
+		local viewport,origin=root.AbsoluteSize,root.AbsolutePosition
+		local width=math.min(300,math.max(160,viewport.X-40))
+		local x=math.max(20,viewport.X-width-24)
+		local obstacles={}
+		local function add(object)
+			if object and object:IsA('GuiObject') and object.Visible then
+				local p,s=object.AbsolutePosition-origin,object.AbsoluteSize
+				if s.X>0 and s.Y>0 then obstacles[#obstacles+1]={x=p.X,y=p.Y,w=s.X,h=s.Y} end
+			end
+		end
+		local bar=root:FindFirstChild('SmartBar')
+		if not (bar and bar.Visible) then bar=root:FindFirstChild('Drag') end
+		local topDock=bar and bar.Visible and (bar.AbsolutePosition.Y-origin.Y+bar.AbsoluteSize.Y/2)<viewport.Y/2
+		for _,name in {'SmartBar','Drag','Character','Scripts','Playerlist','Settings','Home','ScriptSearch','CustomScriptPrompt','ModeratorDetectionPrompt'} do add(root:FindFirstChild(name)) end
+		local capsules=root:FindFirstChild('TopCapsules')
+		if capsules and capsules.Visible then
+			local expanded=capsules:FindFirstChild('Surface')
+			add(expanded and expanded.Visible and expanded or capsules:FindFirstChild('Compact'))
+		end
+		local toasts=root:FindFirstChild('Toasts')
+		if toasts and toasts.Visible then for _,v in toasts:GetChildren() do if v.Name~='Template' then add(v) end end end
+		local total=0
+		for _,record in ipairs(self.active) do
+			local height,left,titleHeight,descriptionHeight=dimensions(record.title,record.description,record.icon,width,record.measured)
+			record.height=height;record.group.Size=UDim2.fromOffset(width,height)
+			record.titleLabel.Position,record.titleLabel.Size=UDim2.fromOffset(left,14),UDim2.new(1,-left-20,0,titleHeight)
+			record.body.Position,record.body.Size=UDim2.fromOffset(left,17+titleHeight),UDim2.new(1,-left-20,0,descriptionHeight)
+			record.body.Visible=descriptionHeight>0
+			total+=height+8
+		end
+		total-=8
+		local y=topDock and 24 or viewport.Y-24-total
+		local preferred=y
+		for _=1,#obstacles+1 do
+			local nextY=y
+			for _,box in ipairs(obstacles) do
+				if x<box.x+box.w+8 and x+width>box.x-8 and y<box.y+box.h+8 and y+total>box.y-8 then
+					nextY=topDock and math.max(nextY,box.y+box.h+8) or math.min(nextY,box.y-total-8)
+				end
+			end
+			if nextY==y then break end
+			if nextY<24 or nextY+total>viewport.Y-24 then
+				-- On small screens, keep the complete stack readable over large panels.
+				-- Still reserve space for the SmartBar when it shares this column.
+				y=preferred
+				if bar and bar.Visible then
+					local p,s=bar.AbsolutePosition-origin,bar.AbsoluteSize
+					if x<p.X+s.X+8 and x+width>p.X-8 then
+						y=topDock and math.max(y,p.Y+s.Y+8) or math.min(y,p.Y-total-8)
+					end
+				end
+				break
+			end
+			y=nextY
+		end
+		y=math.clamp(y,16,math.max(16,viewport.Y-total-16))
+		for _,record in ipairs(self.active) do
+			local goal=UDim2.fromOffset(x,y)
+			if record.fresh then record.group.Position=goal+UDim2.fromOffset(width+32,0);record.fresh=false end
+			if instant then record.group.Position=goal
+			elseif not record.goal or math.abs(record.goal.X.Offset-x)>.5 or math.abs(record.goal.Y.Offset-y)>.5 then
+				tween(record.group,.28,{Position=goal})
+			end
+			record.goal=goal;y+=record.height+8
 		end
 	end
 	local pump
@@ -188,7 +240,7 @@ return function(context)
 			local gradient=Instance.new("UIGradient");gradient.Rotation=90
 			gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(115,115,115));gradient.Parent=group
 		end
-		item.group,item.generation,item.connections=group,0,{}
+		item.group,item.generation,item.connections=group,0,{};item.fresh=true
 		item.titleLabel=group:FindFirstChild("Title") or label(group,"Title",item.title,14,Color3.fromRGB(250,250,250))
 		item.titleLabel.Text=item.title;item.titleLabel.FontFace=titleFont
 		item.body=group:FindFirstChild("Description") or label(group,"Description",item.description,13,Color3.fromRGB(174,174,178))
@@ -241,9 +293,25 @@ return function(context)
 		if icon ~= nil and icon ~= false and icon ~= "" then
 			icon = tonumber(icon) and ("rbxassetid://" .. tostring(icon)) or tostring(icon)
 		else icon = nil end
+		local duration=math.clamp(tonumber(options.Duration) or (2.5+#description*0.045),2.5,12)
+		local key=type(options.Key)=="string" and options.Key:sub(1,80) or nil
+		if key then
+			for _,list in {self.active,self.pending} do for _,record in ipairs(list) do
+				if record.key==key and record.title==title and record.description==description and record.icon==icon then
+					record.duration=duration
+					if record.group then
+						if record.hovered then record.remaining=duration else expiry(record,duration) end
+					end
+					return {Dismiss=function()
+						local pending=table.find(self.pending,record)
+						if pending then table.remove(self.pending,pending) elseif record.group then self:Dismiss(record) end
+					end}
+				end
+			end end
+		end
 		self.nextId += 1
-		local item = {id=self.nextId,title=title,description=description,icon=icon,
-			duration=math.clamp(tonumber(options.Duration) or (2.5+#description*0.045),2.5,12)}
+		local item = {id=self.nextId,title=title,description=description,icon=icon,key=key,
+			duration=duration}
 		if #self.pending >= 24 then table.remove(self.pending,1) end
 		self.pending[#self.pending+1] = item
 		task.spawn(function()
@@ -284,6 +352,11 @@ return function(context)
 		for _, animation in pairs(tweens) do animation:Cancel() end
 		table.clear(self.active); table.clear(self.pending); host:Destroy()
 	end
+	local layoutElapsed=0
+	connect(game:GetService("RunService").Heartbeat,function(dt)
+		layoutElapsed+=dt
+		if layoutElapsed>=.1 then layoutElapsed=0;controller:Layout() end
+	end)
 	connect(root:GetPropertyChangedSignal("AbsoluteSize"), function() controller:Layout(); pump() end)
 	connect(root.Destroying, function() controller:Destroy() end)
 	return controller

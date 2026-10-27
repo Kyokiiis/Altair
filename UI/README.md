@@ -70,6 +70,18 @@ within the viewport by scaling only the compact row, leaving expanded panels unc
 
 ## Appearance and performance
 
+Settings changes use notification cards instead of SmartBar toasts. Confirmed
+disk writes show a compact “Settings saved” card; Studio/session-only updates
+show “Settings updated.” Rapid changes refresh the same card instead of
+filling the stack. Other notifications retain independent expiry times.
+
+Notification cards use the reference's black rounded shape, 300px width, 20px
+corners, and 8px spacing. Text and icons determine each card's height; a title
+without a description uses 44px. Cards slide in, pause expiry while hovered,
+and smoothly reflow when dismissed. The stack follows the SmartBar's top/bottom
+dock and avoids overlapping Altair panels when space permits. On small screens,
+the stack stays readable over large panels rather than leaving the viewport.
+
 Settings uses two columns of compact category cards with descriptions and
 subtle tinted borders. Seven categories fit within the existing 613×384 panel.
 Capsules reuse the SmartBar's outer charcoal shell, inset back layer, and actual

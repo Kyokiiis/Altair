@@ -95,6 +95,23 @@ return function()
 			end
 		end
 		expect(found,'Notification did not render');single.Dismiss()
+		for _,record in ipairs(table.clone(notifications.active)) do notifications:Dismiss(record) end
+		table.clear(notifications.pending);task.wait(.25)
+		notifications:Notify('Settings saved','',nil,{Key='settings-update',Duration=3})
+		notifications:Notify('Settings saved','',nil,{Key='settings-update',Duration=3})
+		task.wait(.35)
+		expect(#notifications.active==1,'Repeated settings confirmations did not coalesce')
+		expect(notifications.active[1].height==44,'Compact settings confirmation changed height')
+		notifications:Notify('Friend joined','jenson has joined your server.',4370335364,{Duration=5})
+		notifications:Notify('Staff in your server',"An administrator from this experience's group has just joined. They can see what you do in game.",3944670656,{Duration=5})
+		bar.AnchorPoint=Vector2.zero;bar.Size=UDim2.fromOffset(300,50);bar.Position=UDim2.new(1,-324,1,-74)
+		task.wait(.6)
+		expect(#notifications.active==3,'Reference notification stack did not render')
+		expect(notifications.active[3].height>notifications.active[2].height,'Multiline notification did not grow with its content')
+		local last=notifications.active[3].group
+		expect(last.AbsolutePosition.Y+last.AbsoluteSize.Y<=bar.AbsolutePosition.Y-6,'Notifications covered the bottom SmartBar')
+		bar.Position=UDim2.new(1,-324,0,24);task.wait(.6)
+		expect(notifications.active[1].group.AbsolutePosition.Y>=bar.AbsolutePosition.Y+bar.AbsoluteSize.Y+6,'Notifications did not follow the bar to the top')
 		controller:Destroy();expect(not controller.alive and #controller.connections==0,'Capsule connections leaked on unload')
 		return {passed=true,checks=checks,accountLinked=false}
 	end)
