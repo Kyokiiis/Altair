@@ -2611,6 +2611,20 @@ local function Toast(content, color, font, skipBlink)
 	end)
 end
 
+-- Keep executor-facing names ASCII: some Windows executors cannot enumerate
+-- a directory containing Unicode filenames. Display titles remain unchanged.
+altairValues.customScriptFileStem = function(title)
+	local stem = tostring(title or ""):gsub("[^%w %-%_%.%(%)]+", "")
+		:gsub("^%s+", ""):gsub("[%s%.]+$", "")
+	if stem == "" then stem = "Custom Script" end
+	local base = (stem:match("^([^%.]+)") or stem):upper()
+	if base == "CON" or base == "PRN" or base == "AUX" or base == "NUL"
+		or base:match("^COM[1-9]$") or base:match("^LPT[1-9]$") then
+		stem = "Custom " .. stem
+	end
+	return stem
+end
+
 altairValues.scanCustomScripts = function()
 	altairValues.customScripts = {}
 	altairValues.detectedScript = nil
@@ -2632,7 +2646,10 @@ altairValues.scanCustomScripts = function()
 
 	local ok, files = pcall(listfiles, folder)
 	if not ok or type(files) ~= "table" then
-		return nil, "could not list custom scripts"
+		local detail = "Could not list Altair/Custom Scripts. Rename any emoji or non-ASCII filenames in that folder, then use Reprompt."
+		warn("Altair | " .. detail .. " " .. tostring(files))
+		queueNotification("Custom scripts unavailable", detail, nil, {Key="custom-script-scan", Duration=10})
+		return nil, "could not list custom scripts: " .. tostring(files)
 	end
 
 	table.sort(files)
@@ -2675,15 +2692,7 @@ altairValues.scanCustomScripts = function()
 							end
 						end
 
-						readableName = tostring(readableName)
-							:gsub('[<>:"/|%?%*]', "")
-		:gsub(string.char(92), "")
-							:gsub("^%s+", "")
-							:gsub("%s+$", "")
-
-						if readableName == "" then
-							readableName = "Custom Script"
-						end
+						readableName = altairValues.customScriptFileStem(readableName)
 
 						local target = folder .. "/" .. readableName .. extension
 						if isfile and isfile(target) then
@@ -3298,15 +3307,7 @@ altairValues.saveCustomScriptPrompt = function()
 		return false
 	end
 
-	local safeTitle = tostring(title)
-		:gsub('[<>:"/|%?%*]', "")
-		:gsub(string.char(92), "")
-		:gsub("^%s+", "")
-		:gsub("%s+$", "")
-
-	if safeTitle == "" then
-		safeTitle = "Custom Script"
-	end
+	local safeTitle = altairValues.customScriptFileStem(title)
 
 	local filePath = folder .. "/" .. safeTitle .. ".altair"
 
@@ -10522,7 +10523,7 @@ local function start()
 	task.spawn(function()
 		task.wait(0.65)
 		local detected = altairValues.scanCustomScripts()
-		if detected and not altairValues.continuation.quiet then
+		if detected and checkAltair() then
 			altairValues.showGameDetection(detected)
 		end
 	end)
