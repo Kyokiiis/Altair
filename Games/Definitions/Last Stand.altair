@@ -1,0 +1,6 @@
+{
+    "ScriptTitle": "Last Stand",
+    "ScriptSubtitle": "Adaptive evacuation, recon, treatment, reinforcement, placement plans, and normal level replay.",
+    "PlaceIds": [120293323710237],
+    "Loadstring": "https://raw.githubusercontent.com/Kyokiiis/Altair/refs/heads/main/Games/Last%20Stand.lua"
+}
