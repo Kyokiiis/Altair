@@ -4,6 +4,21 @@
 notifications, timers/stopwatch, Settings layout, and official Lucide images.
 No uploaded Roblox UI model is required.
 
+Capsule geometry uses a critically damped, frame-rate-independent spring. Its
+velocity survives direction changes; content and inner material fade separately
+before the shell settles back into the source circle. Main-panel motion uses
+consistent easing and cancels competing tweens on the same property. The drag
+bar follows rendered panel bounds each frame rather than stepping at 30 Hz.
+General Settings offers an optional near-black OLED appearance. Capsules fit the viewport
+in both dimensions.
+
+`Development/Tests/ValidatePanels.lua` accepts an initialized Altair API and
+checks the player-list subtitle on first entrance, exit and reopening.
+It also interrupts panel entrances with a combined SmartBar close at three
+different times, verifies row outlines remain hidden, and checks drag docking
+while hover resizes the handle. Stale opening callbacks and asynchronous player
+refreshes are prevented from reviving closing content.
+
 ```text
 UI/
   Build.lua

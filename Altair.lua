@@ -100,6 +100,28 @@ local statsService = getService("Stats")
 local starterGui = getService("StarterGui")
 local teleportService = getService("TeleportService")
 local tweenService = getService("TweenService")
+do
+	local native=tweenService
+	local active=setmetatable({}, {__mode="k"})
+	-- One owner per animated property prevents interrupted transitions fighting.
+	tweenService={Create=function(_,object,info,goal)
+		local properties=active[object] or {};active[object]=properties
+		local cancelled={}
+		for property in pairs(goal) do
+			local old=properties[property]
+			if old and not cancelled[old] then cancelled[old]=true;old:Cancel() end
+		end
+		if info.Time>0 and info.RepeatCount==0 and not info.Reverses and (goal.Position or goal.Size) then
+			info=TweenInfo.new(math.clamp(info.Time,.12,.55),Enum.EasingStyle.Quint,Enum.EasingDirection.Out,0,false,info.DelayTime)
+		end
+		local animation=native:Create(object,info,goal)
+		for property in pairs(goal) do properties[property]=animation end
+		animation.Completed:Once(function()
+			for property in pairs(goal) do if properties[property]==animation then properties[property]=nil end end
+		end)
+		return animation
+	end}
+end
 local userInputService = getService("UserInputService")
 local textChatService = getService("TextChatService")
 local marketplaceService = getService("MarketplaceService")
@@ -461,6 +483,7 @@ local altairSettings = {
 		color = Color3.new(0.117647, 0.490196, 0.72549),
 		minimumLicense = "Free",
 		categorySettings = {
+			{name="OLED Appearance",settingType="Boolean",current=false,id="oledappearance",description="Use near-black panel surfaces with restrained highlights."},
 			{
 				name = "Anonymous Client",
 				description = "Randomise your username in real-time in any CoreGui parented interface, including Altair. You will still appear as your actual name to others in-game. This setting can be performance intensive.",
@@ -1000,7 +1023,7 @@ function altairValues.loadUIModule(name)
 		local ok, contents = pcall(read, altairValues.altairFolder .. "/UI/" .. name .. ".lua")
 		if ok and type(contents)=="string" and contents:match("%S") then source=contents end
 	end
-	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=6") end
+	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=7") end
 	assert(type(source)=="string" and source:match("%S"), "Empty Altair UI module: "..name)
 	local compile=optional(loadstring)
 	assert(compile,"This executor does not support loadstring")
@@ -1013,7 +1036,7 @@ local function loadInterface()
 	local build=altairValues.loadUIModule("Build")
 	assert(type(build)=="function", "UI/Build.lua must return a UI factory function")
 	local root, bindings = build()
-	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=6) then
+	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=7) then
 		if typeof(root)=="Instance" then root:Destroy() end
 		altairValues.remoteInterface=true
 		root,bindings=altairValues.loadUIModule("Build")()
@@ -1022,7 +1045,7 @@ local function loadInterface()
 	assert(typeof(root) == "Instance" and root:IsA("ScreenGui"), "The UI builder must return a ScreenGui")
 	-- Catch an incompatible builder before mounting it or binding events.
 	local ok, validationError = pcall(function()
-		assert(root:GetAttribute("AltairUIRevision")==6 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: Spotify connection confirmation is missing")
+		assert(root:GetAttribute("AltairUIRevision")==7 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: the current UI revision is missing")
 		assert(type(bindings)=="table" and type(bindings.Capsules)=="function", "Update UI/Build.lua: capsule bindings are missing")
 		assert(root:FindFirstChild("TopCapsules") and root:FindFirstChild("NotificationCapsules"), "Update UI/Build.lua: capsule templates are missing")
 		for _, name in ipairs({ "Character", "CustomScriptPrompt", "Disconnected", "GameDetection", "Home",
@@ -3914,7 +3937,8 @@ altairValues.smartBarLayout = (function()
 	function controller:tweenDragCenter(target, info, size)
 		self:cancelDragPositionTween()
 		local goal = { Position = positionAtRenderedCenter(drag, target) }
-		if size then goal.Size = size end
+		-- Hover may resize Drag while it travels. It must not cancel Position.
+		if size then tweenService:Create(drag,info,{Size=size}):Play() end
 		local tween = tweenService:Create(drag, info, goal)
 		self.dragPositionTween = tween
 		tween.Completed:Once(function()
@@ -3959,17 +3983,20 @@ altairValues.smartBarLayout = (function()
 		)
 	end
 
-	function controller:syncDrag()
+	function controller:syncDrag(dt)
 		drag.Visible = not settingValue("Hide Bar")
 		drag.BackgroundTransparency = 1
 
-		if self.dragging or not smartBarOpen or self.dragPositionTween then
+		if self.dragging or self.dragPositionTween then
 			return
 		end
 
 		if dragVisual then dragVisual.Rotation = 0 end
 		-- Absolute coordinates include the ScreenGui origin; preserve that conversion.
-		drag.Position = positionAtRenderedCenter(drag, self:getRestDragCenter())
+		local target=smartBarOpen and self:getRestDragCenter() or self:getClosedDragCenter()
+		local current=centerOf(drag)
+		local alpha=1-math.exp(-32*math.min(dt or 1/60,.1))
+		drag.Position = positionAtRenderedCenter(drag, current:Lerp(target,alpha))
 	end
 
 	function controller:syncToasts(dragCenter)
@@ -4042,7 +4069,7 @@ altairValues.smartBarLayout = (function()
 	function controller:sync(dt, animateContents)
 		self:syncContents(animateContents)
 		self:syncPanels(dt or 1 / 60)
-		self:syncDrag()
+		self:syncDrag(dt)
 		self:syncToasts()
 	end
 
@@ -4268,9 +4295,10 @@ altairValues.smartBarLayout = (function()
 				end
 			else
 				self.idleAccumulator += dt
-				if self.idleAccumulator >= 1 / 30 then
+				if self.idleAccumulator >= 1 / 120 then
+					local elapsed=self.idleAccumulator
 					self.idleAccumulator = 0
-					self:sync(dt, false)
+					self:sync(elapsed, false)
 				end
 			end
 		end))
@@ -4574,6 +4602,24 @@ altairValues.bindPanelPointer = function(panel, button)
 	sync()
 end
 
+altairValues.panelTextOpacity=setmetatable({}, {__mode="k"})
+function altairValues.fadePanelText(panel,visible)
+	for _,text in ipairs(panel:GetDescendants()) do
+		if text:IsA("TextLabel") or text:IsA("TextButton") or text:IsA("TextBox") then
+			if visible and panel.Name=="Playerlist" and text.Parent==panel and text.Name=="Subtitle" then
+				altairValues.panelTextOpacity[text]=nil;continue -- Its dedicated entrance starts with the header.
+			end
+			local saved=altairValues.panelTextOpacity[text]
+			if not visible then
+				if not saved then saved={text.TextTransparency,text.TextStrokeTransparency};altairValues.panelTextOpacity[text]=saved end
+				tweenService:Create(text,TweenInfo.new(.12,Enum.EasingStyle.Quint),{TextTransparency=1,TextStrokeTransparency=1}):Play()
+			elseif saved then
+				tweenService:Create(text,TweenInfo.new(.18,Enum.EasingStyle.Quint),{TextTransparency=saved[1],TextStrokeTransparency=saved[2]}):Play()
+				altairValues.panelTextOpacity[text]=nil
+			end
+		end
+	end
+end
 local function closePanel(panelName, openingOther)
 	local button = smartBar.Back.Buttons:FindFirstChild(panelName)
 	local panel = UI:FindFirstChild(panelName)
@@ -4586,6 +4632,10 @@ local function closePanel(panelName, openingOther)
 	end
 
 	debounce = true
+	panel:SetAttribute("AltairClosing",true)
+	local motionVersion=(panel:GetAttribute("AltairMotionVersion") or 0)+1
+	panel:SetAttribute("AltairMotionVersion",motionVersion)
+	altairValues.fadePanelText(panel,false)
 
 	local panelSize = panel.Name == "Character" and characterPanelSize
 		or (panel.Name == "Playerlist" and (altairValues.playerlistUI.panelSize or playerlistPanel.Size))
@@ -4596,7 +4646,8 @@ local function closePanel(panelName, openingOther)
 	buttonPosition = buttonPosition or panel.Position
 
 	if panel.Name == "Playerlist" and altairValues.playerlistUI.prepareClose then
-		altairValues.playerlistUI:prepareClose()
+		altairValues.playerlistUI.transitionVersion=(altairValues.playerlistUI.transitionVersion or 0)+1
+		altairValues.playerlistUI.rowsOpening=false
 
 		local subtitle = altairValues.playerlistUI.subtitle
 		if subtitle and (
@@ -4606,7 +4657,7 @@ local function closePanel(panelName, openingOther)
 		) then
 			tweenService:Create(
 				subtitle,
-				TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
+				TweenInfo.new(0.12, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
 				{ TextTransparency = 1 }
 			):Play()
 		end
@@ -4712,6 +4763,7 @@ local function closePanel(panelName, openingOther)
 		tweenService:Create(panel.Title, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
 		tweenService:Create(panel.UIStroke, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
 		task.wait(0.03)
+		if panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
 
 		tweenService:Create(panel, TweenInfo.new(0.75, Enum.EasingStyle.Exponential, Enum.EasingDirection.InOut), { BackgroundTransparency = 1 }):Play()
 		tweenService:Create(panel, TweenInfo.new(1.1, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out), { Size = buttonSize }):Play()
@@ -4728,8 +4780,10 @@ local function closePanel(panelName, openingOther)
 	end
 
 	task.wait(0.5)
+	if panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
 	panel.Size = panelSize
 	panel.Visible = false
+	if panel.Name=="Playerlist" and altairValues.playerlistUI.prepareClose then altairValues.playerlistUI:prepareClose() end
 	if not openingOther and altairValues.smartBarLayout.activePanel == panel then
 		altairValues.smartBarLayout.activePanel = nil
 	end
@@ -4742,7 +4796,8 @@ end
 local function openPanel(panelName)
 	if homeOpen then closeHome() end
 	if settingsPanel.Visible then closeSettings() end
-	if debounce then
+	local resuming=UI:FindFirstChild(panelName)
+	if debounce and not (resuming and resuming:GetAttribute("AltairClosing")) then
 		return
 	end
 	local button = smartBar.Back.Buttons:FindFirstChild(panelName)
@@ -4754,17 +4809,24 @@ local function openPanel(panelName)
 	if not (panel and button) then
 		return
 	end
+	local interrupted=panel.Visible and panel:GetAttribute("AltairClosing")
+	local resumeSize=interrupted and panel.Size
+	local resumePosition=interrupted and panel.Position
+	local resumeAlpha=interrupted and panel.BackgroundTransparency
 
 	debounce = true
 
 	for _, otherPanel in ipairs(UI:GetChildren()) do
 		if smartBar.Back.Buttons:FindFirstChild(otherPanel.Name) then
-			if isPanel(otherPanel.Name) and otherPanel.Visible then
+			if otherPanel.Name~=panelName and isPanel(otherPanel.Name) and otherPanel.Visible then
 				task.spawn(closePanel, otherPanel.Name, true)
 				task.wait()
 			end
 		end
 	end
+	if not smartBarOpen then debounce=false;return end
+	local motionVersion=(panel:GetAttribute("AltairMotionVersion") or 0)+1
+	panel:SetAttribute("AltairMotionVersion",motionVersion)
 
 	local panelSize = panel.Name == "Character" and characterPanelSize
 		or (panel.Name == "Playerlist" and (altairValues.playerlistUI.panelSize or playerlistPanel.Size))
@@ -4778,12 +4840,17 @@ local function openPanel(panelName)
 	end
 
 	local buttonSize, buttonPosition = getPanelButtonGeometry(panel, button)
-	panel.Size = buttonSize or button.Size
-	panel.Position = buttonPosition or panel.Position
+	panel.Size = resumeSize or buttonSize or button.Size
+	panel.Position = resumePosition or buttonPosition or panel.Position
 
 	wipeTransparency(panel, 1, true)
+	if resumeAlpha then panel.BackgroundTransparency=resumeAlpha end
 
 	panel.Visible = true
+	panel:SetAttribute("AltairClosing",false)
+	task.delay(.24,function()
+		if panel.Parent and panel.Visible and panel:GetAttribute("AltairMotionVersion")==motionVersion and not panel:GetAttribute("AltairClosing") then altairValues.fadePanelText(panel,true) end
+	end)
 	altairValues.smartBarLayout.activePanel = panel
 	altairValues.bindPanelPointer(panel, button)
 	altairValues.syncPanelPointer(panel, button)
@@ -4798,12 +4865,15 @@ local function openPanel(panelName)
 
 	task.wait(0.4)
 
+	if panel:GetAttribute("AltairMotionVersion")~=motionVersion or panel:GetAttribute("AltairClosing") then return end
 	altairValues.setPanelPointerVisible(panel, button, true, 0.45)
 	tweenService:Create(panel.Icon, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
 	task.wait(0.05)
+	if panel:GetAttribute("AltairMotionVersion")~=motionVersion or panel:GetAttribute("AltairClosing") then return end
 	tweenService:Create(panel.Title, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 	tweenService:Create(panel.UIStroke, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { Transparency = 0.95 }):Play()
 	task.wait(0.05)
+	if panel:GetAttribute("AltairMotionVersion")~=motionVersion or panel:GetAttribute("AltairClosing") then return end
 
 	-- Animate interactive elements
 	if panel.Name == "Character" then -- Character Panel Animation
@@ -4985,13 +5055,15 @@ local function openPanel(panelName)
 		tweenService:Create(playerlistPanel.Interactions.SearchFrame, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
 		tweenService:Create(playerlistPanel.Interactions.SearchFrame.Icon, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
 		task.wait(0.01)
+		if panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
 		tweenService:Create(playerlistPanel.Interactions.SearchFrame.SearchBox, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 		tweenService:Create(playerlistPanel.Interactions.SearchFrame.UIStroke, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { Transparency = 0.2 }):Play()
 		task.wait(0.05)
+		if panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
 		tweenService:Create(playerlistPanel.Interactions.List, TweenInfo.new(0.35, Enum.EasingStyle.Quint), { ScrollBarImageTransparency = 0.7 }):Play()
 
 		task.delay(0.46, function()
-			if checkAltair() and playerlistPanel.Visible then
+			if checkAltair() and playerlistPanel.Visible and playerlistPanel:GetAttribute("AltairMotionVersion")==motionVersion and not playerlistPanel:GetAttribute("AltairClosing") then
 				altairValues.playerlistUI.rowsOpening = false
 				altairValues.playerlistUI:_highlightSelected()
 			end
@@ -4999,6 +5071,7 @@ local function openPanel(panelName)
 	end
 
 	task.wait(0.45)
+	if panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
 	debounce = false
 end
 
@@ -7904,6 +7977,7 @@ function altairValues.playerlistUI:_cacheVisual(root)
 end
 
 function altairValues.playerlistUI:_setVisual(root, visible, duration)
+	if visible and playerlistPanel:GetAttribute("AltairClosing") then return end
 	if not root then
 		return
 	end
@@ -8132,14 +8206,14 @@ function altairValues.playerlistUI:init()
 	self.teamHiddenPosition = self.teamPosition and (self.teamPosition - UDim2.fromOffset(110, 0)) or nil
 	self.transitionVersion = 0
 
-	self.subtitle = playerlistPanel:FindFirstChild("Subtitle", true)
+	self.subtitle = playerlistPanel:FindFirstChild("Subtitle") or playerlistPanel:FindFirstChild("Subtitle", true)
 	self.subtitleTextTransparency = nil
 	if self.subtitle and (
 		self.subtitle:IsA("TextLabel")
 		or self.subtitle:IsA("TextButton")
 		or self.subtitle:IsA("TextBox")
 	) then
-		self.subtitleTextTransparency = self.subtitle.TextTransparency
+		self.subtitleTextTransparency = math.min(self.subtitle.TextTransparency,.3)
 	end
 
 	self.decorations = {}
@@ -8477,7 +8551,7 @@ function altairValues.playerlistUI:_populate(player)
 end
 
 function altairValues.playerlistUI:_setPlayerRowHighlight(row, highlighted)
-	if not row or not row.Parent or self.rowsOpening then
+	if not row or not row.Parent or self.rowsOpening or playerlistPanel:GetAttribute("AltairClosing") or not playerlistPanel.Visible then
 		return
 	end
 
@@ -8820,6 +8894,15 @@ function altairValues.playerlistUI:prepareClose()
 end
 
 altairValues.playerlistUI:init()
+track(playerlistPanel.DescendantAdded:Connect(function(object)
+	if not playerlistPanel:GetAttribute("AltairClosing") then return end
+	task.defer(function()
+		if not object.Parent or not playerlistPanel:GetAttribute("AltairClosing") then return end
+		if object:IsA("UIStroke") then object.Transparency=1
+		elseif object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then object.TextTransparency=1;object.TextStrokeTransparency=1
+		elseif object:IsA("ImageLabel") or object:IsA("ImageButton") then object.ImageTransparency=1 end
+	end)
+end))
 
 -- Selected player actions.
 do
@@ -8974,7 +9057,7 @@ function altairValues.playerlistUI:refreshRuntimePlayer(player, row)
 		return
 	end
 
-	local revealAllowed = not self.rowsOpening
+	local revealAllowed = not self.rowsOpening and not playerlistPanel:GetAttribute("AltairClosing") and playerlistPanel.Visible
 
 	row.Name = player.Name
 	row:SetAttribute("AltairPlayerUserId", player.UserId)
@@ -9056,7 +9139,7 @@ function altairValues.playerlistUI:refreshRuntimePlayer(player, row)
 			then
 				object.Text = roleText
 				object.Visible = true
-				if not self.rowsOpening then
+				if not self.rowsOpening and not playerlistPanel:GetAttribute("AltairClosing") and playerlistPanel.Visible then
 					object.TextTransparency = 0.35
 				end
 				object:SetAttribute("AltairPlayerOpen_TextTransparency", 0.35)
@@ -9099,7 +9182,7 @@ function altairValues.playerlistUI:refreshRuntimePlayer(player, row)
 					then
 						object.Image = content
 						object.Visible = true
-						if not self.rowsOpening then
+						if not self.rowsOpening and not playerlistPanel:GetAttribute("AltairClosing") and playerlistPanel.Visible then
 							object.ImageTransparency = 0
 						end
 						object.ImageColor3 = Color3.new(1, 1, 1)
@@ -9344,6 +9427,8 @@ local function removePlayer(player)
 end
 
 local function openSettings()
+	local stroke=settingsPanel:FindFirstChildOfClass("UIStroke")
+	if stroke then stroke.Enabled=true;stroke.Transparency=.6 end
 	if homeOpen then closeHome() end
 	for _, panelName in ipairs({ "Character", "Scripts", "Playerlist" }) do
 		local panel = UI:FindFirstChild(panelName)
@@ -9413,6 +9498,10 @@ local function openSettings()
 end
 
 closeSettings = function()
+	local stroke=settingsPanel:FindFirstChildOfClass("UIStroke")
+	if stroke then
+		tweenService:Create(stroke,TweenInfo.new(.18,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Transparency=1}):Play()
+	end
 	debounce = true
 
 	for _, settingType in ipairs(settingsPanel.SettingTypes:GetChildren()) do
@@ -9445,6 +9534,7 @@ closeSettings = function()
 	task.wait(0.55)
 
 	settingsPanel.Visible = false
+	if stroke then stroke.Enabled=false end
 	debounce = false
 end
 
@@ -10134,6 +10224,20 @@ altairAPI.Toast = Toast
 altairAPI.QueueNotification = queueNotification
 altairAPI.Notify = queueNotification
 restoreSettings() -- Restore connection configuration before the first media poll.
+do
+	local originals=setmetatable({}, {__mode="k"});local elapsed=0
+	track(runService.Heartbeat:Connect(function(dt)
+		elapsed+=dt;if elapsed<.25 then return end;elapsed=0
+		local oled=settingValue("OLED Appearance",false)
+		for _,name in ipairs({"SmartBar","Settings","Character","Scripts","Playerlist","Home"}) do
+			local panel=UI:FindFirstChild(name)
+			if panel and panel:IsA("GuiObject") then
+				if not originals[panel] then originals[panel]=panel.BackgroundColor3 end
+				panel.BackgroundColor3=oled and Color3.fromRGB(5,5,7) or originals[panel]
+			end
+		end
+	end))
+end
 altairValues.capsules = altairValues.interfaceBindings.Capsules({Root=UI, RequireBuiltUI=true, Clock=altairValues.interfaceBindings.Clock,
 	Session=altairValues.spotifySession,
 	GetSetting=settingValue, Request=originalRequest, Notify=queueNotification, Alive=checkAltair,
@@ -10779,7 +10883,7 @@ for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 	if button:IsA("GuiObject") and button.Name ~= "Placeholder" and UI:FindFirstChild(button.Name) and button:FindFirstChild("Interact") then
 		button.Interact.MouseButton1Click:Connect(function()
 			if isPanel(button.Name) then
-				if not debounce and UI:FindFirstChild(button.Name).Visible then
+				if UI:FindFirstChild(button.Name).Visible and not UI:FindFirstChild(button.Name):GetAttribute("AltairClosing") then
 					task.spawn(closePanel, button.Name)
 				else
 					task.spawn(openPanel, button.Name)

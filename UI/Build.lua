@@ -623,7 +623,10 @@ local function bindCapsules(context)
 	local timer=view("timer",208,68)
 	local watch=view("watch",208,94)
 	local duration=view("duration",300,166)
+	local morphChevron=icon(surface,"MorphChevron","chevron-down",0,0,12,white)
+	morphChevron.AnchorPoint=Vector2.new(.5,.5);morphChevron.Position=UDim2.fromScale(.5,.5);morphChevron.ImageTransparency=1
 	local sizes={}
+	local pillNames={center="ControlCenter",music="Music",timer="Timer",watch="Stopwatch",duration="Timer"}
 	for name,group in pairs(views) do sizes[name]=Vector2.new(group.Size.X.Offset,group.Size.Y.Offset) end
 	function controller:Open(name)
 		assert(name==nil or sizes[name],"Unknown capsule view")
@@ -632,6 +635,7 @@ local function bindCapsules(context)
 		local previous=self.view
 		self.view=name;self.transition=(self.transition or 0)+1
 		local transition=self.transition
+		self.finishMorph=nil
 		if self.cancelDrag then self.cancelDrag() end
 		for key,group in pairs(views) do
 			if key~=name then
@@ -640,29 +644,43 @@ local function bindCapsules(context)
 			end
 		end
 		if not name then
-			compact.Visible=true;compact.GroupTransparency=1
-			tween(compact,.24,{GroupTransparency=0})
-			local origin=self.origin or {x=150,width=60}
-			tween(surface,.3,{Size=UDim2.fromOffset(origin.width,24),Position=UDim2.fromOffset(origin.x,0),BackgroundTransparency=1})
-			tween(outline,.2,{Transparency=1})
-			task.delay(.3,function() if self.alive and transition==self.transition then surface.Visible=false end end)
+			compact.Visible=false;compact.GroupTransparency=0
+			local origin=self.origin or {x=150,width=24}
+			-- Remove the inner material before the outer shell reaches its circle.
+			tween(inner,.1,{BackgroundTransparency=1})
+			tween(innerStroke,.1,{Transparency=1})
+			tween(morphChevron,.24,{ImageTransparency=origin.width<=26 and 0 or 1})
+			self.morphTarget={x=origin.x,width=origin.width,height=24}
+			tween(surface,.2,{BackgroundTransparency=.08})
+			tween(outline,.38,{Transparency=.45})
+			self.finishMorph=function()
+				if self.alive and transition==self.transition then
+					surface.Visible=false;compact.Visible=true;compact.GroupTransparency=0
+				end
+			end
 		else
-			if not previous then
-				local source=pills[name]
+			if not previous or name=="center" then
+				local source=strip:FindFirstChild(pillNames[name] or "ControlCenter")
 				local factor=math.max(.01,scale.Scale)
 				local x=source and ((source.AbsolutePosition.X+source.AbsoluteSize.X/2-host.AbsolutePosition.X)/factor) or 150
-				local width=source and source.AbsoluteSize.X/factor or 60
+				local width=source and source.AbsoluteSize.X/factor or 24
 				self.origin={x=x,width=width}
-				surface.Size=UDim2.fromOffset(width,24);surface.Position=UDim2.fromOffset(x,0)
+				if not surface.Visible then surface.Size=UDim2.fromOffset(width,24);surface.Position=UDim2.fromOffset(x,0);self.morphState=nil end
 				surface.BackgroundTransparency=0
 			end
-			tween(compact,.18,{GroupTransparency=1})
-			task.delay(.18,function() if self.alive and transition==self.transition then compact.Visible=false end end)
+			compact.Visible=false;compact.GroupTransparency=1
+			tween(inner,.24,{Position=UDim2.fromOffset(5,5),Size=UDim2.new(1,-10,1,-10),BackgroundTransparency=.1})
+			tween(innerStroke,.36,{Transparency=.65})
+			if not previous then morphChevron.ImageTransparency=self.origin.width<=26 and 0 or 1 end
+			tween(morphChevron,.16,{ImageTransparency=1})
 			local size=sizes[name]
 			surface.Visible=true;views[name].Visible=true;views[name].GroupTransparency=1
-			tween(surface,.36,{Size=UDim2.fromOffset(size.X,size.Y),Position=UDim2.fromScale(.5,0),BackgroundTransparency=.08})
+			self.morphTarget={x=host.Size.X.Offset*.5,width=size.X,height=size.Y}
+			tween(surface,.24,{BackgroundTransparency=.08})
 			tween(outline,.28,{Transparency=.45})
-			tween(views[name],.24,{GroupTransparency=0})
+			task.delay(.06,function()
+				if self.alive and transition==self.transition then tween(views[name],.22,{GroupTransparency=0}) end
+			end)
 		end
 		self.layoutAt=0
 	end
@@ -1156,6 +1174,7 @@ local function bindCapsules(context)
 		if requested==3 then requested=1.25 end
 		local factor=math.clamp(requested,.65,2)
 		factor=math.min(factor*math.clamp(viewport.X/1280,.8,1),math.max(.45,(viewport.X-24)/300))
+		factor=math.min(factor,math.max(.3,(viewport.Y-24)/180))
 		scale.Scale=factor
 		local width=(self.view and sizes[self.view].X or self.compactWidth or 250)*factor
 		local height=(self.view and sizes[self.view].Y or 24)*factor
@@ -1197,6 +1216,27 @@ local function bindCapsules(context)
 			and not inside(surface,event.Position) and not inside(compact,event.Position) then controller:Open(nil) end
 	end)
 	local renderAccumulator=0
+	connect(runService.RenderStepped,function(dt)
+		local target=controller.morphTarget;if not target then return end
+		local state=controller.morphState
+		if not state then
+			state={x=surface.Position.X.Offset+surface.Position.X.Scale*host.Size.X.Offset,width=surface.Size.X.Offset,height=surface.Size.Y.Offset,vx=0,vwidth=0,vheight=0}
+			controller.morphState=state
+		end
+		local step=math.min(dt,.1);local decay=math.exp(-30*step);local settled=true
+		for _,key in ipairs({"x","width","height"}) do
+			local velocity="v"..key;local delta=state[key]-target[key]
+			local j=state[velocity]+30*delta
+			state[key]=target[key]+(delta+j*step)*decay
+			state[velocity]=(state[velocity]-30*j*step)*decay
+			if math.abs(state[key]-target[key])>.12 then settled=false end
+		end
+		if settled then
+			for _,key in ipairs({"x","width","height"}) do state[key]=target[key];state["v"..key]=0 end
+		end
+		surface.Size=UDim2.fromOffset(math.max(1,state.width),math.max(1,state.height));surface.Position=UDim2.fromOffset(state.x,0)
+		if settled and controller.finishMorph then local finish=controller.finishMorph;controller.finishMorph=nil;finish() end
+	end)
 	connect(runService.Heartbeat,function(dt)
 		if context.Alive and not context.Alive() then return end
 		if clock:Tick() then
@@ -1216,6 +1256,11 @@ local function bindCapsules(context)
 			end
 		end
 		if now>=controller.layoutAt then controller.layoutAt=now+.1;controller:Layout() end
+		local oled=get("OLED Appearance",false)
+		surface.BackgroundColor3=oled and Color3.fromRGB(4,4,6) or baseColor
+		inner.BackgroundColor3=oled and Color3.fromRGB(9,9,12) or controlColor
+		menuPill.BackgroundColor3=oled and Color3.fromRGB(4,4,6) or barColor
+		menuPill.Back.BackgroundColor3=oled and Color3.fromRGB(9,9,12) or barColor
 		local y=host.Position.Y.Offset
 		if controller.targetY and math.abs(y-controller.targetY)>.1 then
 			host.Position=UDim2.new(.5,0,0,y+(controller.targetY-y)*(1-math.exp(-18*dt)))
@@ -1385,7 +1430,7 @@ return function(options)
 			objects[index].Parent = objects[nodes[index][1]]
 		end
 		styleSettings(objects[1])
-		objects[1]:SetAttribute("AltairUIRevision",6)
+		objects[1]:SetAttribute("AltairUIRevision",7)
 		bindCapsules({Root=objects[1],BuildOnly=true})
 		return objects[1]
 	end)
