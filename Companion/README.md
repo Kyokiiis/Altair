@@ -4,7 +4,7 @@ Each user links their own account. Altair controls Spotify on an existing Spotif
 
 ## First setup
 
-1. Install Python 3.10 or newer. On Windows run `StartSpotify.cmd` in this folder. Keep its window open. macOS/Linux: run `python3 spotify_bridge.py`.
+1. Install Python 3.10 or newer. On Windows run `StartSpotify.cmd` in this folder. The companion stays running in the background when you close the setup window. macOS/Linux: run `python3 spotify_bridge.py` and leave it running.
 2. Open the [Spotify developer dashboard](https://developer.spotify.com/dashboard) yourself and create an app using the Web API. Register exactly `http://127.0.0.1:43827/callback` as its redirect URI.
 3. Copy its **Client ID**. Do not copy its client secret: this app uses authorization code with PKCE and needs no secret.
 4. Open Altair **Settings → Capsules & Spotify**. Paste the Client ID into **Spotify Client ID**, and the local key printed by the companion into **Spotify Bridge Key**. Enable **Spotify Connection**.
@@ -14,7 +14,9 @@ The music capsule supports play/pause, next, previous, seeking and device volume
 
 ## Unlink and repeat the process
 
-Leave the companion running and click **Unlink Spotify** in Altair Settings. It deletes the saved account tokens, cancels pending browser authorization and clears account playback data. Click **Link Spotify** to go through browser approval again. Turning **Spotify Connection** off only stops Altair polling; it does not unlink the account.
+Rerunning or unloading Altair keeps the saved link. Altair restores connection settings before polling and carries playback metadata across UI rebuilds. The companion refreshes authorization automatically and reloads saved credentials when restarted; it needs to be started again after rebooting the computer.
+
+Click **Unlink Spotify** in Altair Settings, then confirm **Disconnect**. Cancel, Escape, clicking outside the dialog, or rerunning Altair dismisses an unanswered confirmation without unlinking. Confirming removes saved account tokens and pending browser authorization. Click **Link Spotify** to approve again. Turning **Spotify Connection** off also asks for confirmation; this only pauses polling and preserves the account link.
 
 Unlink removes this computer's credentials. To revoke the app's permission at Spotify too, remove it from [Spotify account apps](https://www.spotify.com/account/apps/) yourself. Closing the companion stops the local connection. No account was linked as part of development tests.
 
@@ -33,7 +35,7 @@ Files live in `%LOCALAPPDATA%/Altair/Spotify` on Windows, or `~/Altair/Spotify` 
 
 ## Troubleshooting
 
-- **Companion unavailable:** keep its console running, check the matching key/port, and confirm your executor allows loopback requests.
+- **Companion unavailable:** run `StartSpotify.cmd` again, check the matching key/port, and confirm your executor allows loopback requests. A temporary connection failure retries automatically and does not delete the saved link.
 - **Redirect mismatch:** use the exact numeric loopback redirect above, including port and `/callback`.
 - **Access denied:** check Premium, the developer app's allowlist and granted permissions. Re-link after changing app access.
 - **Nothing playing:** start playback using Spotify itself. Altair does not automatically choose a playback device.

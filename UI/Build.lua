@@ -832,7 +832,43 @@ local function bindCapsules(context)
 	function controller:LinkSpotify()
 		return self:Enqueue("link",{clientId=tostring(get("Spotify Client ID","")):match("^%s*(.-)%s*$")})
 	end
-	function controller:UnlinkSpotify() return self:Enqueue("unlink",{}) end
+	local unlinkDialog=make("TextButton",root,{Name="SpotifyUnlinkConfirmation",Text="",AutoButtonColor=false,
+		Size=UDim2.fromScale(1,1),BackgroundColor3=Color3.new(),BackgroundTransparency=.35,Visible=false,ZIndex=650})
+	local unlinkCard=frame(unlinkDialog,"Card",0,0,380,184,Color3.fromRGB(20,20,22),18)
+	unlinkCard.AnchorPoint=Vector2.new(.5,.5);unlinkCard.Position=UDim2.fromScale(.5,.5);unlinkCard.Size=UDim2.new(1,-32,0,184);unlinkCard.Active=true
+	make("UISizeConstraint",unlinkCard,{Name="Bounds",MaxSize=Vector2.new(380,184)})
+	make("UIStroke",unlinkCard,{Color=white,Transparency=.65,Thickness=1})
+	local unlinkTitle=label(unlinkCard,"Title","Disconnect Spotify?",22,20,336,24,18,white)
+	local unlinkBody=label(unlinkCard,"Description","",22,56,336,54,13,gray)
+	unlinkBody.TextWrapped=true;unlinkBody.TextTruncate=Enum.TextTruncate.None;unlinkBody.Size=UDim2.new(1,-44,0,54)
+	local function closeUnlink(confirmed)
+		local pending=controller.pendingDisconnect
+		if not pending or not controller.alive then return false end
+		controller.pendingDisconnect=nil;unlinkDialog.Visible=false
+		if confirmed then pending() end
+		return true
+	end
+	local cancel=button(unlinkCard,"Cancel","Cancel",22,128,158,36,Color3.fromRGB(40,40,43),function() closeUnlink(false) end)
+	local confirm=button(unlinkCard,"Confirm","Disconnect",190,128,168,36,Color3.fromRGB(118,42,48),function() closeUnlink(true) end)
+	cancel.Size=UDim2.new(.5,-27,0,36);confirm.Position=UDim2.new(.5,5,0,128);confirm.Size=UDim2.new(.5,-27,0,36)
+	unlinkCard.ZIndex=651
+	for _,object in ipairs(unlinkCard:GetDescendants()) do if object:IsA("GuiObject") then object.ZIndex=652 end end
+	connect(unlinkDialog.Activated,function() closeUnlink(false) end)
+	connect(input.InputBegan,function(event) if event.KeyCode==Enum.KeyCode.Escape then closeUnlink(false) end end)
+	function controller:ResolveSpotifyDisconnect(confirmed) return closeUnlink(confirmed==true) end
+	function controller:ConfirmSpotifyDisconnect(action,pauseOnly)
+		if not self.alive then return false end
+		if self.pendingDisconnect then return true end
+		self.pendingDisconnect=action;unlinkDialog.Visible=true
+		unlinkTitle.Text=pauseOnly and "Pause Spotify connection?" or "Disconnect Spotify?"
+		unlinkBody.Text=pauseOnly and "Stop Spotify updates in Altair? Your saved account link will remain available when you turn it back on."
+			or "Remove this computer's saved Spotify link? You will need to approve Spotify again to reconnect."
+		confirm.Text=pauseOnly and "Pause connection" or "Disconnect"
+		return true
+	end
+	function controller:UnlinkSpotify()
+		return self:ConfirmSpotifyDisconnect(function() self:Enqueue("unlink",{}) end,false)
+	end
 	function controller:Control(action,value)
 		if not self.media.connected then
 			if self.media.message then notifyError(self.media.message) else self:ShowSetup() end
@@ -864,6 +900,9 @@ local function bindCapsules(context)
 		state.artist=tostring(state.artist or ""):sub(1,300)
 		state.connected=state.connected==true;state.playing=state.playing==true
 		self.media,self.mediaAt=state,os.clock()
+		if context.Session and (state.connected or state.linked==false) then
+			context.Session.media=table.clone(state);context.Session.mediaAt=self.mediaAt
+		end
 		measureCompactTitle(state.title)
 		updateArtwork(state.connected and state.artwork or nil)
 	end
@@ -1193,7 +1232,7 @@ local function bindCapsules(context)
 				else
 					controller.failures+=1
 					controller.nextPoll=os.clock()+math.min(30,2^math.min(5,controller.failures))
-					controller:SetMedia({connected=false,title="Spotify",message=tostring(state)})
+					controller:SetMedia({connected=false,linked=controller.media.linked or controller.media.connected,title=controller.media.title,message=tostring(state)})
 				end
 			end)
 		elseif not get("Spotify Connection",false) and not context.MediaAdapter and controller.media.connected then
@@ -1271,6 +1310,10 @@ local function bindCapsules(context)
 	end)
 	function controller:Destroy()
 		if not self.alive then return end
+		if context.Session and self.media.connected then
+			context.Session.media=table.clone(self.media);context.Session.media.progress=progress();context.Session.mediaAt=os.clock()
+		end
+		self.pendingDisconnect=nil;unlinkDialog:Destroy()
 		self.alive=false
 		self.cancelDrag();table.clear(self.commands)
 		for _,connection in ipairs(self.connections) do connection:Disconnect() end
@@ -1300,7 +1343,14 @@ local function bindCapsules(context)
 		for _,object in card:GetDescendants() do if object:IsA("GuiObject") and object.Name~="Dismiss" then object.ZIndex=351 end end
 		root:SetAttribute("AltairCapsuleSchema",2)
 	end
-	if not context.BuildOnly then controller:Layout() end
+	if not context.BuildOnly then
+		if context.Session and context.Session.media and get("Spotify Connection",false) then
+			local cached=table.clone(context.Session.media)
+			if cached.playing then cached.progress=math.min(cached.duration or 0,(cached.progress or 0)+math.max(0,os.clock()-(context.Session.mediaAt or os.clock()))) end
+			controller:SetMedia(cached)
+		end
+		controller:Layout()
+	end
 	return controller
 end
 
@@ -1335,7 +1385,7 @@ return function(options)
 			objects[index].Parent = objects[nodes[index][1]]
 		end
 		styleSettings(objects[1])
-		objects[1]:SetAttribute("AltairUIRevision",5)
+		objects[1]:SetAttribute("AltairUIRevision",6)
 		bindCapsules({Root=objects[1],BuildOnly=true})
 		return objects[1]
 	end)

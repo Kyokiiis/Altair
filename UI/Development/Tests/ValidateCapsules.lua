@@ -13,9 +13,9 @@ return function()
 		local settings={['Capsules Enabled']=true,['Spotify Connection']=true,['Spotify Client ID']=string.rep('a',32)}
 		local linked=false
 		local media={connected=false,title='Simulated test track',artist='Validation only',duration=100,progress=5,playing=true,volume=.8}
-		local commands={}
+		local commands={};local session={}
 		notifications=bindings.Notifications({Root=root,RequireBuiltUI=true})
-		controller=bindings.Capsules({Root=root,RequireBuiltUI=true,Clock=bindings.Clock,
+		controller=bindings.Capsules({Root=root,RequireBuiltUI=true,Clock=bindings.Clock,Session=session,
 			GetSetting=function(name,fallback) local value=settings[name];if value==nil then return fallback end;return value end,
 			Notify=function(...) return notifications:Notify(...) end,Notifications=notifications,
 			MediaAdapter=function(_,path,body)
@@ -81,7 +81,11 @@ return function()
 		expect(#commands==3 and commands[2].action=='seek' and commands[2].value==90,'Seeks were not serialized and coalesced')
 		expect(media.volume==.4 and media.progress==90,'Commands did not update playback')
 		controller:UnlinkSpotify();task.wait(.1)
+		expect(linked and root.SpotifyUnlinkConfirmation.Visible,'Unlink bypassed confirmation')
+		controller:ResolveSpotifyDisconnect(false);expect(linked,'Cancel unlinked the account')
+		controller:UnlinkSpotify();controller:ResolveSpotifyDisconnect(true);task.wait(.1)
 		expect(not linked and not controller.media.connected,'Unlink retained account state')
+		expect(session.media.linked==false,'Unlink left a linked rerun snapshot')
 		controller:LinkSpotify();task.wait(.1);expect(linked,'Relink failed')
 		controller:Open(nil)
 		local bar=root.SmartBar
@@ -112,7 +116,30 @@ return function()
 		expect(last.AbsolutePosition.Y+last.AbsoluteSize.Y<=bar.AbsolutePosition.Y-6,'Notifications covered the bottom SmartBar')
 		bar.Position=UDim2.new(1,-324,0,24);task.wait(.6)
 		expect(notifications.active[1].group.AbsolutePosition.Y>=bar.AbsolutePosition.Y+bar.AbsoluteSize.Y+6,'Notifications did not follow the bar to the top')
-		controller:Destroy();expect(not controller.alive and #controller.connections==0,'Capsule connections leaked on unload')
+		local cachedTitle=controller.media.title
+		controller:UnlinkSpotify();controller:Destroy()
+		expect(linked,'UI teardown unlinked Spotify')
+		expect(not controller:ResolveSpotifyDisconnect(true),'Destroyed UI accepted a pending confirmation')
+		expect(not controller.alive and #controller.connections==0,'Capsule connections leaked on unload')
+		local nextRoot,nextBindings=require(script.Parent.Parent.Parent.Build)()
+		local nextController
+		local resumed,problem=pcall(function()
+			nextController=nextBindings.Capsules({Root=nextRoot,RequireBuiltUI=true,Clock=nextBindings.Clock,Session=session,
+				GetSetting=function(name,fallback)if name=='Spotify Connection'then return true end;return fallback end,Notify=function()end,MediaAdapter=function()return table.clone(media)end})
+			expect(nextController.media.connected and nextController.media.title==cachedTitle,'Rerun lost the saved playback snapshot')
+			local paused=false
+			nextController:ConfirmSpotifyDisconnect(function()paused=true end,true)
+			nextController:ResolveSpotifyDisconnect(false);expect(not paused,'Cancel paused the connection')
+			nextController:ConfirmSpotifyDisconnect(function()paused=true end,true)
+			nextController:ResolveSpotifyDisconnect(true);expect(paused,'Confirmed pause was not applied')
+			nextController:Destroy();nextRoot:Destroy()
+			nextRoot,nextBindings=require(script.Parent.Parent.Parent.Build)()
+			nextController=nextBindings.Capsules({Root=nextRoot,RequireBuiltUI=true,Clock=nextBindings.Clock,Session=session,
+				GetSetting=function(_,fallback)return fallback end,Notify=function()end,MediaAdapter=function()return table.clone(media)end})
+			expect(not nextController.media.connected,'Rerun ignored an explicitly paused connection')
+		end)
+		if nextController then nextController:Destroy() end;nextRoot:Destroy()
+		if not resumed then error(problem,0) end
 		return {passed=true,checks=checks,accountLinked=false}
 	end)
 	if controller then controller:Destroy() end

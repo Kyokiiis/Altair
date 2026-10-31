@@ -925,13 +925,13 @@ local altairSettings = {
 		categorySettings = {
 			{name="Capsules Enabled", settingType="Boolean", current=true, id="capsulesenabled"},
 			{name="Capsule Scale", settingType="Number", current=1.25, values={0.65,2}, id="capsulescale"},
-			{name="Spotify Connection", settingType="Boolean", current=false, id="spotifyenabled", description="Keep the local companion running to use playback controls."},
+			{name="Spotify Connection", settingType="Boolean", current=false, id="spotifyenabled", confirmDisable=true, description="Reconnect automatically across Altair reruns. Turning this off asks before pausing updates; the saved account remains linked."},
 			{name="Spotify Client ID", settingType="Input", current="", id="spotifyclientid", description="Public Client ID from your Spotify developer app. Never enter a client secret."},
 			{name="Spotify Bridge Key", settingType="Input", current="", id="spotifybridgekey", description="Paste the local key printed by the companion. Account tokens stay in the companion."},
 			{name="Spotify Bridge Port", settingType="Number", current=43827, values={1024,65535}, id="spotifyport"},
 			{name="Spotify Setup", settingType="Action", description="1. Run Companion/StartSpotify.cmd and leave it open.\n2. Create a Spotify developer app with redirect http://127.0.0.1:43827/callback (match your Bridge Port).\n3. Paste its public Client ID and the companion's local key above. Never enter a client secret.\n4. Enable Spotify Connection, then click Link Spotify and approve in your browser.\n5. Start playback in Spotify. Unlink Spotify deletes this device's account tokens.\nPremium and Spotify app access rules apply. Full guide: Companion/README.md.", action=function() if altairValues.capsules then altairValues.capsules:ShowSetup() end end},
 			{name="Link Spotify", settingType="Action", description="Open Spotify approval in your browser.", action=function() if altairValues.capsules then altairValues.capsules:LinkSpotify() end end},
-			{name="Unlink Spotify", settingType="Action", description="Delete the saved account tokens and cancel pending linking.", action=function() if altairValues.capsules then altairValues.capsules:UnlinkSpotify() end end},
+			{name="Unlink Spotify", settingType="Action", description="Ask for confirmation before deleting the saved account link.", action=function() if altairValues.capsules then altairValues.capsules:UnlinkSpotify() end end},
 		},
 	},
 }
@@ -1000,7 +1000,7 @@ function altairValues.loadUIModule(name)
 		local ok, contents = pcall(read, altairValues.altairFolder .. "/UI/" .. name .. ".lua")
 		if ok and type(contents)=="string" and contents:match("%S") then source=contents end
 	end
-	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua")) end
+	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=6") end
 	assert(type(source)=="string" and source:match("%S"), "Empty Altair UI module: "..name)
 	local compile=optional(loadstring)
 	assert(compile,"This executor does not support loadstring")
@@ -1013,7 +1013,7 @@ local function loadInterface()
 	local build=altairValues.loadUIModule("Build")
 	assert(type(build)=="function", "UI/Build.lua must return a UI factory function")
 	local root, bindings = build()
-	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=5) then
+	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=6) then
 		if typeof(root)=="Instance" then root:Destroy() end
 		altairValues.remoteInterface=true
 		root,bindings=altairValues.loadUIModule("Build")()
@@ -1022,6 +1022,7 @@ local function loadInterface()
 	assert(typeof(root) == "Instance" and root:IsA("ScreenGui"), "The UI builder must return a ScreenGui")
 	-- Catch an incompatible builder before mounting it or binding events.
 	local ok, validationError = pcall(function()
+		assert(root:GetAttribute("AltairUIRevision")==6 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: Spotify connection confirmation is missing")
 		assert(type(bindings)=="table" and type(bindings.Capsules)=="function", "Update UI/Build.lua: capsule bindings are missing")
 		assert(root:FindFirstChild("TopCapsules") and root:FindFirstChild("NotificationCapsules"), "Update UI/Build.lua: capsule templates are missing")
 		for _, name in ipairs({ "Character", "CustomScriptPrompt", "Disconnected", "GameDetection", "Home",
@@ -9450,6 +9451,10 @@ end
 local function settingsPath()
 	return altairValues.altairFolder .. "/" .. altairValues.settingsFile
 end
+-- UI lifetimes are shorter than the Spotify link. Keep only configuration and
+-- playback metadata here; account tokens remain in the companion.
+altairValues.spotifySession = type(env.AltairSpotifySession)=="table" and env.AltairSpotifySession or {}
+env.AltairSpotifySession = altairValues.spotifySession
 
 -- Keep a validated recovery copy; executor file APIs do not promise atomic writes.
 altairValues.settingsStore = { status = "Not loaded" }
@@ -9506,12 +9511,6 @@ function altairValues.settingsStore:write(encoded)
 	return false
 end
 local function saveSettings(notifyUser)
-	if not writefile then
-		if notifyUser then queueNotification("Settings updated","",nil,{Key="settings-update",Duration=3}) end
-		return false
-	end
-
-
 	local flat = {}
 	for _, category in ipairs(altairSettings) do
 		for _, setting in ipairs(category.categorySettings) do
@@ -9519,6 +9518,13 @@ local function saveSettings(notifyUser)
 				flat[setting.id] = setting.current
 			end
 		end
+	end
+	local spotify={}
+	for _,id in ipairs({"spotifyenabled","spotifyclientid","spotifybridgekey","spotifyport"}) do spotify[id]=flat[id] end
+	altairValues.spotifySession.settings=spotify
+	if not writefile then
+		if notifyUser then queueNotification("Settings updated","",nil,{Key="settings-update",Duration=3}) end
+		return false
 	end
 
 	local encodeSuccess, encoded = pcall(httpService.JSONEncode, httpService, flat)
@@ -9532,9 +9538,10 @@ local function saveSettings(notifyUser)
 	return saved
 end
 
-local function assembleSettings()
+local function restoreSettings()
+	if altairValues.settingsStore.restored then return end
 	do
-		local stored = altairValues.settingsStore:load()
+		local stored = altairValues.settingsStore:load() or altairValues.spotifySession.settings
 		if type(stored) == "table" then
 			for _, category in ipairs(altairSettings) do
 				for _, setting in ipairs(category.categorySettings) do
@@ -9561,6 +9568,11 @@ local function assembleSettings()
 			end
 		end
 	end
+	altairValues.settingsStore.restored=true
+end
+
+local function assembleSettings()
+	restoreSettings()
 
 	saveSettings() -- write back quietly, picking up settings added since the file was created
 
@@ -9719,7 +9731,7 @@ local function assembleSettings()
 
 					newSwitch.Interact.MouseButton1Click:Connect(function()
 						if denyLocked(setting) then return end
-
+						local function applyChange()
 						local previousValue = setting.current
 						setting.current = not setting.current
 						altairValues.activity:record("Setting changed", setting.name .. (setting.current and " · Enabled" or " · Disabled"))
@@ -9751,6 +9763,10 @@ local function assembleSettings()
 						tweenService:Create(indicator, TweenInfo.new(enabled and 0.45 or 0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
 							Size = UDim2.new(0, 17, 0, 17),
 						}):Play()
+						end
+						if setting.current and setting.confirmDisable and altairValues.capsules then
+							altairValues.capsules:ConfirmSpotifyDisconnect(applyChange,true)
+						else applyChange() end
 					end)
 				elseif settingType == "Input" then
 					local newInput, box = makeValueInput(newList, setting, "input")
@@ -10117,7 +10133,9 @@ altairAPI.Destroy = altairAPI.Unload
 altairAPI.Toast = Toast
 altairAPI.QueueNotification = queueNotification
 altairAPI.Notify = queueNotification
+restoreSettings() -- Restore connection configuration before the first media poll.
 altairValues.capsules = altairValues.interfaceBindings.Capsules({Root=UI, RequireBuiltUI=true, Clock=altairValues.interfaceBindings.Clock,
+	Session=altairValues.spotifySession,
 	GetSetting=settingValue, Request=originalRequest, Notify=queueNotification, Alive=checkAltair,
 	GetRainbowColor=function() return altairValues.rainbowColor end,
 	Notifications=altairValues.notificationController})

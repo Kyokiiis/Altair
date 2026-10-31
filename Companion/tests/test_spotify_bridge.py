@@ -74,6 +74,15 @@ class OAuthTests(unittest.TestCase):
             self.assertEqual(api.call_args.args,('POST','me/player/next'))
     def test_invalid_client_id(self):
         with self.assertRaises(ValueError): self.media.begin_link('secret')
+    def test_companion_restart_preserves_link_and_refresh_token(self):
+        self.store.save({'access_token':'old','refresh_token':'saved-refresh','client_id':'a'*32,'expires_at':0})
+        restarted=b.WebSpotify(self.store,43827)
+        self.assertTrue(restarted.snapshot()['linked'])
+        with patch.object(restarted,'exchange',return_value={'access_token':'renewed','expires_in':3600}):
+            self.assertEqual(restarted.access_token(),'renewed')
+        again=b.WebSpotify(self.store,43827)
+        self.assertEqual(again.tokens['refresh_token'],'saved-refresh')
+        self.assertTrue(again.snapshot()['linked'])
     def test_failure_backoff_recovers(self):
         self.media.tokens={'access_token':'test'}
         with patch.object(b.time,'monotonic',return_value=100),patch.object(self.media,'api',side_effect=ValueError('Retry later')):

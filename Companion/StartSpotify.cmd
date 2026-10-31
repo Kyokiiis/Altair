@@ -12,7 +12,12 @@ if errorlevel 1 goto failed
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 goto failed
 :run
-".venv\Scripts\python.exe" spotify_bridge.py
+start "" ".venv\Scripts\pythonw.exe" "%~dp0spotify_bridge.py"
+echo Spotify companion runs in the background. Closing this window does not unlink it.
+echo Your bridge key is in %%LOCALAPPDATA%%\Altair\Spotify\bridge.key
+timeout /t 2 /nobreak >nul
+if exist "%LOCALAPPDATA%\Altair\Spotify\bridge.key" type "%LOCALAPPDATA%\Altair\Spotify\bridge.key"
+echo.
 pause
 exit /b
 :failed

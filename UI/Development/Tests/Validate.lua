@@ -82,7 +82,7 @@ return function(build, reference)
 			if expected==reference and not expected:FindFirstChild("TopCapsules") then
 				local originalChildren={}
 				for _,child in ipairs(resultChildren) do
-					if child.Name~="TopCapsules" and child.Name~="NotificationCapsules" then originalChildren[#originalChildren+1]=child end
+					if child.Name~="TopCapsules" and child.Name~="NotificationCapsules" and child.Name~="SpotifyUnlinkConfirmation" then originalChildren[#originalChildren+1]=child end
 				end
 				resultChildren=originalChildren
 			end
