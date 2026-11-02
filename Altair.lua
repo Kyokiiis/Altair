@@ -1041,7 +1041,7 @@ function altairValues.loadUIModule(name)
 		local ok, contents = pcall(read, altairValues.altairFolder .. "/UI/" .. name .. ".lua")
 		if ok and type(contents)=="string" and contents:match("%S") then source=contents end
 	end
-	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=22") end
+	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=23") end
 	assert(type(source)=="string" and source:match("%S"), "Empty Altair UI module: "..name)
 	local compile=optional(loadstring)
 	assert(compile,"This executor does not support loadstring")
@@ -1054,7 +1054,7 @@ local function loadInterface()
 	local build=altairValues.loadUIModule("Build")
 	assert(type(build)=="function", "UI/Build.lua must return a UI factory function")
 	local root, bindings = build()
-	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=22) then
+	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=23) then
 		if typeof(root)=="Instance" then root:Destroy() end
 		altairValues.remoteInterface=true
 		root,bindings=altairValues.loadUIModule("Build")()
@@ -1064,7 +1064,7 @@ local function loadInterface()
 	assert(typeof(root) == "Instance" and root:IsA("ScreenGui"), "The UI builder must return a ScreenGui")
 	-- Catch an incompatible builder before mounting it or binding events.
 	local ok, validationError = pcall(function()
-		assert(root:GetAttribute("AltairUIRevision")==22 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: the current UI revision is missing")
+		assert(root:GetAttribute("AltairUIRevision")==23 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: the current UI revision is missing")
 		assert(type(bindings)=="table" and type(bindings.Capsules)=="function" and type(bindings.SoftShadows)=="function" and type(bindings.Dock)=="function" and type(bindings.DragContrast)=="function" and root:FindFirstChild("SharedPanelSurface"), "Update UI/Build.lua: current UI bindings are missing")
 		assert(root:FindFirstChild("TopCapsules") and root:FindFirstChild("NotificationCapsules"), "Update UI/Build.lua: capsule templates are missing")
 		for _, name in ipairs({ "Character", "CustomScriptPrompt", "Disconnected", "GameDetection", "Home",
@@ -2321,7 +2321,7 @@ do
 
 		local rainbow = settingValue("Rainbow Mode", false)
 		UI:SetAttribute("AltairThemeRainbow",rainbow)
-  if not rainbow and enabled and altairValues.theme then task.defer(function()altairValues.theme:Apply()end)end
+
 		local persistentColor = blinkState.persistentColor
 		if not rainbow and not enabled and not persistentColor then
 			return
@@ -2439,6 +2439,7 @@ do
 			end
 		end
 
+  if altairValues.theme then altairValues.theme:Rainbow(rainbow and hue or nil)end
 		enabled = rainbow or persistentColor ~= nil
 	end))
 end
@@ -4658,8 +4659,13 @@ local function getPanelButtonGeometry(panel, button)
 end
 
 altairValues.panelPointerConnections = altairValues.panelPointerConnections or {}
+altairValues.panelPointerViews=setmetatable({}, {__mode="k"})
+altairValues.panelPointerShown=setmetatable({}, {__mode="k"})
 
 altairValues.getPanelPointer = function(panel)
+ if panel then local authored=panel:FindFirstChild("Pointer");if authored then authored.Visible=false end end
+ local cached=altairValues.panelPointerViews[panel];if cached and cached.Parent then return cached end
+ local shared=altairValues.sharedPanelPointer;if shared and shared.Parent then altairValues.panelPointerViews[panel]=shared;return shared end
 	if not panel then
 		return nil
 	end
@@ -4690,7 +4696,12 @@ altairValues.getPanelPointer = function(panel)
 		local corner = pointer:FindFirstChildOfClass("UICorner")
 		if corner then corner.CornerRadius = UDim.new(0, 1) end
 
-		return pointer
+  local overlay=pointer:Clone();pointer.Visible=false
+  overlay.Name=panel.Name.."PanelPointer";overlay.Visible=false;overlay:SetAttribute("AltairThemeIgnore",true);overlay.Parent=UI
+  overlay.ZIndex=panel.ZIndex-1;overlay.BackgroundTransparency=1
+  altairValues.sharedPanelPointer=overlay
+  altairValues.panelPointerViews[panel]=overlay
+  return overlay
 	end
 
 	return nil
@@ -4698,42 +4709,49 @@ end
 
 altairValues.syncPanelPointer = function(panel, button)
 	local pointer = altairValues.getPanelPointer(panel)
+ if altairValues.panelPointerOwner~=panel then return pointer end
 	if not (pointer and button and button:IsA("GuiObject")) then
 		return nil
 	end
 
-	local dock = altairValues.smartBarLayout:getDock()
-	local panelPos, panelSize = panel.AbsolutePosition, panel.AbsoluteSize
-	local buttonCenter = button.AbsolutePosition + button.AbsoluteSize * 0.5
-	local edgePadding = 18
-
-	pointer.AnchorPoint = Vector2.new(0.5, 0.5)
-	pointer.Rotation = 45
-
-	local x = math.clamp(buttonCenter.X - panelPos.X, edgePadding, math.max(edgePadding, panelSize.X - edgePadding))
-	local factor=UI:GetAttribute("AltairDisplayScale") or 1
- if dock=="left"or dock=="right"then
-  local y=math.clamp(buttonCenter.Y-panelPos.Y,edgePadding,math.max(edgePadding,panelSize.Y-edgePadding))
-  pointer.Position=UDim2.fromOffset(dock=="left"and 0 or panelSize.X/factor,y/factor)
+ local position,size=panel.AbsolutePosition,panel.AbsoluteSize
+ local center=button.AbsolutePosition+button.AbsoluteSize*.5
+ local half=size*.5;local delta=center-(position+half)
+ local margin=18;local destination
+ if math.abs(delta.X)/math.max(1,half.X)>math.abs(delta.Y)/math.max(1,half.Y)then
+  destination=Vector2.new(delta.X<0 and position.X or position.X+size.X,math.clamp(center.Y,position.Y+margin,math.max(position.Y+margin,position.Y+size.Y-margin)))
  else
-  pointer.Position = UDim2.fromOffset(x/factor, dock == "top" and 0 or panelSize.Y/factor)
+  destination=Vector2.new(math.clamp(center.X,position.X+margin,math.max(position.X+margin,position.X+size.X-margin)),delta.Y<0 and position.Y or position.Y+size.Y)
  end
+ local factor=UI:GetAttribute("AltairDisplayScale")or 1
+ pointer.Size=UDim2.fromOffset(12*factor,12*factor);pointer.Rotation=45;pointer.AnchorPoint=Vector2.new(.5,.5)
+ pointer.ZIndex=math.min(panel.ZIndex,UI.SharedPanelSurface.Visible and UI.SharedPanelSurface.ZIndex or panel.ZIndex)-1
+ local material=UI.SharedPanelSurface.Visible and UI.SharedPanelSurface or panel
+ local color=material.BackgroundColor3;local gradient=material:FindFirstChildOfClass("UIGradient")
+ if gradient then local points=gradient.Color.Keypoints;local tint=points[1].Value:Lerp(points[#points].Value,.5);color=Color3.new(color.R*tint.R,color.G*tint.G,color.B*tint.B)end
+ pointer.BackgroundColor3=color
+ local origin=UI.AbsolutePosition
+ if not pointer:GetAttribute("AltairPointerInitialized")then pointer.Position=UDim2.fromOffset(center.X-origin.X,center.Y-origin.Y);pointer:SetAttribute("AltairPointerInitialized",true)end
+ tweenService:Create(pointer,TweenInfo.new(.28,Enum.EasingStyle.Sine,Enum.EasingDirection.Out),{Position=UDim2.fromOffset(destination.X-origin.X,destination.Y-origin.Y)}):Play()
 
-	pointer.Visible = true
 	return pointer
 end
 
 altairValues.setPanelPointerVisible = function(panel, button, visible, duration)
+ if not visible and altairValues.panelPointerOwner~=panel then return end
+ if visible then altairValues.panelPointerOwner=panel end
+ altairValues.panelPointerShown[panel]=visible==true
 	local pointer = altairValues.syncPanelPointer(panel, button)
 	if not pointer then
 		return
 	end
 
+ pointer.Visible=panel.Visible
 	local goal = {}
 	if pointer:IsA("ImageLabel") or pointer:IsA("ImageButton") then
 		goal.ImageTransparency = visible and 0 or 1
 	elseif pointer:IsA("Frame") or pointer:IsA("ScrollingFrame") then
-		goal.BackgroundTransparency = visible and panel.BackgroundTransparency or 1
+		goal.BackgroundTransparency = visible and(UI:GetAttribute("AltairPanelTransparency")or .1)or 1
 	else
 		pcall(function()
 			goal.BackgroundTransparency = visible and 0 or 1
@@ -4764,6 +4782,7 @@ altairValues.bindPanelPointer = function(panel, button)
 		return
 	end
 
+ track(panel:GetPropertyChangedSignal("Visible"):Connect(function()if altairValues.panelPointerOwner==panel and altairValues.sharedPanelPointer then altairValues.sharedPanelPointer.Visible=panel.Visible end end))
 	local function sync()
 		if panel.Parent and button.Parent then
 			altairValues.syncPanelPointer(panel, button)
@@ -4775,8 +4794,10 @@ altairValues.bindPanelPointer = function(panel, button)
 		track(button:GetPropertyChangedSignal("AbsoluteSize"):Connect(sync)),
 		track(panel:GetPropertyChangedSignal("AbsolutePosition"):Connect(sync)),
 		track(panel:GetPropertyChangedSignal("AbsoluteSize"):Connect(sync)),
+        track(panel:GetPropertyChangedSignal("BackgroundColor3"):Connect(sync)),
 	}
 
+	local gradient=panel:FindFirstChildOfClass("UIGradient");if gradient then table.insert(altairValues.panelPointerConnections[panel],track(gradient:GetPropertyChangedSignal("Color"):Connect(sync)))end
 	sync()
 end
 
@@ -5326,6 +5347,7 @@ local function openPanel(panelName)
 end
 
 altairValues.smartBarLayout.onDragBegin = function(self)
+ if settingsPanel.Visible and not settingsPanel:GetAttribute("AltairClosing")then self.activePanel=nil;task.spawn(closeSettings)end
 	for _, panelName in ipairs({ "Character", "Scripts", "Playerlist" }) do
 		local panel = UI:FindFirstChild(panelName)
 		if panel and panel.Visible then
@@ -7991,7 +8013,7 @@ local function openSmartBar()
 	end
 
 	smartBarTransition:create(smartBar.Back, TweenInfo.new(1, Enum.EasingStyle.Quint), { BackgroundTransparency = .45 }):Play()
-	smartBarTransition:create(smartBar.Back.UIStroke, TweenInfo.new(1, Enum.EasingStyle.Quint), { Transparency = .82 }):Play()
+	smartBarTransition:create(smartBar.Back.UIStroke, TweenInfo.new(1, Enum.EasingStyle.Quint), { Transparency = .96 }):Play()
 	altairValues.smartBarLayout:syncContents(true)
 	altairValues.smartBarLayout:syncToasts()
 end
@@ -9835,6 +9857,7 @@ local function openSettings()
 end
 
 closeSettings = function(combined)
+ altairValues.setPanelPointerVisible(settingsPanel,smartBar.Back.Buttons.Settings,false,.12)
  altairValues.sharedPanel:cancel(settingsPanel)
  if altairValues.themePicker then altairValues.themePicker:_setShown(false,true)end
  settingsPanel:SetAttribute("AltairClosing",true)

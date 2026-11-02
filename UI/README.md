@@ -9,3 +9,5 @@ Notifications: Altair.notification(title, description). Notify and QueueNotifica
 Spotify instructions: ../Companion/README.md. Licences: ../THIRD_PARTY_NOTICES.md. Modified component source is embedded in Build.lua.
 
 Tests and developer implementations are excluded from the public tree. The Developer tab appears only if Volt workspace contains Altair/Developer/AltairDevTools.lua. No inline source override is accepted.
+
+Rainbow mode also animates coloured card/capsule gradients, accents, outlines and coloured glyphs. White/black foregrounds, artwork and semantic status indicators are preserved. Only visible registered accents update at the existing capped 20 Hz rate; the selected style/colour palette is restored when disabled.

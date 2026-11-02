@@ -909,26 +909,6 @@ local function applyIcon(object,name)
  return true
 end
 -- Official Phosphor Fill artwork; one embedded atlas, no runtime icon downloads.
-local filledSmartBarPNG="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"
-local filledSmartBarAsset
-local function applyFilledSmartBar(root)
- local register=getcustomasset or getsynasset
- if not filledSmartBarAsset and type(register)=="function"and type(writefile)=="function"then
-  local ok,result=pcall(function()
-   local data=filledSmartBarPNG;local alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";local lookup={};for i=1,#alphabet do lookup[alphabet:byte(i)]=i-1 end
-   local bytes={};for i=1,#data,4 do local a,b,c,d=data:byte(i,i+3);local n=(lookup[a]or 0)*262144+(lookup[b]or 0)*4096+(lookup[c]or 0)*64+(lookup[d]or 0);bytes[#bytes+1]=string.char(math.floor(n/65536)%256);if c~=61 then bytes[#bytes+1]=string.char(math.floor(n/256)%256)end;if d~=61 then bytes[#bytes+1]=string.char(n%256)end end
-   if makefolder then for _,path in ipairs({"Altair","Altair/UI","Altair/UI/Assets"})do pcall(makefolder,path)end end
-   local path="Altair/UI/Assets/SmartBar-Filled-1.png";if not isfile or not isfile(path)then writefile(path,table.concat(bytes))end;return register(path)
-  end)
-  if ok then filledSmartBarAsset=result;iconSheets[result]=true end
- end
- if not filledSmartBarAsset then return end
- for index,name in ipairs({"Home","Character","Scripts","Playerlist","Settings"})do
-  local icon=root.SmartBar.Back.Buttons[name]:FindFirstChild("Icon")
-  if icon and name~="Character"then icon.Image=filledSmartBarAsset;icon.ImageRectSize=Vector2.new(96,96);icon.ImageRectOffset=Vector2.new((index-1)*96,0);icon.ScaleType=Enum.ScaleType.Fit;icon:SetAttribute("AltairIcon","phosphor-filled-"..name);icon:SetAttribute("AltairFilledIcon",true)end
- end
-end
-
 local legacyIcons={
  ["4400696294"]="rotate-ccw",["92188766517878"]="shuffle",["138133190015277"]="log-in",
  ["9134761478"]="toggle-left",["14385986465"]="toggle-right",["9134787693"]="toggle-left",
@@ -988,7 +968,10 @@ local function bindDock(root)
   timePosition=clock.Position,timeSize=clock.Size,timeAnchor=clock.AnchorPoint,timeAlign=clock.TextXAlignment,
   ampmPosition=clock.AMPM.Position,ampmSize=clock.AMPM.Size,ampmAnchor=clock.AMPM.AnchorPoint,ampmAlign=clock.AMPM.TextXAlignment}
  local horizontal={};local names={"Home","Character","Scripts","Playerlist","Settings"}
- local function mirror(p)return UDim2.new(1-p.X.Scale,-p.X.Offset,p.Y.Scale,p.Y.Offset)end
+ local function mirrorPosition(position,size,pivot)
+  local shift=2*pivot.X-1
+  return UDim2.new(1-position.X.Scale+size.X.Scale*shift,-position.X.Offset+size.X.Offset*shift,position.Y.Scale,position.Y.Offset)
+ end
  local function pixel(p,size)return Vector2.new(p.X.Scale*size.X+p.X.Offset,p.Y.Scale*size.Y+p.Y.Offset)end
  local function anchor(object,nextAnchor)
   local delta=nextAnchor-object.AnchorPoint
@@ -1016,9 +999,9 @@ local function bindDock(root)
   self.mirrored=mirrored;if self.morphActive then return end
   anchor(back,base.backAnchor);anchor(buttons,base.buttonsAnchor);anchor(clock,base.timeAnchor);anchor(clock.AMPM,base.ampmAnchor)
   clock.TextXAlignment=base.timeAlign;clock.AMPM.TextXAlignment=base.ampmAlign
-  set(back,{Position=mirrored and mirror(base.backPosition)or base.backPosition,Size=base.backSize},animate)
-  set(buttons,{Position=mirrored and mirror(base.buttonsPosition)or base.buttonsPosition,Size=base.buttonsSize},animate)
-  set(clock,{Position=mirrored and mirror(base.timePosition)or base.timePosition,Size=base.timeSize},animate)
+  set(back,{Position=mirrored and mirrorPosition(base.backPosition,base.backSize,base.backAnchor)or base.backPosition,Size=base.backSize},animate)
+  set(buttons,{Position=base.buttonsPosition,Size=base.buttonsSize},animate)
+  set(clock,{Position=mirrored and mirrorPosition(base.timePosition,base.timeSize,base.timeAnchor)or base.timePosition,Size=base.timeSize},animate)
   set(clock.AMPM,{Position=base.ampmPosition,Size=base.ampmSize},animate)
  end
  function view:Apply(mode,animate)
@@ -1034,7 +1017,7 @@ local function bindDock(root)
   local factor=root:GetAttribute("AltairDisplayScale")or 1
   if vertical and not self.vertical and layout and layout.Parent then
    for _,button in ipairs(buttons:GetChildren())do if button:IsA("GuiObject")and button.AbsoluteSize.X>0 then
-    horizontal[button]=(button.AbsolutePosition-buttons.AbsolutePosition+button.AbsoluteSize*button.AnchorPoint)/factor
+    horizontal[button]=(button.AbsolutePosition-back.AbsolutePosition+button.AbsoluteSize*button.AnchorPoint)/factor
    end end
   end
   local rendered={}
@@ -1045,22 +1028,24 @@ local function bindDock(root)
   local startSize=Vector2.new(bar.Size.X.Offset,bar.Size.Y.Offset)
   local targetSize=vertical and Vector2.new(60,300)or Vector2.new(300,60)
   local starts,targets={},{ }
-  local targetBackSize=Vector2.new(base.backSize.X.Offset,base.backSize.Y.Offset)
-  local targetBackAnchor=pixel(self.mirrored and mirror(base.backPosition)or base.backPosition,targetSize)
+  local targetBackSize=pixel(base.backSize,targetSize)
+  local targetBackAnchor=pixel(self.mirrored and mirrorPosition(base.backPosition,base.backSize,base.backAnchor)or base.backPosition,targetSize)
   local targetBackTop=targetBackAnchor-targetBackSize*base.backAnchor
   for o,point in pairs(rendered)do starts[o]=point end
   local startBackSize=back.AbsoluteSize/factor
   local startBackCenter=(back.AbsolutePosition+back.AbsoluteSize/2-bar.AbsolutePosition)/factor
-  local startClock=(clock.AbsolutePosition+clock.AbsoluteSize*clock.AnchorPoint-bar.AbsolutePosition)/factor
+  local startClock=(clock.AbsolutePosition+clock.AbsoluteSize*.5-bar.AbsolutePosition)/factor
   local startTimeSize=Vector2.new(clock.Size.X.Offset,clock.Size.Y.Offset)
-  local startAMPM=pixel(clock.AMPM.Position,startTimeSize);local startAMPMSize=Vector2.new(clock.AMPM.Size.X.Offset,clock.AMPM.Size.Y.Offset)
+  local startAMPM=pixel(clock.AMPM.Position,startTimeSize)-pixel(clock.AMPM.Size,startTimeSize)*clock.AMPM.AnchorPoint;local startAMPMSize=Vector2.new(clock.AMPM.Size.X.Offset,clock.AMPM.Size.Y.Offset)
   for i,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then targets[o]=vertical and Vector2.new(30,100+(i-1)*40)or targetBackTop+(horizontal[o]or Vector2.new(27+(i-1)*39,25))end end
   local endBackSize=vertical and Vector2.new(50,214)or targetBackSize
   local endBackCenter=vertical and Vector2.new(30,180)or targetBackTop+targetBackSize/2
-  local targetClock=vertical and Vector2.new(30,28)or targetBackTop+pixel(self.mirrored and mirror(base.timePosition)or base.timePosition,targetBackSize)
-  local targetTimeSize=vertical and Vector2.new(54,19)or Vector2.new(base.timeSize.X.Offset,base.timeSize.Y.Offset)
+  local targetClock=vertical and Vector2.new(30,28)or targetBackTop+pixel(self.mirrored and mirrorPosition(base.timePosition,base.timeSize,base.timeAnchor)or base.timePosition,targetBackSize)
+  local targetTimeSize=vertical and Vector2.new(54,19)or pixel(base.timeSize,targetBackSize)
+  if not vertical then targetClock+=targetTimeSize*(Vector2.new(.5,.5)-base.timeAnchor)end
   local targetAMPM=vertical and Vector2.new(7,19)or pixel(base.ampmPosition,targetTimeSize)
-  local targetAMPMSize=vertical and Vector2.new(40,11)or Vector2.new(base.ampmSize.X.Offset,base.ampmSize.Y.Offset)
+  local targetAMPMSize=vertical and Vector2.new(40,11)or pixel(base.ampmSize,targetTimeSize)
+  if not vertical then targetAMPM-=targetAMPMSize*base.ampmAnchor end
   anchor(back,Vector2.new(.5,.5));anchor(buttons,Vector2.new(.5,.5));anchor(clock,Vector2.new(.5,.5));anchor(clock.AMPM,Vector2.zero)
   buttons.Position=UDim2.fromScale(.5,.5);buttons.Size=UDim2.fromScale(1,1)
   self.morphActive=true
@@ -3705,18 +3690,30 @@ local function buildStyleGallery(parent,setting,changed)
   local scale=make("UIScale","HoverScale",card,{Scale=1})
   local preview=make("Frame","SmartBarPreview",card,{Position=UDim2.fromOffset(8,8),Size=UDim2.new(1,-16,0,72),ClipsDescendants=true,BackgroundColor3=Color3.fromRGB(12,14,20),BackgroundTransparency=.15})
   corner(preview,8)
-  local handle=make("Frame","Handle",preview,{Position=UDim2.new(.5,-24,0,10),Size=UDim2.fromOffset(48,2),BackgroundColor3=Color3.fromRGB(185,188,200),BackgroundTransparency=.3});corner(handle,2)
-  local bar=make("Frame","SmartBar",preview,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.58),Size=UDim2.new(1,-16,0,39),BackgroundColor3=id=="Roblox"and Color3.fromRGB(22,24,29)or Color3.fromRGB(17,18,22),BackgroundTransparency=.12});corner(bar,20)
-  make("UIStroke","Outline",bar,{Color=Color3.fromRGB(100,105,121),Transparency=.65,Thickness=1})
-  local clock=text("Clock",bar,"12:03",UDim2.fromOffset(8,9),UDim2.fromOffset(31,20),10,false)
-  clock.Position=UDim2.fromOffset(8,5);text("AMPM",bar,"AM",UDim2.fromOffset(8,23),UDim2.fromOffset(31,8),6,false).TextXAlignment=Enum.TextXAlignment.Center
-  local inset=make("Frame","Inset",bar,{Position=UDim2.fromOffset(43,4),Size=UDim2.new(1,-47,1,-8),BackgroundColor3=Color3.fromRGB(48,50,58),BackgroundTransparency=.4});corner(inset,16)
-  local colors={Color3.fromRGB(105,77,173),Color3.fromRGB(21,141,173),Color3.fromRGB(180,94,36),Color3.fromRGB(21,154,102),Color3.fromRGB(86,91,104)}
-  for n,iconId in ipairs({"house","person-standing","square-terminal","users-round","settings"})do
-   local button=make("Frame","Button"..n,inset,{Position=UDim2.new((n-1)/5,2,0,2),Size=UDim2.new(.2,-4,1,-4),BackgroundColor3=id=="Roblox"and Color3.fromRGB(39,41,48)or colors[n],BackgroundTransparency=id=="Roblox"and .7 or .05});corner(button,7)
-   if id=="Altair"then make("UIGradient","Gradient",button,{Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(138,144,165)),Rotation=50})end
-   local icon=make("ImageLabel","Icon",button,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(16,16)});applyIcon(icon,iconId)
+  local actual=root.SmartBar:Clone();actual.Name="SmartBarPreview";actual.AnchorPoint=Vector2.new(.5,.5);actual.Position=UDim2.fromScale(.5,.58);actual.Size=UDim2.fromOffset(300,60);actual.Visible=true;actual.BackgroundTransparency=.1;actual.Parent=preview
+  for _,object in ipairs(actual:GetDescendants())do
+   if object:IsA("UIScale")then object.Scale=1 end
+   if object:IsA("GuiObject")then object.ZIndex=z+1 end
+   if object.Name=="Shadow"or object.Name=="CircleGradient"then object:Destroy()end
   end
+  local fit=actual:FindFirstChildOfClass("UIScale")or make("UIScale","PreviewScale",actual,{})
+  local function resizePreview()fit.Scale=math.min(.7,math.max(.1,(preview.AbsoluteSize.X-12)/300))end
+  connect(preview:GetPropertyChangedSignal("AbsoluteSize"),resizePreview);task.defer(resizePreview)
+  actual.Back.AnchorPoint=Vector2.new(1,.5);actual.Back.Position=UDim2.new(1,-8,.5,0);actual.Back.Size=UDim2.new(1,-76,1,-12);actual.Back.BackgroundTransparency=.45
+  actual.Back.Buttons.AnchorPoint=Vector2.zero;actual.Back.Buttons.Position=UDim2.fromOffset(8,7);actual.Back.Buttons.Size=UDim2.new(1,-16,1,-14)
+  if id=="Roblox"then actual.BackgroundColor3=Color3.new(1,1,1);local gradient=actual:FindFirstChildOfClass("UIGradient");if gradient then gradient.Color=ColorSequence.new(Color3.fromRGB(27,29,35),Color3.fromRGB(22,24,30))end;actual.Back.BackgroundColor3=Color3.fromRGB(43,45,53)end
+  actual.Back.Time.Text="12:03";actual.Back.Time.TextTransparency=0;actual.Back.Time.AMPM.Text="AM";actual.Back.Time.AMPM.TextTransparency=0
+  for _,object in ipairs(actual:GetDescendants())do
+   if id=="Roblox"and object:IsA("UICorner")and object.CornerRadius.Scale==0 and object.CornerRadius.Offset<25 then object.CornerRadius=UDim.new(0,8)end
+   if id=="Roblox"and object:IsA("UIStroke")then object.Color=Color3.fromRGB(100,103,115);local gradient=object:FindFirstChildOfClass("UIGradient");if gradient then gradient.Color=ColorSequence.new(Color3.new(1,1,1))end end
+   if object:IsA("TextLabel")then object.TextTransparency=0;if id=="Roblox"then object.FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",object.FontFace.Weight)end end
+   if object:IsA("ImageLabel")and object.Name=="Icon"then object.ImageTransparency=0 end
+   if object:IsA("Frame")and object.Parent==actual.Back.Buttons and object.Name~="Placeholder"then
+    object.Visible=true;object.Size=UDim2.fromOffset(34,34);object.BackgroundTransparency=0
+    if id=="Roblox"then object.BackgroundColor3=Color3.new(1,1,1);object.UIGradient.Color=ColorSequence.new(Color3.fromRGB(47,49,58),Color3.fromRGB(34,36,43))end
+   end
+  end
+  local handle=make("Frame","Handle",preview,{Position=UDim2.new(.5,-24,0,6),Size=UDim2.fromOffset(48,2),BackgroundColor3=Color3.fromRGB(185,188,200),BackgroundTransparency=.3});corner(handle,2)
   text("Name",card,id,UDim2.fromOffset(12,89),UDim2.new(1,-46,0,22),16,true)
   local subtitle=text("Summary",card,id=="Roblox"and"Builder Sans · quiet surfaces"or"Colourful · glass surfaces",UDim2.fromOffset(12,114),UDim2.new(1,-24,0,18),11,false);subtitle.TextColor3=Color3.fromRGB(172,178,194)
   local selected=make("ImageLabel","Selected",card,{Position=UDim2.new(1,-31,0,91),Size=UDim2.fromOffset(18,18),ImageColor3=Color3.fromRGB(115,161,255),ImageTransparency=1});applyIcon(selected,"circle-check")
@@ -3753,6 +3750,7 @@ end
 
 local function bindTheme(root)
  local records=setmetatable({}, {__mode="k"});local controller={active=false,rainbow=false,color=Color3.fromRGB(91,141,239),strength=.25,lightness=0};local changedConnection
+ local rainbowItems=setmetatable({}, {__mode="k"})
  local applying=false;local contrastCache={};local native=game:GetService("TweenService");local styleRecords=setmetatable({}, {__mode="k"})
  local function skip(object)
   if object:GetAttribute("AltairContrastOutline")then return true end
@@ -3936,12 +3934,52 @@ local function bindTheme(root)
    if saved and previous and base==previous then base=saved end
    object:SetAttribute("AltairThemeDefault_"..property,base)
    local item={base=base,kind=kind};record[property]=item
+   local category=role(object,property)
+   if category~="contentGradient"and category~="strokeMultiplier"and(property=="Color"or property=="BackgroundColor3"or property=="ImageColor3"and object:GetAttribute("AltairIcon"))then
+    local saturation,value=0,0
+    if typeof(base)=="ColorSequence"then for _,point in ipairs(base.Keypoints)do local _,sat,level=point.Value:ToHSV();saturation=math.max(saturation,sat);value=math.max(value,level)end
+    elseif typeof(base)=="Color3"then local _,sat,level=base:ToHSV();saturation,value=sat,level end
+    local semantic=object.Name:lower():find("status")or object.Name:lower():find("health")
+    if saturation>.12 and not semantic then
+     item.rainbowManaged=true
+     rainbowItems[object]={property=property,item=item,gradient=typeof(base)=="ColorSequence",stroke=object:IsA("UIStroke")or category=="strokeGradient",value=value}
+    end
+   end
    item.connection=object:GetPropertyChangedSignal(property):Connect(function()
     local bar=root:FindFirstChild("SmartBar");local handle=root:FindFirstChild("Drag");local pulse=root:GetAttribute("AltairThemePulse")and((bar and(object==bar or object:IsDescendantOf(bar)))or(handle and(object==handle or object:IsDescendantOf(handle))))
-    if applying or pulse or root:GetAttribute("AltairThemeRainbow")or not(controller.enabled or controller.transitioning)or not object.Parent or skip(object)then return end
+    if applying or pulse or(root:GetAttribute("AltairThemeRainbow")and((bar and(object==bar or object:IsDescendantOf(bar)))or(handle and(object==handle or object:IsDescendantOf(handle)))))or not(controller.enabled or controller.transitioning or(controller.rainbowActive and item.rainbowManaged))or not object.Parent or skip(object)then return end
     if item.display and(kind~="text"or item.target~=item.base)and object[property]~=item.display then applying=true;object[property]=item.display;applying=false end
    end)
   end
+ end
+ function controller:Rainbow(hue)
+  if hue==nil then
+   if self.rainbowActive then self.rainbowActive=false;self:Apply()end
+   return
+  end
+  self.rainbowActive=true
+  local sequences={};local light=self.lightness>.65
+  applying=true
+  for object,entry in pairs(rainbowItems)do
+   local visual=object:IsA("UIGradient")and object.Parent or object
+   if object.Parent and not opacityOffscreen(visual)then
+    local value=entry.stroke and .85 or math.clamp(math.floor(entry.value*20+.5)/20,.15,.65)
+    local saturation=entry.stroke and .65 or .58
+    if light and not entry.stroke then value=.92;saturation=.18 end
+    local result
+    if entry.gradient then
+     local key=tostring(value)..":"..tostring(saturation)
+     result=sequences[key]
+     if not result then
+      result=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromHSV((hue-.04)%1,saturation,light and value or value*.78)),ColorSequenceKeypoint.new(.5,Color3.fromHSV(hue%1,saturation,value)),ColorSequenceKeypoint.new(1,Color3.fromHSV((hue+.05)%1,saturation*.85,light and value or value*.68))})
+      sequences[key]=result
+     end
+    else result=Color3.fromHSV(hue%1,saturation,value)end
+    entry.item.display=result
+    if object[entry.property]~=result then object[entry.property]=result end
+   end
+  end
+  applying=false
  end
  function controller:Apply(config)
   table.clear(contrastCache)
@@ -3987,7 +4025,7 @@ local function bindTheme(root)
    end end
    applying=false
   end)
-  self.animation=native:Create(progress,TweenInfo.new(root:GetAttribute("AltairReduceMotion")and .05 or .18,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Value=1})
+  self.animation=native:Create(progress,TweenInfo.new(root:GetAttribute("AltairReduceMotion")and .05 or .34,Enum.EasingStyle.Sine,Enum.EasingDirection.Out),{Value=1})
   local animation=self.animation
   animation.Completed:Once(function(state)
    connection:Disconnect();progress:Destroy()
@@ -4678,7 +4716,7 @@ local function bindCapsules(context)
 	outline:SetAttribute("AltairSurfaceOutline",nil);outline:SetAttribute("AltairInsetOutline",nil)
  outline.Name="CapsuleOutline";outline.Color=white;outline.Transparency=.45;outline.Thickness=1
 	outline.Enabled=true;outline.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;outline.Parent=surface
-	local inner=frame(surface,"Back",5,5,0,0,smartBar and smartBar.Back.BackgroundColor3 or Color3.fromRGB(50,50,50),16)
+	local inner=frame(surface,"Back",5,5,0,0,smartBar and smartBar.Back.BackgroundColor3 or Color3.fromRGB(50,50,50),7)
 	inner.Size=UDim2.new(1,-10,1,-10);inner.BackgroundTransparency=.1
 	local innerStroke=make("UIStroke",inner,{Name="InnerOutline",Color=white,Thickness=1,Transparency=.65,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
 	local accentOutlines={outline,innerStroke}
@@ -4860,6 +4898,7 @@ local function bindCapsules(context)
 		return p,visual
 	end
 	local menuPill=pill("ControlCenter","",24,white,function() controller:Open("center") end)
+ menuPill.UICorner.CornerRadius=UDim.new(0,6)
 	icon(menuPill,"Chevron","chevron-down",6,6,12,white)
 	local musicPill,musicVisual=pill("Music","",62,white,function() controller:Open("music") end)
 	musicPill.Visible=false
@@ -5739,13 +5778,13 @@ return function(options)
     label.Text="";local icon=Instance.new("ImageLabel");icon.Name="ChevronIcon";icon.BackgroundTransparency=1;icon.AnchorPoint=Vector2.new(.5,.5);icon.Position=UDim2.fromScale(.5,.5);icon.Size=UDim2.fromOffset(16,16);icon.ImageTransparency=.15;icon.ZIndex=label.ZIndex+1;icon.Parent=label;applyIcon(icon,"chevron-right")
    end
   end
-  applyFilledSmartBar(objects[1])
-  local bar=objects[1].SmartBar;bar.UICorner.CornerRadius=UDim.new(1,0);bar.Back:SetAttribute("AltairInsetMaterial",nil);bar.Back.BackgroundColor3=Color3.fromRGB(48,48,50);bar.Back:SetAttribute("AltairInsetSurface",true);bar.Back.BackgroundTransparency=.45;bar.Back.UIStroke:SetAttribute("AltairInsetOutline",nil);bar.Back.UIStroke.Transparency=.9;bar.Back.UICorner.CornerRadius=UDim.new(.5,0);bar.UIStroke.Thickness=.65
+  for name,id in pairs({Home="house",Character="person-standing",Scripts="square-terminal",Playerlist="users-round",Settings="settings"})do applyIcon(objects[1].SmartBar.Back.Buttons[name].Icon,id)end
+  local bar=objects[1].SmartBar;bar.UICorner.CornerRadius=UDim.new(1,0);bar.Back:SetAttribute("AltairInsetMaterial",nil);bar.Back.BackgroundColor3=Color3.fromRGB(48,48,50);bar.Back:SetAttribute("AltairInsetSurface",true);bar.Back.BackgroundTransparency=.45;bar.Back.UIStroke:SetAttribute("AltairInsetOutline",nil);bar.Back.UIStroke.Transparency=.96;bar.Back.UIStroke.Thickness=.45;bar.Back.UICorner.CornerRadius=UDim.new(.5,0);bar.UIStroke.Thickness=.65
   bar.Back.AnchorPoint=Vector2.new(1,.5);bar.Back.Position=UDim2.new(1,-8,.5,0);bar.Back.Size=UDim2.new(1,-76,1,-12)
   bar.Back.Buttons.AnchorPoint=Vector2.zero;bar.Back.Buttons.Position=UDim2.fromOffset(8,7);bar.Back.Buttons.Size=UDim2.new(1,-16,1,-14)
   local clock=bar.Back.Time;clock.AnchorPoint=Vector2.new(0,.5);clock.Position=UDim2.new(0,-58,.5,-3);clock.Size=UDim2.fromOffset(48,20);clock.TextSize=14;clock.TextXAlignment=Enum.TextXAlignment.Center
   clock.AMPM.AnchorPoint=Vector2.new(.5,0);clock.AMPM.Position=UDim2.new(.5,0,1,-2);clock.AMPM.Size=UDim2.new(1,0,0,10);clock.AMPM.TextSize=8;clock.AMPM.TextXAlignment=Enum.TextXAlignment.Center
-  for _,button in ipairs(bar.Back.Buttons:GetChildren())do if button:IsA("GuiObject")then local corner=button:FindFirstChildOfClass("UICorner");if corner then corner.CornerRadius=UDim.new(0,9)end;local stroke=button:FindFirstChildOfClass("UIStroke");if stroke then stroke.Thickness=.6;stroke.Transparency=.82 end end end
+  for _,button in ipairs(bar.Back.Buttons:GetChildren())do if button:IsA("GuiObject")then local corner=button:FindFirstChildOfClass("UICorner");if corner then corner.CornerRadius=UDim.new(0,7)end;local stroke=button:FindFirstChildOfClass("UIStroke");if stroke then stroke.Thickness=.6;stroke.Transparency=.82 end end end
 		do
 			local prompt=objects[1].GameDetection
 			-- Preserve the original authored prompt position and anchor.
@@ -5793,7 +5832,7 @@ return function(options)
         fadeGroup(objects[1].Scripts.Interactions,"AltairFadeGroup")
         fadeGroup(objects[1].Settings.SettingLists,"AltairFadeGroup")
 
-		objects[1]:SetAttribute("AltairUIRevision",22)
+		objects[1]:SetAttribute("AltairUIRevision",23)
 		bindCapsules({Root=objects[1],BuildOnly=true})
 		return objects[1]
 	end)

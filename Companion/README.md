@@ -21,3 +21,5 @@ Account access and refresh tokens remain encrypted with Windows DPAPI in `%LOCAL
 The installed companion lives outside the Git checkout, using the base Python runtime and a local dependency folder. Moving the checkout does not remove the installed script. The local status endpoint never waits on Spotify network I/O. Playback polling sleeps when Altair stops requesting status; local artwork is cached by its hash and downloaded into Roblox only when it changes. Spotify Retry-After is respected without delaying local playback updates.
 
 Tests: `python -m unittest discover -s Companion/tests -p 'test_*.py'`.
+
+Desktop volume controls Spotify’s Windows app mixer session, leaving device and game volume unchanged. Run StartSpotify.cmd again after updating dependencies; restart an older running companion to load the new backend.

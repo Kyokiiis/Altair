@@ -92,6 +92,42 @@ class DesktopSpotify:
     def __init__(self):
         self.manager=None;self.session=None;self.state=None;self.identity=None;self.artwork_id="";self.artwork_bytes=b""
 
+    def audio_sessions(self):
+        # Per-application mixer only; never write the device/master volume.
+        now=time.monotonic()
+        if now>=getattr(self,"audio_refresh",0):
+            from pycaw.pycaw import AudioUtilities
+            matches=[]
+            for session in AudioUtilities.GetAllSessions():
+                try:
+                    if session.Process and session.Process.name().lower()=="spotify.exe":
+                        matches.append(session.SimpleAudioVolume)
+                except Exception:
+                    continue
+            self.audio_volumes=matches;self.audio_refresh=now+2
+        return getattr(self,"audio_volumes",[])
+
+    def read_volume(self):
+        try:
+            sessions=self.audio_sessions()
+            return max((0.0 if x.GetMute() else float(x.GetMasterVolume()) for x in sessions),default=None)
+        except Exception:
+            self.audio_refresh=0
+            return None
+
+    def set_volume(self,value):
+        value=number(value,0,1)
+        try:
+            sessions=self.audio_sessions()
+            if not sessions: raise ValueError("Start Spotify playback to create its audio session")
+            for session in sessions:
+                session.SetMasterVolume(value,None)
+                if value>0: session.SetMute(0,None)
+        except Exception:
+            self.audio_refresh=0
+            raise
+        return True
+
     async def read(self):
         from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
         if self.manager is None: self.manager=await GlobalSystemMediaTransportControlsSessionManager.request_async()
@@ -122,14 +158,16 @@ class DesktopSpotify:
         if playing:
             try: position+=max(0,(datetime.now(timezone.utc)-timeline.last_updated_time).total_seconds())
             except (TypeError,AttributeError): pass
-        self.state={"connected":True,"linked":True,"available":True,"status":"ready","source":"desktop",
+        volume=self.read_volume()
+        self.state={"connected":True,"linked":True,"available":True,"status":"ready","source":"desktop","volume":volume if volume is not None else 0,
                     "title":properties.title,"artist":properties.artist,"duration":duration,"progress":min(duration,position),
                     "playing":playing,"artwork":"altair-desktop:"+self.artwork_id if self.artwork_id else "",
                     "controls":{"toggle":bool(controls.is_play_pause_toggle_enabled),"next":bool(controls.is_next_enabled),
-                                "previous":bool(controls.is_previous_enabled),"seek":bool(controls.is_playback_position_enabled),"volume":False}}
+                                "previous":bool(controls.is_previous_enabled),"seek":bool(controls.is_playback_position_enabled),"volume":volume is not None}}
         return dict(self.state)
 
     async def control(self,action,value=None):
+        if action=="volume": return self.set_volume(value)
         if self.session is None: raise ValueError("Open Spotify on this computer first")
         if action=="toggle": result=await self.session.try_toggle_play_pause_async()
         elif action=="next": result=await self.session.try_skip_next_async()
@@ -318,6 +356,8 @@ class WebSpotify:
         with self.lock:
             if self.snapshot().get("source")=="desktop"and self.loop:
                 asyncio.run_coroutine_threadsafe(self.desktop.control(action,value),self.loop).result(timeout=4)
+                if action=="volume":
+                    with self.state_lock: self.state["volume"]=number(value,0,1)
                 return
             started=time.monotonic()
             position = self.snapshot().get("progress",0)
