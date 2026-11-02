@@ -1,3 +1,11 @@
 Companion/.venv/
 __pycache__/
 *.pyc
+
+# Local validation and authoring references are never published.
+Tests/
+**/tests/
+UI/Development/
+*.spec.lua
+*.spec.luau
+*.log

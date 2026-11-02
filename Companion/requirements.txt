@@ -1,1 +1,3 @@
-# Default OAuth mode uses only Python's standard library. No packages required.
+# Optional Windows local-playback fallback while the Spotify API is unavailable.
+winrt-Windows.Media.Control; sys_platform == "win32"
+winrt-Windows.Storage.Streams; sys_platform == "win32"

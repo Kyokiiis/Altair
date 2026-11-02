@@ -12,12 +12,16 @@ if errorlevel 1 goto failed
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 goto failed
 :run
-start "" ".venv\Scripts\pythonw.exe" "%~dp0spotify_bridge.py"
-echo Spotify companion runs in the background. Closing this window does not unlink it.
-echo Your bridge key is in %%LOCALAPPDATA%%\Altair\Spotify\bridge.key
-timeout /t 2 /nobreak >nul
-if exist "%LOCALAPPDATA%\Altair\Spotify\bridge.key" type "%LOCALAPPDATA%\Altair\Spotify\bridge.key"
-echo.
+".venv\Scripts\python.exe" -m pip install -r requirements.txt --target "%LOCALAPPDATA%\Altair\Spotify\dependencies" --upgrade
+if errorlevel 1 goto failed
+".venv\Scripts\python.exe" "%~dp0spotify_bridge.py" --install-startup
+if errorlevel 1 goto failed
+start "" ".venv\Scripts\pythonw.exe" "%LOCALAPPDATA%\Altair\Spotify\spotify_bridge.py"
+echo Spotify companion runs in the background and starts at Windows sign-in.
+echo In Altair, choose Connect Spotify. Volt pairs automatically.
+echo Approve in your browser once. Reruns and restarts keep the saved link.
+echo For other executors, the local key is in %%LOCALAPPDATA%%\Altair\Spotify\bridge.key
+
 pause
 exit /b
 :failed

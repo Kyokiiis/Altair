@@ -15,6 +15,8 @@ import math
 import os
 from pathlib import Path
 import secrets
+import shutil
+import sys
 import re
 import threading
 import time
@@ -23,6 +25,9 @@ from urllib.parse import urlsplit, parse_qs, urlencode
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 import webbrowser
+from datetime import datetime, timezone
+
+sys.path.insert(0,str(Path(os.environ.get("LOCALAPPDATA",Path.home()))/"Altair/Spotify/dependencies"))
 
 LOG = logging.getLogger("altair.spotify")
 MAX_BODY = 4096
@@ -77,19 +82,93 @@ class TokenStore:
     def clear(self): self.path.unlink(missing_ok=True)
 
 
+class AuthorizationRequired(ValueError):
+    pass
+
+
+
+class DesktopSpotify:
+    """Local Windows Spotify session. Never enumerates other apps' media metadata."""
+    def __init__(self):
+        self.manager=None;self.session=None;self.state=None;self.identity=None;self.artwork_id="";self.artwork_bytes=b""
+
+    async def read(self):
+        from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
+        if self.manager is None: self.manager=await GlobalSystemMediaTransportControlsSessionManager.request_async()
+        self.session=next((x for x in self.manager.get_sessions() if "spotify" in x.source_app_user_model_id.lower()),None)
+        if self.session is None: self.state=None;return None
+        properties=await self.session.try_get_media_properties_async()
+        playback=self.session.get_playback_info();timeline=self.session.get_timeline_properties();controls=playback.controls
+        identity=(properties.title,properties.artist,properties.album_title)
+        if identity!=self.identity:
+            self.identity=identity;self.artwork_id="";self.artwork_bytes=b""
+            if properties.thumbnail:
+                try:
+                    from winrt.windows.storage.streams import DataReader
+                    stream=await properties.thumbnail.open_read_async()
+                    try:
+                        if 0<stream.size<=1048576:
+                            reader=DataReader(stream)
+                            try:
+                                await reader.load_async(stream.size);data=bytearray(stream.size);reader.read_bytes(data)
+                                if data[:2]==b"\xff\xd8"or data[:8]==b"\x89PNG\r\n\x1a\n":
+                                    self.artwork_bytes=bytes(data);self.artwork_id=hashlib.sha256(data).hexdigest()
+                            finally: reader.detach_stream();reader.close()
+                    finally: stream.close()
+                except Exception: LOG.warning("Local Spotify cover unavailable; playback remains connected")
+        playing=int(playback.playback_status)==4
+        duration=max(0,timeline.end_time.total_seconds()-timeline.start_time.total_seconds())
+        position=max(0,timeline.position.total_seconds()-timeline.start_time.total_seconds())
+        if playing:
+            try: position+=max(0,(datetime.now(timezone.utc)-timeline.last_updated_time).total_seconds())
+            except (TypeError,AttributeError): pass
+        self.state={"connected":True,"linked":True,"available":True,"status":"ready","source":"desktop",
+                    "title":properties.title,"artist":properties.artist,"duration":duration,"progress":min(duration,position),
+                    "playing":playing,"artwork":"altair-desktop:"+self.artwork_id if self.artwork_id else "",
+                    "controls":{"toggle":bool(controls.is_play_pause_toggle_enabled),"next":bool(controls.is_next_enabled),
+                                "previous":bool(controls.is_previous_enabled),"seek":bool(controls.is_playback_position_enabled),"volume":False}}
+        return dict(self.state)
+
+    async def control(self,action,value=None):
+        if self.session is None: raise ValueError("Open Spotify on this computer first")
+        if action=="toggle": result=await self.session.try_toggle_play_pause_async()
+        elif action=="next": result=await self.session.try_skip_next_async()
+        elif action=="previous": result=await self.session.try_skip_previous_async()
+        elif action=="seek": result=await self.session.try_change_playback_position_async(round(number(value,0,(self.state or{}).get("duration",0))*10000000))
+        else: raise ValueError("This control is unavailable for desktop playback")
+        if not result: raise ValueError("Spotify could not apply that playback control")
+
+
 class WebSpotify:
     """Per-user PKCE OAuth. Only this companion ever receives account tokens."""
     def __init__(self, store, port):
         self.store, self.port = store, port
         self.lock = threading.RLock()
+        self.state_lock = threading.RLock()
+        self.needs_save = False
+        self.desktop=DesktopSpotify();self.loop=None;self.web_available=False;self.last_client_seen=time.monotonic()
         self.tokens = None
         try: self.tokens = store.load()
         except (OSError, ValueError): LOG.warning("Stored Spotify link is unavailable; link again")
         self.pending = None
         self.stopping = False
         self.cooldown = 0
-        self.state = {"connected": False, "linked": bool(self.tokens), "message": "Link Spotify in Altair Settings"}
+        self.state = {"connected": bool(self.tokens), "linked": bool(self.tokens), "available": False, "status": "reconnecting" if self.tokens else "unlinked", "message": "Restoring saved Spotify link" if self.tokens else "Connect Spotify in Altair Settings"}
         self.sampled_at = time.monotonic()
+
+    def publish(self, state):
+        with self.state_lock:
+            self.state = state
+
+    def resume_or_link(self, client_id):
+        with self.lock:
+            self.last_client_seen=time.monotonic()
+            if not self.tokens and(self.desktop.state or(os.name=="nt"and not client_id)):
+                self.tokens={"mode":"desktop"};self.store.save(self.tokens)
+                self.publish(dict(self.desktop.state)if self.desktop.state else {"connected":True,"linked":True,"available":False,"source":"desktop","playing":False,"status":"waiting_for_spotify","message":"Open Spotify desktop and start playback; the connection is saved"})
+            if self.tokens and(self.desktop.state or not self.snapshot().get("reauth_required")):
+                return {"ok": True, "linked": True, "message": "Saved Spotify link restored"}
+            return self.begin_link(client_id or (self.tokens or {}).get("client_id"))
 
     @property
     def redirect(self): return f"http://127.0.0.1:{self.port}/callback"
@@ -123,7 +202,11 @@ class WebSpotify:
                                     "client_id": pending["client_id"], "code_verifier": pending["verifier"]})
             tokens.update(client_id=pending["client_id"], expires_at=time.time()+tokens.get("expires_in",3600))
             self.store.save(tokens); self.tokens = tokens
-            self.state = {"connected": False, "linked": True, "message": "Linked. Start playback in Spotify."}
+            if getattr(self,"bridge_key",None):
+                try: publish_executor_connection(self.port,self.bridge_key,tokens["client_id"])
+                except OSError: pass
+            self.cooldown=0
+            self.publish({"connected": True, "linked": True, "available": False, "status": "reconnecting", "message": "Linked. Start playback in Spotify."})
 
     @staticmethod
     def exchange(data):
@@ -131,25 +214,30 @@ class WebSpotify:
                           headers={"Content-Type": "application/x-www-form-urlencoded"})
         try:
             with urlopen(request, timeout=8) as response: return json.load(response)
-        except HTTPError:
-            raise ValueError("Spotify rejected the authorization. Check Client ID and redirect URI, then link again.") from None
+        except HTTPError as exc:
+            try: code=json.loads(exc.read(MAX_BODY)).get("error")
+            except (ValueError, OSError): code=None
+            if code in {"invalid_grant", "invalid_client"}:
+                raise AuthorizationRequired("Spotify requires browser approval again") from None
+            raise ValueError("Spotify authorization is temporarily unavailable; retry shortly") from None
 
     def unlink(self):
         with self.lock:
             self.store.clear()
             self.tokens, self.pending = None, None
-            self.state = {"connected": False, "linked": False, "message": "Spotify unlinked"}
+            self.publish({"connected": False, "linked": False, "available": False, "status": "unlinked", "message": "Spotify unlinked"})
         return {"ok": True}
 
     def access_token(self):
         if not self.tokens: raise ValueError("Link Spotify in Settings first")
         if self.tokens.get("expires_at",0) < time.time()+60:
-            if not self.tokens.get("refresh_token"): raise ValueError("Link Spotify again to renew access")
+            if not self.tokens.get("refresh_token"): raise AuthorizationRequired("Spotify requires browser approval again")
             fresh = self.exchange({"grant_type":"refresh_token", "refresh_token":self.tokens["refresh_token"],
                                    "client_id":self.tokens["client_id"]})
             fresh["refresh_token"] = fresh.get("refresh_token",self.tokens["refresh_token"])
             self.tokens.update(fresh, expires_at=time.time()+fresh.get("expires_in",3600))
-            self.store.save(self.tokens)
+            try: self.store.save(self.tokens); self.needs_save=False
+            except OSError: self.needs_save=True; LOG.warning("Saving refreshed Spotify access will be retried")
         return self.tokens["access_token"]
 
     def api(self, method, path, data=None):
@@ -168,8 +256,11 @@ class WebSpotify:
             except HTTPError as exc:
                 if exc.code == 401 and attempt == 0:
                     self.tokens["expires_at"] = 0; continue
+                if exc.code == 401: raise AuthorizationRequired("Spotify requires browser approval again") from None
                 if exc.code == 429:
-                    self.cooldown=time.monotonic()+max(2,min(300,int(exc.headers.get("Retry-After","10"))))
+                    try: delay=max(2,int(exc.headers.get("Retry-After","30")))
+                    except (TypeError,ValueError): delay=30
+                    self.cooldown=time.monotonic()+delay
                     raise ValueError("Spotify is rate limiting requests; retry shortly") from None
                 if exc.code == 403: raise ValueError("Spotify denied access. Check Premium, app access, and authorization scopes.") from None
                 if exc.code == 404: raise ValueError("Start Spotify playback on a device first") from None
@@ -177,14 +268,17 @@ class WebSpotify:
 
     def refresh_state(self):
         with self.lock:
-            if not self.tokens or time.monotonic()<self.cooldown: return
+            if not self.tokens or self.tokens.get("mode")=="desktop"or time.monotonic()<self.cooldown or self.snapshot().get("reauth_required"): return
             try:
+                if self.needs_save:
+                    try: self.store.save(self.tokens); self.needs_save=False
+                    except OSError: pass
                 data=self.api("GET","me/player")
                 item=(data or {}).get("item") or {}
                 artist=", ".join(a.get("name","") for a in (item.get("artists") or []))
                 device=(data or {}).get("device") or {}
                 disallows=((data or {}).get("actions") or {}).get("disallows") or {}
-                self.state={"connected":True,"linked":True,"title":item.get("name","Nothing playing"),"artist":artist,
+                state={"connected":True,"linked":True,"available":True,"status":"ready","title":item.get("name","Nothing playing"),"artist":artist,
                             "artwork":artwork_url(item),
                             "duration":(item.get("duration_ms") or 0)/1000,"progress":((data or {}).get("progress_ms") or 0)/1000,
                             "playing":(data or {}).get("is_playing",False),
@@ -194,20 +288,37 @@ class WebSpotify:
                                         "previous":bool(device) and not disallows.get("skipping_prev",False),
                                         "seek":bool(item) and not disallows.get("seeking",False),
                                         "volume":bool(device) and device.get("supports_volume",True) and not device.get("is_restricted",False)}}
+                state["source"]="web";self.web_available=True
                 self.sampled_at=time.monotonic()
-            except (ValueError, URLError, TimeoutError) as exc:
-                self.state={"connected":False,"linked":bool(self.tokens),"message":str(exc)[:180]}
+                self.publish(state)
+            except (ValueError, OSError) as exc:
+                self.web_available=False
+                state=self.snapshot()
+                if state.get("source")=="desktop" and self.desktop.state:
+                    self.cooldown=max(self.cooldown,time.monotonic()+5);return
+                reauth=isinstance(exc,AuthorizationRequired)
+                state.update(connected=bool(self.tokens) and not reauth,linked=bool(self.tokens),available=False,
+                             status="authorization_required" if reauth else "reconnecting",reauth_required=reauth,
+                             stale=True,message=str(exc)[:180])
+                self.sampled_at=time.monotonic();self.publish(state)
                 self.cooldown=max(self.cooldown,time.monotonic()+5)
 
     def snapshot(self):
-        with self.lock:
+        # Never wait for upstream network I/O to serve the local status endpoint.
+        with self.state_lock:
             state=dict(self.state)
+            state["retry_after"]=max(0,round(self.cooldown-time.monotonic(),1))
+            if state.get("source")=="desktop":
+                state["web_retry_after"]=state["retry_after"];state["retry_after"]=0
             if state.get("playing"):
                 state["progress"]=min(state["duration"],state["progress"]+max(0,time.monotonic()-self.sampled_at))
             return state
 
     def dispatch(self, action, value):
         with self.lock:
+            if self.snapshot().get("source")=="desktop"and self.loop:
+                asyncio.run_coroutine_threadsafe(self.desktop.control(action,value),self.loop).result(timeout=4)
+                return
             started=time.monotonic()
             position = self.snapshot().get("progress",0)
             if action == "seek": value = number(value,0,self.state.get("duration",0))
@@ -228,9 +339,31 @@ class WebSpotify:
             self.sampled_at=time.monotonic()
 
     async def run(self):
-        while not self.stopping:
-            await asyncio.to_thread(self.refresh_state)
-            await asyncio.sleep(2)
+        self.loop=asyncio.get_running_loop()
+        async def web_updates():
+            while not self.stopping:
+                if time.monotonic()-self.last_client_seen<20:
+                    try: await asyncio.to_thread(self.refresh_state)
+                    except Exception:
+                        LOG.warning("Spotify update failed; the saved link is retained")
+                        self.cooldown=max(self.cooldown,time.monotonic()+5)
+                await asyncio.sleep(max(3,min(60,self.cooldown-time.monotonic())))
+        web=asyncio.create_task(web_updates())
+        try:
+            while not self.stopping:
+                if os.name=="nt"and not self.web_available and time.monotonic()-self.last_client_seen<20:
+                    try:
+                        state=await self.desktop.read()
+                        if state and self.tokens:
+                            self.sampled_at=time.monotonic();self.publish(state)
+                        elif self.tokens and self.snapshot().get("source")=="desktop":
+                            self.publish({"connected":True,"linked":True,"available":False,"playing":False,"status":"waiting_for_spotify","source":"desktop","message":"Open Spotify on this computer; the account remains linked"})
+                    except (ImportError,OSError,RuntimeError,AttributeError): pass
+                await asyncio.sleep(1)
+        finally:
+            web.cancel()
+            try: await web
+            except asyncio.CancelledError: pass
 
 
 def number(value, low, high):
@@ -245,6 +378,7 @@ class Server(ThreadingHTTPServer):
 
     def __init__(self, port, media, key):
         self.media, self.key = media, key
+        media.bridge_key=key
         super().__init__(("127.0.0.1", port), Handler)
 
 
@@ -288,7 +422,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self.authorized(): return
         path = urlsplit(self.path).path
-        if path == "/v1/state": self.respond(200, self.server.media.snapshot())
+        if path == "/v1/state":
+            self.server.media.last_client_seen=time.monotonic()
+            self.respond(200, self.server.media.snapshot())
+        elif path.startswith("/v1/artwork/"):
+            desktop=self.server.media.desktop
+            if not desktop.artwork_id or path.rsplit("/",1)[-1]!=desktop.artwork_id: self.respond(404,{"error":"Cover changed"});return
+            data=desktop.artwork_bytes
+            self.send_response(200);self.send_header("Content-Type","image/png"if data[:8]==b"\x89PNG\r\n\x1a\n"else"image/jpeg");self.send_header("Content-Length",str(len(data)));self.send_header("Cache-Control","no-store");self.end_headers();self.wfile.write(data)
         elif path == "/v1/health": self.respond(200, {"ok": True, "version": 1})
         else: self.respond(404, {"error": "Not found"})
 
@@ -304,7 +445,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(raw) != length: raise ValueError("Incomplete request")
             data = json.loads(raw)
             if not isinstance(data,dict): raise ValueError("Expected a JSON object")
-            if self.path == "/v1/link": self.respond(200,self.server.media.begin_link(data.get("clientId")));return
+            if self.path == "/v1/link": self.respond(200,self.server.media.resume_or_link(data.get("clientId")));return
             if self.path == "/v1/unlink": self.respond(200,self.server.media.unlink());return
             if not isinstance(data, dict) or data.get("action") not in {"toggle", "next", "previous", "seek", "volume"}:
                 raise ValueError("Unsupported playback control")
@@ -327,21 +468,60 @@ def load_key(path):
     return key
 
 
+def publish_executor_connection(port, key, client_id="", workspace=None):
+    root=Path(workspace) if workspace else Path(os.environ.get("LOCALAPPDATA",Path.home()))/"Volt/workspace"
+    if workspace is None and not root.exists(): return False
+    target=root/"Altair/Spotify.connection.json"
+    target.parent.mkdir(parents=True,exist_ok=True)
+    data={"version":1,"port":port,"bridgeKey":key,"clientId":client_id}
+    temporary=target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data),encoding="utf-8")
+    os.chmod(temporary,0o600);os.replace(temporary,target)
+    return True
+
+
+def install_startup():
+    """Start the local companion at sign-in; no account credentials in the launcher."""
+    if os.name != "nt":
+        raise ValueError("Automatic sign-in startup is available on Windows")
+    startup = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
+    startup.mkdir(parents=True, exist_ok=True)
+    pythonw = Path(getattr(sys,"_base_executable",sys.executable)).with_name("pythonw.exe")
+    if not pythonw.exists():
+        raise ValueError("pythonw.exe is required for background startup")
+    source=Path(__file__).resolve()
+    installed=Path(os.environ.get("LOCALAPPDATA",Path.home()))/"Altair/Spotify/spotify_bridge.py"
+    installed.parent.mkdir(parents=True,exist_ok=True)
+    if source!=installed: shutil.copy2(source,installed)
+    script=installed
+    # Windows Script Host avoids opening a console at each sign-in.
+    quote = lambda value: str(value).replace('"', '""')
+    command = f'"{pythonw}" "{script}"'
+    (startup / "Altair Spotify.vbs").write_text(
+        'CreateObject("WScript.Shell").Run "' + quote(command) + '", 0, False\n', encoding="utf-16")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=43827)
+    parser.add_argument("--install-startup", action="store_true", help="Enable background startup at Windows sign-in")
     args = parser.parse_args()
+    if args.install_startup:
+        install_startup()
+        return
     if not 1024 <= args.port <= 65535: parser.error("Port must be between 1024 and 65535")
     path = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Altair" / "Spotify" / "bridge.key"
     key = load_key(path)
     media = WebSpotify(TokenStore(path.with_name("account.tokens")),args.port)
     server = Server(args.port, media, key)
+    try: publish_executor_connection(args.port,key,(media.tokens or {}).get("client_id",""))
+    except OSError: LOG.warning("Automatic local pairing is unavailable; use the bridge key file")
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     print(f"Altair Spotify companion: http://127.0.0.1:{args.port}\n"
           f"In Altair Settings, enter your developer app's Client ID and enable Spotify Connection.\n"
           f"Register redirect URI http://127.0.0.1:{args.port}/callback, then click Link Spotify.\n"
-          f"Paste this bridge key into Spotify Bridge Key:\n{key}\n"
-          f"Keep this window running. Ctrl+C disconnects. Key file: {path}", flush=True)
+          f"Volt pairing is automatic. In Altair choose Connect Spotify.\n"
+          f"The saved account survives restarts. Key file for other executors: {path}", flush=True)
     thread = threading.Thread(target=server.serve_forever, name="AltairSpotifyHTTP", daemon=True)
     thread.start()
     try:
