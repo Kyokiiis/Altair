@@ -129,8 +129,17 @@ class DesktopSpotify:
         return True
 
     async def read(self):
+        if not getattr(self,"apartment_initialized",False):
+            # Background asyncio has no GUI message loop. Use a multithreaded
+            # apartment so Windows delivers session/track changes without one.
+            from winrt.runtime import init_apartment,ApartmentType
+            sys.coinit_flags=0
+            init_apartment(ApartmentType.MULTI_THREADED)
+            self.apartment_initialized=True
         from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
-        if self.manager is None: self.manager=await GlobalSystemMediaTransportControlsSessionManager.request_async()
+        if self.manager is None or time.monotonic()-getattr(self,"manager_refreshed",0)>15:
+            self.manager=await GlobalSystemMediaTransportControlsSessionManager.request_async()
+            self.manager_refreshed=time.monotonic()
         self.session=next((x for x in self.manager.get_sessions() if "spotify" in x.source_app_user_model_id.lower()),None)
         if self.session is None: self.state=None;return None
         properties=await self.session.try_get_media_properties_async()
@@ -393,12 +402,19 @@ class WebSpotify:
             while not self.stopping:
                 if os.name=="nt"and not self.web_available and time.monotonic()-self.last_client_seen<20:
                     try:
-                        state=await self.desktop.read()
+                        state=await asyncio.wait_for(self.desktop.read(),timeout=5)
                         if state and self.tokens:
                             self.sampled_at=time.monotonic();self.publish(state)
                         elif self.tokens and self.snapshot().get("source")=="desktop":
                             self.publish({"connected":True,"linked":True,"available":False,"playing":False,"status":"waiting_for_spotify","source":"desktop","message":"Open Spotify on this computer; the account remains linked"})
-                    except (ImportError,OSError,RuntimeError,AttributeError): pass
+                    except Exception:
+                        # A dead Windows session/thumbnail must not freeze cached playback forever.
+                        self.desktop.manager=None;self.desktop.session=None
+                        self.desktop.audio_refresh=0
+                        if self.tokens:
+                            state=self.snapshot()
+                            state.update(linked=True,connected=True,available=False,stale=True,status="reconnecting",message="Desktop playback is reconnecting; the saved link is retained")
+                            self.publish(state)
                 await asyncio.sleep(1)
         finally:
             web.cancel()
