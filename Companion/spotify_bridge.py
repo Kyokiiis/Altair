@@ -8,6 +8,8 @@ import argparse
 import asyncio
 import base64
 import hmac
+import io
+import colorsys
 import hashlib
 import json
 import logging
@@ -16,6 +18,7 @@ import os
 from pathlib import Path
 import secrets
 import shutil
+import subprocess
 import sys
 import re
 import threading
@@ -31,6 +34,36 @@ sys.path.insert(0,str(Path(os.environ.get("LOCALAPPDATA",Path.home()))/"Altair/S
 
 LOG = logging.getLogger("altair.spotify")
 MAX_BODY = 4096
+
+
+def artwork_palette(data):
+    """Sample a tiny cover once per track; decoding stays out of Roblox's frame loop."""
+    if not data or len(data)>1048576:
+        return None
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            if image.width*image.height>16000000:
+                return None
+            image.draft("RGB",(32,32))
+            image.thumbnail((32,32))
+            image=image.convert("RGB").quantize(colors=8).convert("RGB")
+            samples=image.getcolors(1024) or []
+        def score(sample):
+            count,rgb=sample
+            _,s,v=colorsys.rgb_to_hsv(*(x/255 for x in rgb))
+            return count*(.3+.7*s) if .12<v<.98 else count*.08
+        samples.sort(key=score,reverse=True)
+        if not samples:
+            return None
+        first=samples[0][1]
+        second=next((rgb for _,rgb in samples[1:] if sum((a-b)**2 for a,b in zip(first,rgb))>2400),first)
+        return [list(first),list(second)]
+    except (OSError,ValueError,Image.DecompressionBombError):
+        return None
 
 
 def artwork_url(item):
@@ -90,7 +123,7 @@ class AuthorizationRequired(ValueError):
 class DesktopSpotify:
     """Local Windows Spotify session. Never enumerates other apps' media metadata."""
     def __init__(self):
-        self.manager=None;self.session=None;self.state=None;self.identity=None;self.artwork_id="";self.artwork_bytes=b""
+        self.manager=None;self.session=None;self.state=None;self.identity=None;self.artwork_id="";self.artwork_bytes=b"";self.palette=None
 
     def audio_sessions(self):
         # Per-application mixer only; never write the device/master volume.
@@ -146,7 +179,7 @@ class DesktopSpotify:
         playback=self.session.get_playback_info();timeline=self.session.get_timeline_properties();controls=playback.controls
         identity=(properties.title,properties.artist,properties.album_title)
         if identity!=self.identity:
-            self.identity=identity;self.artwork_id="";self.artwork_bytes=b""
+            self.identity=identity;self.artwork_id="";self.artwork_bytes=b"";self.palette=None
             if properties.thumbnail:
                 try:
                     from winrt.windows.storage.streams import DataReader
@@ -158,6 +191,7 @@ class DesktopSpotify:
                                 await reader.load_async(stream.size);data=bytearray(stream.size);reader.read_bytes(data)
                                 if data[:2]==b"\xff\xd8"or data[:8]==b"\x89PNG\r\n\x1a\n":
                                     self.artwork_bytes=bytes(data);self.artwork_id=hashlib.sha256(data).hexdigest()
+                                    self.palette=artwork_palette(self.artwork_bytes)
                             finally: reader.detach_stream();reader.close()
                     finally: stream.close()
                 except Exception: LOG.warning("Local Spotify cover unavailable; playback remains connected")
@@ -171,6 +205,7 @@ class DesktopSpotify:
         self.state={"connected":True,"linked":True,"available":True,"status":"ready","source":"desktop","volume":volume if volume is not None else 0,
                     "title":properties.title,"artist":properties.artist,"duration":duration,"progress":min(duration,position),
                     "playing":playing,"artwork":"altair-desktop:"+self.artwork_id if self.artwork_id else "",
+                    "palette":self.palette,
                     "controls":{"toggle":bool(controls.is_play_pause_toggle_enabled),"next":bool(controls.is_next_enabled),
                                 "previous":bool(controls.is_previous_enabled),"seek":bool(controls.is_playback_position_enabled),"volume":volume is not None}}
         return dict(self.state)
@@ -206,6 +241,23 @@ class WebSpotify:
     def publish(self, state):
         with self.state_lock:
             self.state = state
+
+    def cover_palette(self, url):
+        if not isinstance(url,str) or not re.fullmatch(r"https://i\.scdn\.co/image/[A-Za-z0-9]+",url):
+            return None
+        cache=getattr(self,"palette_cache",None)
+        if cache is None:
+            self.palette_cache=cache={}
+        if url not in cache:
+            if len(cache)>=8:
+                cache.pop(next(iter(cache)))
+            try:
+                # Public cover request: never forward Spotify account credentials.
+                with urlopen(Request(url,headers={"Accept":"image/*"}),timeout=2) as response:
+                    cache[url]=artwork_palette(response.read(1048577))
+            except (OSError,ValueError):
+                cache[url]=None
+        return cache[url]
 
     def resume_or_link(self, client_id):
         with self.lock:
@@ -336,6 +388,10 @@ class WebSpotify:
                                         "seek":bool(item) and not disallows.get("seeking",False),
                                         "volume":bool(device) and device.get("supports_volume",True) and not device.get("is_restricted",False)}}
                 state["source"]="web";self.web_available=True
+                state["palette"]=self.cover_palette(state["artwork"])
+                local_state=self.desktop.state
+                if local_state and local_state.get("title")==state.get("title") and (local_state.get("playing") or self.snapshot().get("source")=="desktop"):
+                    state=dict(local_state)
                 self.sampled_at=time.monotonic()
                 self.publish(state)
             except (ValueError, OSError) as exc:
@@ -362,6 +418,19 @@ class WebSpotify:
             return state
 
     def dispatch(self, action, value):
+        snapshot=self.snapshot()
+        desktop_state=self.desktop.state or {}
+        same_track=bool(snapshot.get("title")) and desktop_state.get("title")==snapshot.get("title")
+        local_playback=snapshot.get("source")=="desktop" or (same_track and getattr(self.desktop,"session",None) is not None)
+        if local_playback and self.loop:
+            # Do not queue local media keys behind a slow OAuth/network state poll.
+            asyncio.run_coroutine_threadsafe(self.desktop.control(action,value),self.loop).result(timeout=4)
+            self.last_control_at=time.monotonic()
+            with self.state_lock:
+                if action=="toggle": self.state["playing"]=not snapshot.get("playing",False)
+                elif action=="volume": self.state["volume"]=number(value,0,1)
+                elif action=="seek": self.state["progress"]=number(value,0,self.state.get("duration",0))
+            return
         with self.lock:
             if self.snapshot().get("source")=="desktop"and self.loop:
                 asyncio.run_coroutine_threadsafe(self.desktop.control(action,value),self.loop).result(timeout=4)
@@ -400,22 +469,24 @@ class WebSpotify:
         web=asyncio.create_task(web_updates())
         try:
             while not self.stopping:
-                if os.name=="nt"and not self.web_available and time.monotonic()-self.last_client_seen<20:
+                if os.name=="nt"and time.monotonic()-self.last_client_seen<20:
                     try:
                         state=await asyncio.wait_for(self.desktop.read(),timeout=5)
-                        if state and self.tokens:
+                        current=self.snapshot()
+                        prefer_local=state and (not self.web_available or current.get("source")=="desktop"or state.get("title")==current.get("title") and state.get("playing"))
+                        if state and self.tokens and prefer_local:
                             self.sampled_at=time.monotonic();self.publish(state)
-                        elif self.tokens and self.snapshot().get("source")=="desktop":
+                        elif not state and self.tokens and self.snapshot().get("source")=="desktop":
                             self.publish({"connected":True,"linked":True,"available":False,"playing":False,"status":"waiting_for_spotify","source":"desktop","message":"Open Spotify on this computer; the account remains linked"})
                     except Exception:
                         # A dead Windows session/thumbnail must not freeze cached playback forever.
-                        self.desktop.manager=None;self.desktop.session=None
+                        self.desktop.manager=None;self.desktop.session=None;self.desktop.state=None
                         self.desktop.audio_refresh=0
-                        if self.tokens:
+                        if self.tokens and not self.web_available:
                             state=self.snapshot()
                             state.update(linked=True,connected=True,available=False,stale=True,status="reconnecting",message="Desktop playback is reconnecting; the saved link is retained")
                             self.publish(state)
-                await asyncio.sleep(1)
+                await asyncio.sleep(.2 if time.monotonic()-getattr(self,"last_control_at",0)<2 else 1)
         finally:
             web.cancel()
             try: await web
@@ -550,11 +621,28 @@ def install_startup():
     installed.parent.mkdir(parents=True,exist_ok=True)
     if source!=installed: shutil.copy2(source,installed)
     script=installed
-    # Windows Script Host avoids opening a console at each sign-in.
-    quote = lambda value: str(value).replace('"', '""')
-    command = f'"{pythonw}" "{script}"'
-    (startup / "Altair Spotify.vbs").write_text(
-        'CreateObject("WScript.Shell").Run "' + quote(command) + '", 0, False\n', encoding="utf-16")
+    # Use a native Startup shortcut: it does not require the deprecated VBScript engine.
+    shortcut = startup / "Altair Spotify.lnk"
+    launcher = Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    environment = os.environ.copy()
+    environment.update(ALTAIR_STARTUP_PYTHON=str(pythonw), ALTAIR_STARTUP_SCRIPT=str(script),
+                       ALTAIR_STARTUP_LINK=str(shortcut))
+    command = ("$ErrorActionPreference='Stop'; "
+               "$shell=New-Object -ComObject WScript.Shell; "
+               "$link=$shell.CreateShortcut($env:ALTAIR_STARTUP_LINK); "
+               "$link.TargetPath=$env:ALTAIR_STARTUP_PYTHON; "
+               "$link.Arguments='\"'+$env:ALTAIR_STARTUP_SCRIPT+'\"'; "
+               "$link.WorkingDirectory=Split-Path -LiteralPath $env:ALTAIR_STARTUP_SCRIPT; "
+               "$link.WindowStyle=7; $link.Description='Altair Spotify companion'; $link.Save()")
+    subprocess.run([str(launcher), "-NoProfile", "-NonInteractive", "-Command", command],
+                   env=environment, check=True, capture_output=True,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if not shortcut.is_file():
+        raise OSError("The Spotify startup shortcut was not created")
+    legacy = startup / "Altair Spotify.vbs"
+    if legacy.exists():
+        legacy.unlink()
+
 
 
 def main():

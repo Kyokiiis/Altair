@@ -111,8 +111,10 @@ local function completedMotion(apply)
  return animation
 end
 local function opacityOffscreen(object)
- if not object:IsA("GuiObject")and not object:IsA("UIStroke")then return false end
+ if not object:IsA("GuiObject")and not object:IsA("UIComponent")then return false end
  local visual=object:IsA("GuiObject")and object or object.Parent
+ local screen=visual and(visual:IsA("ScreenGui")and visual or visual:FindFirstAncestorOfClass("ScreenGui"))
+ if screen and not screen.Enabled then return true end
  local parent=visual
  while parent and not parent:IsA("ScreenGui")do
   if parent:IsA("GuiObject")then
@@ -1111,17 +1113,315 @@ local function bindDock(root)
  return view
 end
 
+local function bindRayfieldBridge(context)
+ local root,capsules=context.Root,context.Capsules
+ local env=getgenv and getgenv()or _G
+ local bridge={alive=true,records=setmetatable({}, {__mode="k"}),libraries=setmetatable({}, {__mode="k"})}
+ local function notify(original,self,data,...)
+  if bridge.alive and root.Parent and type(data)=="table" and not data.Actions and not data.Callback then
+   local ok,result=pcall(context.Notify,data.Title or data.title or "Rayfield",data.Content or data.content or data.Description,data.Image or data.Icon or data.icon,{Duration=data.Duration or data.duration})
+   if ok then return result end
+  end
+  return original(self,data,...)
+ end
+ function bridge:WrapWindow(window)
+  if type(window)~="table" or self.records[window]then return window end
+  if type(window.Hide)~="function" or type(window.Show)~="function" or not window.main or not window.screenGui then return window end
+  local record={window=window,hide=window.Hide,show=window.Show,rect=window._collapsedRect,notify=window.Notify,generation=0}
+  self.records[window]=record
+  local name=window.showName or (window.title and window.title.Text)or "Rayfield"
+  local handle=capsules:RegisterExternal({Title=name,Icon=window.collapsedIcon and window.collapsedIcon.Image or window.showIcon,Restore=function()window:Show()end})
+  record.handle=handle
+  if record.notify then record.notifyWrapper=function(self,data,...)return notify(record.notify,self,data,...)end;window.Notify=record.notifyWrapper end
+  record.rectWrapper=function(self,...)
+   if bridge.alive and capsules:IsEnabled() and self.hidden and handle.group.Visible then
+    local p,visualSize=handle:Rect();local s=visualSize;local localScale=self.main:FindFirstChildOfClass("UIScale");if localScale then s/=math.max(.01,localScale.Scale)end;local parent=self.main.Parent
+    local origin=parent:IsA("GuiObject")and parent.AbsolutePosition or self.screenGui.AbsolutePosition
+    local a=self.main.AnchorPoint
+    return UDim2.fromOffset(p.X-origin.X+visualSize.X*a.X,p.Y-origin.Y+visualSize.Y*a.Y),UDim2.fromOffset(s.X,s.Y)
+   end
+   return record.rect(self,...)
+  end
+  if record.rect then window._collapsedRect=record.rectWrapper end
+  local function rememberFace()
+   record.face=record.face or {}
+   for _,face in ipairs({window.collapsedIcon,window.collapsedTitle and window.collapsedTitle.Parent})do
+    if face and record.face[face]==nil then record.face[face]=face.Visible end
+   end
+  end
+  record.setEnabled=function(enabled)
+   record.generation+=1;local generation=record.generation
+   record.pending=false;rememberFace()
+   if window.unloaded or not window.main.Parent then return end
+   for face,visible in pairs(record.face)do if face.Parent then face.Visible=not enabled and visible or false end end
+   if not window.hidden then handle:Hide();return end
+   if not window.hasShownOnce and not window._collapsedShown then handle:Hide();return end
+   if enabled then
+    handle:Show(true)
+    motionService():Create(window.main,TweenInfo.new(.18),{BackgroundTransparency=1}):Play()
+    task.delay(.2,function()if bridge.alive and generation==record.generation and window.hidden and not window.unloaded then window.main.Visible=false end end)
+   else
+    handle:Hide();window.main.Visible=true
+    local position,size
+    if record.rect then position,size=record.rect(window)end
+    local goal={BackgroundTransparency=record.background or 0}
+    if position and size then goal.Position=position;goal.Size=size end
+    motionService():Create(window.main,TweenInfo.new(.28,Enum.EasingStyle.Quint),goal):Play()
+    for _,face in ipairs({window.collapsedIcon,window.collapsedTitle,window.collapsedSubtitle})do
+     if face then
+      local property=face:IsA("ImageLabel")and "ImageTransparency"or "TextTransparency"
+      face[property]=1
+      motionService():Create(face,TweenInfo.new(.22),{[property]=face==window.collapsedSubtitle and .5 or 0}):Play()
+     end
+    end
+   end
+  end
+  record.hideWrapper=function(self,...)
+   if not bridge.alive then return record.hide(self,...)end
+   if not capsules:IsEnabled()then record.setEnabled(false);return record.hide(self,...)end
+   if record.pending then return end
+   if self.animating or self.hidden then return record.hide(self,...)end
+   record.generation+=1;local generation=record.generation
+   record.pending=true;record.background=self.main.BackgroundTransparency
+   record.face=record.face or {}
+   for _,face in ipairs({self.collapsedIcon,self.collapsedTitle and self.collapsedTitle.Parent})do if face then if record.face[face]==nil then record.face[face]=face.Visible end;face.Visible=false end end
+   handle:Show(false)
+   -- Let the capsule layout settle before Rayfield measures the morph destination.
+   game:GetService("RunService").Heartbeat:Wait()
+   record.pending=false
+   if not bridge.alive or generation~=record.generation or self.unloaded or not self.main.Parent then handle:Hide();return end
+   if self.animating or self.hidden then handle:Hide();return end
+   local result=table.pack(pcall(record.hide,self,...))
+   if not result[1]then
+    handle:Hide();for face,visible in pairs(record.face)do if face.Parent then face.Visible=visible end end
+    error(result[2],0)
+   end
+   motionService():Create(self.main,TweenInfo.new(.28,Enum.EasingStyle.Quint),{BackgroundTransparency=1}):Play()
+   task.delay(.37,function()
+    if generation~=record.generation or not bridge.alive or self.unloaded or not self.main.Parent then return end
+    if self.hidden then
+     self.main.Visible=false;handle:Show(true)
+     if capsules.docked and capsules.presentationTarget==0 and capsules.PulseDrag then capsules:PulseDrag()end
+    else handle:Hide()end
+   end)
+   return table.unpack(result,2,result.n)
+  end
+  record.showWrapper=function(self,...)
+   if bridge.alive and not capsules:IsEnabled()then record.setEnabled(false);return record.show(self,...)end
+   if bridge.alive then
+    if self.animating then return record.show(self,...)end
+    if not self.hidden then return record.show(self,...)end
+    record.generation+=1
+    self.main.Visible=true;motionService():Create(self.main,TweenInfo.new(.22,Enum.EasingStyle.Quint),{BackgroundTransparency=record.background or 0}):Play();handle:Hide()
+   end
+   return record.show(self,...)
+  end
+  window.Hide=record.hideWrapper;window.Show=record.showWrapper
+  record.connection=window.screenGui.Destroying:Connect(function()handle:Destroy();bridge.records[window]=nil end)
+  record.background=window.main.BackgroundTransparency
+  if window.hidden then record.setEnabled(capsules:IsEnabled())end
+  return window
+ end
+ function bridge:WrapLibrary(library)
+  if type(library)~="table" or self.libraries[library]then return library end
+  if library.main and library.screenGui then return self:WrapWindow(library)end
+  if type(library.CreateWindow)~="function" then return library end
+  local record={create=library.CreateWindow,notify=library.Notify};self.libraries[library]=record
+  record.wrapper=function(self,...)
+   local values=table.pack(record.create(self,...));if bridge.alive then bridge:WrapWindow(values[1])end
+   return table.unpack(values,1,values.n)
+  end
+  library.CreateWindow=record.wrapper
+  if record.notify then record.notifyWrapper=function(self,data,...)return notify(record.notify,self,data,...)end;library.Notify=record.notifyWrapper end
+  return library
+ end
+ -- One shared compiler hook, with an inactive pass-through after Altair unloads.
+ local hook=env.__AltairRayfieldLoader
+ if not hook then
+  hook={};env.__AltairRayfieldLoader=hook
+  local original=loadstring
+  local function compile(source,...)
+   local fn,err=original(source,...)
+   if not fn or type(source)~="string" or not source:find("CreateWindow",1,true)or not source:lower():find("rayfield",1,true)then return fn,err end
+   return function(...)
+    local values=table.pack(fn(...));local active=hook.active
+    if active and active.alive then active:WrapLibrary(values[1])end
+    return table.unpack(values,1,values.n)
+   end,err
+  end
+  if type(hookfunction)=="function"then
+   local ok,result=pcall(hookfunction,loadstring,compile)
+   if ok then original=result;hook.installed=true end
+  end
+  if not hook.installed then env.loadstring=compile;hook.installed=true end
+ end
+ hook.active=bridge
+ for _,key in ipairs({"Rayfield","RayfieldLibrary","ADS_RayfieldWindow"})do if type(env[key])=="table"then bridge:WrapLibrary(env[key])end end
+ -- Existing and obfuscated Gen2 windows can be recognised through their restore control.
+ -- Inspect only that control's closures; never scan the entire executor heap.
+ local observed=setmetatable({}, {__mode="k"});bridge.discoveryConnections={}
+ local function discover(object)
+  if not bridge.alive or object.Name~="CollapsedInteract"or not object:IsA("GuiButton")or observed[object]then return end
+  local main=object.Parent;if not main or not main:FindFirstChild("CollapsedIcon")then return end
+  observed[object]=true
+  local inspect=getupvalues or(debug and debug.getupvalues)
+  if type(getconnections)~="function"or type(inspect)~="function"then return end
+  local function attempt()
+   if not bridge.alive or not object.Parent then return end
+   local ok,connections=pcall(getconnections,object.InputBegan);if not ok then return end
+   for _,connection in ipairs(connections)do
+    local got,values=pcall(function()return inspect(connection.Function)end)
+    if got and type(values)=="table"then for _,value in pairs(values)do
+     if type(value)=="table"and rawget(value,"main")==main and rawget(value,"screenGui")then bridge:WrapWindow(value);return end
+    end end
+   end
+  end
+  task.delay(.1,attempt);task.delay(.6,attempt)
+ end
+ local parents={game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")}
+ if type(gethui)=="function"then local ok,parent=pcall(gethui);if ok and parent~=parents[1]then table.insert(parents,parent)end end
+ for _,parent in ipairs(parents)do
+  table.insert(bridge.discoveryConnections,parent.DescendantAdded:Connect(discover))
+  task.defer(function()for _,object in ipairs(parent:GetDescendants())do discover(object)end end)
+ end
+ bridge.enabledConnection=capsules:ObserveEnabled(function(enabled)
+  for _,record in pairs(bridge.records)do record.setEnabled(enabled)end
+ end)
+ function bridge:Destroy()
+  if not self.alive then return end;self.alive=false;for _,connection in ipairs(self.discoveryConnections)do connection:Disconnect()end;if hook.active==self then hook.active=nil end
+  if self.enabledConnection then self.enabledConnection:Disconnect()end
+  for window,record in pairs(self.records)do
+   record.generation+=1
+   if record.connection then record.connection:Disconnect()end
+   if not window.unloaded and window.main and window.main.Parent then
+    window.main.Visible=true
+    if record.background then window.main.BackgroundTransparency=record.background end
+    for face,visible in pairs(record.face or {})do if face.Parent then face.Visible=visible end end
+    if window.hidden then record.show(window)end
+   end
+   if window.Hide==record.hideWrapper then window.Hide=record.hide end
+   if window.Show==record.showWrapper then window.Show=record.show end
+   if window._collapsedRect==record.rectWrapper then window._collapsedRect=record.rect end
+   if window.Notify==record.notifyWrapper then window.Notify=record.notify end
+   record.handle:Destroy()
+  end
+  for library,record in pairs(self.libraries)do
+   if library.CreateWindow==record.wrapper then library.CreateWindow=record.create end
+   if library.Notify==record.notifyWrapper then library.Notify=record.notify end
+  end
+ end
+ return bridge
+end
+
+local function bindHomeIsolation(root,scopes)
+ -- Foreign game surfaces do not need Altair theme/ancestor checks per tween.
+ local tweens=game:GetService("TweenService");local controller={opened=false,generation=0,records={},connections={},customScopes=scopes~=nil}
+ local players=game:GetService("Players");local playerGui=players.LocalPlayer:WaitForChild("PlayerGui")
+ local function tween(object,goals,duration)
+  if not object.Parent then return end
+  local animation=tweens:Create(object,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goals)
+  -- Roblox arbitrates overlapping properties. Position and opacity must remain
+  -- independent so starting a fade never cancels the outward slide.
+  animation:Play()
+ end
+ local properties={Frame={"BackgroundTransparency"},ScrollingFrame={"BackgroundTransparency","ScrollBarImageTransparency"},TextLabel={"BackgroundTransparency","TextTransparency","TextStrokeTransparency"},TextButton={"BackgroundTransparency","TextTransparency","TextStrokeTransparency"},TextBox={"BackgroundTransparency","TextTransparency","TextStrokeTransparency"},ImageLabel={"BackgroundTransparency","ImageTransparency"},ImageButton={"BackgroundTransparency","ImageTransparency"},UIStroke={"Transparency"},CanvasGroup={"GroupTransparency"}}
+ local function hideScreen(screen)
+  if not screen:IsA("ScreenGui")or screen==root or screen:IsAncestorOf(root)or screen:GetAttribute("AltairUIRevision")or controller.records[screen]then return end
+  if not screen.Enabled then return end
+  local record={enabled=screen.Enabled,visuals={},roots={}};controller.records[screen]=record
+  record.enabledConnection=screen:GetPropertyChangedSignal("Enabled"):Connect(function()
+   if controller.opened and record.hidden and screen.Enabled then screen.Enabled=false end
+  end)
+  local generation=controller.generation;local viewport=root.AbsoluteSize
+  task.spawn(function()
+  local function budget()
+   if not controller.opened or controller.generation~=generation then return false end
+   if os.clock()-(controller.workAt or 0)>.001 then game:GetService("RunService").Heartbeat:Wait();controller.workAt=os.clock()end
+   return controller.opened and controller.generation==generation
+  end
+  local function fade(object,visible)
+   if not budget()then return end
+   if object:IsA("GuiObject")then visible=visible and object.Visible end
+   if not visible then return end
+   local keys=properties[object.ClassName]
+   if keys then local values,goals={},{};for _,key in ipairs(keys)do values[key]=object[key];goals[key]=1 end;record.visuals[object]=values;tween(object,goals,.32)end
+   if object:IsA("CanvasGroup")then return end
+   for _,child in ipairs(object:GetChildren())do fade(child,visible)end
+  end
+  for _,object in ipairs(screen:GetChildren())do if not budget()then return end;if object:IsA("GuiObject")and object.Visible then
+   local center=object.AbsolutePosition-root.AbsolutePosition+object.AbsoluteSize/2;local relative=Vector2.new(center.X/viewport.X,center.Y/viewport.Y)
+   local state={object=object,position=object.Position};table.insert(record.roots,state)
+   if relative.X>.32 and relative.X<.68 and relative.Y>.32 and relative.Y<.68 then
+    local scale=object:FindFirstChildOfClass("UIScale");state.created=not scale or scale:GetAttribute("AltairHomeOwnedScale")==true
+    if not scale then scale=Instance.new("UIScale");scale.Name="AltairHomeIsolationScale";scale:SetAttribute("AltairHomeOwnedScale",true);scale.Parent=object end
+    state.scale=scale;state.value=scale.Scale;tween(scale,{Scale=scale.Scale*1.48},.3)
+   else
+    local distances={center.X,viewport.X-center.X,center.Y,viewport.Y-center.Y};local side=1
+    for index=2,4 do if distances[index]<distances[side]then side=index end end
+    local size=object.AbsoluteSize;local dx=side==1 and -center.X-size.X/2-24 or side==2 and viewport.X-center.X+size.X/2+24 or 0
+    local dy=side==3 and -center.Y-size.Y/2-24 or side==4 and viewport.Y-center.Y+size.Y/2+24 or 0
+    local parentScale=1;local ancestor=object.Parent
+    while ancestor and ancestor~=screen do for _,child in ipairs(ancestor:GetChildren())do if child:IsA("UIScale")then parentScale*=child.Scale end end;ancestor=ancestor.Parent end
+    tween(object,{Position=state.position+UDim2.fromOffset(dx/math.max(.01,parentScale),dy/math.max(.01,parentScale))},.3)
+   end
+   fade(object,true)
+  end end
+  task.delay(.34,function()if controller.opened and controller.generation==generation and screen.Parent then record.hidden=true;screen.Enabled=false end end)
+  end)
+ end
+ function controller:SetOpened(opened)
+  self.generation+=1;self.opened=opened
+  if opened then
+   if not self.customScopes then
+    local starter=game:GetService("StarterGui");self.coreState={}
+    for _,kind in ipairs(Enum.CoreGuiType:GetEnumItems())do if kind~=Enum.CoreGuiType.All then local ok,value=pcall(starter.GetCoreGuiEnabled,starter,kind);if ok then self.coreState[kind]=value end end end
+    local ok,value=pcall(starter.GetCore,starter,"TopbarEnabled");self.topbarState=not ok or value~=false
+    -- Chat remains usable while Home is open. Never blanket-disable CoreGui:
+    -- that also hides the modern chat window and its toggle.
+    for kind in pairs(self.coreState)do
+     if kind~=Enum.CoreGuiType.Chat then pcall(starter.SetCoreGuiEnabled,starter,kind,false)end
+    end
+   end
+   for _,parent in ipairs(scopes)do for _,screen in ipairs(parent:GetChildren())do hideScreen(screen)end end
+  else
+   if self.coreState then
+    local starter=game:GetService("StarterGui")
+    for kind,value in pairs(self.coreState)do pcall(starter.SetCoreGuiEnabled,starter,kind,value)end
+    pcall(starter.SetCore,starter,"TopbarEnabled",self.topbarState);self.coreState=nil
+   end
+   for screen,record in pairs(self.records)do
+    if record.enabledConnection then record.enabledConnection:Disconnect()end
+    if screen.Parent then
+    screen.Enabled=record.enabled
+    for object,values in pairs(record.visuals)do tween(object,values,.24)end
+    for _,state in ipairs(record.roots)do
+     tween(state.object,{Position=state.position},.24)
+     if state.scale and state.scale.Parent then
+      tween(state.scale,{Scale=state.value},.24)
+      if state.created then local scale=state.scale;task.delay(.25,function()if scale.Parent and not controller.opened then scale:Destroy()end end)end
+     end
+    end
+   end end
+   self.records={}
+  end
+ end
+ local function watch(parent)table.insert(controller.connections,parent.ChildAdded:Connect(function(child)if controller.opened then task.defer(hideScreen,child)end end))end
+ if not scopes then scopes={playerGui};if type(gethui)=="function"then local ok,parent=pcall(gethui);if ok and parent~=playerGui then table.insert(scopes,parent)end end end
+ for _,parent in ipairs(scopes)do watch(parent)end
+ function controller:Destroy()self:SetOpened(false);for _,connection in ipairs(self.connections)do connection:Disconnect()end end
+ return controller
+end
 local function bindDragContrast(root)
  local line=root.Drag.Drag;local motion=motionService();local controller={elapsed=0,goal=nil}
- local stroke=Instance.new("UIStroke");stroke.Name="AdaptiveContrast";stroke.Color=Color3.fromRGB(14,15,18);stroke.Thickness=1;stroke.Transparency=.86;stroke:SetAttribute("AltairContrastOutline",true);stroke.Parent=line
+ local stroke=Instance.new("UIStroke");stroke.Name="AdaptiveContrast";stroke.Color=Color3.fromRGB(14,15,18);stroke.Thickness=1;stroke.Transparency=1;stroke:SetAttribute("AltairContrastOutline",true);stroke.Parent=line
  local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude;params.IgnoreWater=false
  local function luminance(color)return .2126*color.R+.7152*color.G+.0722*color.B end
  function controller:Update(value)
   self.elapsed=0;value=math.clamp(value,0,1);self.luminance=value
-  local strength=math.clamp((value-.42)/.35,0,1);local target=.86-strength*.62
+  local strength=math.clamp((value-.58)/.32,0,1);local target=1-strength*.86;local outlineColor=Color3.new(1,1,1):Lerp(Color3.fromRGB(14,15,18),strength)
   if self.goal and math.abs(self.goal-target)<.025 then return end;self.goal=target
   if self.animation then self.animation:Cancel()end
-  self.animation=motion:Create(stroke,TweenInfo.new(.24,Enum.EasingStyle.Quint),{Transparency=target});self.animation:Play()
+  self.animation=motion:Create(stroke,TweenInfo.new(.24,Enum.EasingStyle.Quint),{Transparency=target,Thickness=1+strength*.5,Color=outlineColor});self.animation:Play()
  end
  function controller:Sample()
   local camera=workspace.CurrentCamera;if not camera then return .3 end
@@ -1131,7 +1431,7 @@ local function bindDragContrast(root)
   local axis=Vector2.new(math.cos(angle),math.sin(angle))*18
   local ambient=(luminance(lighting.Ambient)+luminance(lighting.OutdoorAmbient))*.5
   local day=math.clamp((math.cos((lighting.ClockTime-12)*math.pi/12)+.2)/1.2,0,1)
-  local total=0
+  local total=0;local peak=0
   for _,offset in ipairs({-axis,Vector2.zero,axis})do
    local point=center+offset;local ray=camera:ViewportPointToRay(point.X,point.Y)
    local result=workspace:Raycast(ray.Origin,ray.Direction*2048,params);local value=.15+.7*day
@@ -1140,9 +1440,10 @@ local function bindDragContrast(root)
     if hit:IsA("BasePart")then color=hit.Color elseif hit:IsA("Terrain")then color=result.Material==Enum.Material.Water and workspace.Terrain.WaterColor or workspace.Terrain:GetMaterialColor(result.Material)end
     if color then value=luminance(color)*math.clamp(.35+lighting.Brightness*.18+ambient*.5,.35,1.4)end
    end
-   total+=math.clamp(value,0,1)
+   value=math.clamp(value,0,1);total+=value;peak=math.max(peak,value)
   end
-  return total/3
+  -- Preserve contrast over bright patches on mixed backgrounds.
+  return math.max(total/3,peak*.9)
  end
  local connection=game:GetService("RunService").Heartbeat:Connect(function(dt)
   controller.elapsed+=dt
@@ -3662,6 +3963,7 @@ local function buildSlider(template,parent,setting,onChange,onCommit)
 end
 
 -- Native, resolution-independent previews: the cards remain crisp at every UI size.
+local experimentalBadge
 local function buildStyleGallery(parent,setting,changed)
  local root=parent:FindFirstAncestorOfClass("ScreenGui")
  local z=root.Settings.ZIndex+4
@@ -3681,8 +3983,7 @@ local function buildStyleGallery(parent,setting,changed)
  frame:SetAttribute("AltairThemeEditor",true);frame:SetAttribute("AltairStyleGallery",true)
  text("Title",frame,"Styles",UDim2.fromOffset(2,0),UDim2.new(1,-110,0,24),18,true)
  text("Description",frame,"A different interface. Your colours stay yours.",UDim2.fromOffset(2,25),UDim2.new(1,0,0,20),12,false).TextColor3=Color3.fromRGB(177,181,194)
- local badge=text("Experimental",frame,"EXPERIMENTAL",UDim2.new(1,-103,0,2),UDim2.fromOffset(103,23),10,true)
- badge.TextXAlignment=Enum.TextXAlignment.Center;badge.BackgroundColor3=Color3.fromRGB(73,57,102);badge.BackgroundTransparency=.2;corner(badge,7)
+ experimentalBadge(frame)
  for index,id in ipairs({"Altair","Roblox"})do
   local card=make("TextButton",id,frame,{Text="",AutoButtonColor=false,Position=UDim2.new((index-1)*.5,(index-1)*6,0,52),Size=UDim2.new(.5,-6,0,144),BackgroundColor3=Color3.fromRGB(29,31,38),BackgroundTransparency=.14})
   corner(card,12)
@@ -3880,8 +4181,9 @@ local function bindTheme(root)
    end
    return ColorSequence.new(points)
   end
-  if controller.style=="Roblox"and kind=="multiplier"and object:GetAttribute("AltairSurface")and not controller.active then
-   return Color3.fromRGB(25,27,33):Lerp(Color3.fromRGB(235,238,244),controller.lightness^2*.95)
+  if kind=="multiplier"and object:GetAttribute("AltairSurface")and not controller.active then
+   local surface=controller.style=="Roblox"and Color3.fromRGB(25,27,33)or base
+   return surface:Lerp(Color3.fromRGB(235,238,244),controller.lightness^2*.95)
   end
   return mapped(base,kind)
  end
@@ -3895,7 +4197,8 @@ local function bindTheme(root)
    styleRecords[object]=original
   end
   if original.font then
-   object.FontFace=controller.style=="Roblox"and Font.new("rbxasset://fonts/families/BuilderSans.json",original.font.Weight,original.font.Style)or original.font
+   local targetFont=controller.style=="Roblox"and Font.new("rbxasset://fonts/families/BuilderSans.json",original.font.Weight,original.font.Style)or original.font
+   if object.FontFace~=targetFont then object.FontFace=targetFont end
   elseif original.radius then
    local radius=original.radius
    if controller.style=="Roblox"and radius.Scale==0 and radius.Offset<25 then radius=UDim.new(0,object.Parent and object.Parent:GetAttribute("AltairSurface")and 12 or 8)end
@@ -4036,26 +4339,37 @@ local function bindTheme(root)
    end
   end);animation:Play()
  end
- for _,object in ipairs(root:GetDescendants())do register(object)end
+ local at=os.clock()
+ for index,object in ipairs(root:GetDescendants())do
+  register(object)
+  if index%24==0 and os.clock()-at>.0015 then game:GetService("RunService").Heartbeat:Wait();at=os.clock()end
+ end
  local pending=false;local additions={}
  local c=root.DescendantAdded:Connect(function(object)
   additions[#additions+1]=object
-  if pending then return end;pending=true
+  if pending then return end;pending=true;controller.pending=true
   task.defer(function()
-   pending=false;if not root.Parent then table.clear(additions);return end
-   local batch=additions;additions={}
-   for _,object in ipairs(batch)do if object.Parent then register(object)end end
-   applying=true;table.clear(contrastCache)
-   for _,object in ipairs(batch)do local record=records[object]
-    if object.Parent and record and not skip(object)then for property,item in pairs(record)do
-     local value=desired(item.base,item.kind,object,property);item.target=value;item.display=value
-     object:SetAttribute("AltairTheme_"..property,controller.enabled and value or nil)
-     if object[property]~=value then object[property]=value end
-    end end
+   local index=1;local workAt=os.clock();table.clear(contrastCache)
+   while index<=#additions and root.Parent and not controller.destroyed do
+    local object=additions[index];index+=1
+    if object.Parent then
+     register(object);local record=records[object]
+     applying=true
+     if record and not skip(object)then for property,item in pairs(record)do
+      local value=desired(item.base,item.kind,object,property);item.target=value;item.display=value
+      object:SetAttribute("AltairTheme_"..property,controller.enabled and value or nil)
+      if object[property]~=value then object[property]=value end
+     end end
+     applying=false
+    end
+    if os.clock()-workAt>.0015 then game:GetService("RunService").Heartbeat:Wait();workAt=os.clock()end
    end
-   applying=false
+   table.clear(additions);pending=false;controller.pending=false
   end)
  end)
+ function controller:WhenReady()
+  while self.pending and root.Parent and not self.destroyed do game:GetService("RunService").Heartbeat:Wait()end
+ end
  root.Destroying:Connect(function()controller.destroyed=true;c:Disconnect();if controller.animation then controller.animation:Cancel()end;for _,record in pairs(records)do for _,item in pairs(record)do item.connection:Disconnect()end end end)
  return controller
 end
@@ -4378,7 +4692,9 @@ end
 local softShadowPNG="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"
 local dragHaloPNG="iVBORw0KGgoAAAANSUhEUgAAAQAAAABACAYAAAD1Xam+AAAEQElEQVR42u3dy0sVYRzGcTO146W8pxlmFygkyQwpEhISo7ILRIuEWmhEdBFbVKvcBAoV2cLa1UqIFkFXhJZBizaBRAWBCzcFQlLQIkiK0zPwDAwHj9vmnPkuPv+Az+995p1xzjsF6XS6AEAy8UcAKAAAFAAACgAABQCAAgBAAQCgAABQAAAoAAAUAAAKAAAFAIACAEABAKAAAFAAuWIZ8hKzTQGwyEE5JLUAFgu+MIvlyCvZck50GSR14S+2yIuseAklyAlLZRjmvFg5JK4Ikrb4CzMWfLioV1hKSq0si3LEWrbcwlxTkbxLIqUQLYPElEASF3500YcLvUJWyiqplCqplpqIWuSUaHbVzrTSGa905mExRMsgUUWQpMVf5JBTkUVf6eGok9XSKE2yVpplnbVErEesRbMK82t2pk3OeLUzr/YMhGWQ8owUJaUEkrL4iyNX/ApfDYKrRIMHIxiWTbJZWqVNtkm7bJcO2YGc0uHs2p1lm7Pd7KxbnH2DZ6HKsxHuCIqTUAL5XACZi7/M278ah97sQWj1kHTKbumWvdIr++WAHJQ+OZThMGIhM5c+Z3bAGfY6025n3OnMWz0DzZ6JGs9I2RIlQAHk8OKv8zZwg8MPrhJd0uOhOSYn5JQMyBk5K+fkvFyIuIhYiWZz3pmddYYDzvSEM+5z5l2egVbPRJNnJDElkI8FkHnPHy7+Wge80dvBnR6CI9Ivp2VIrsg1uS5jckNuyW0ZlzuItXFndcvZjTnLa852yFn3O/sez0KbZ6PJsxKWwGLPBCiAHLn6p3xfV+2HP0HLb5Vdsk+Oy6BckhEPzITcl0l5JI/liTyT5/JCXiKWXjijZ87ssTOcdKYTznjEmQ96BvZ5JrZ6Rho9MxWeobzdBeRrAYRX/1I3eb3v87b4/q/HW8HgSnBZRuWuByUYnFfyWt7KO5mW9/JBPtonxEqYywdnNe3s3jrLV8520lmPOvvTnoUez8YWz0q9Z6c0sgugAHKgAMLt/wq/GFLlBzzrvc3r8j3gSRn29vCePJQpeePh+Syz8kXm5JvMy3f7gVgJc5l3VnPObtZZTjvbKWd9z9kPexb6PBttnpUGz065Zym8DaAAcuD+vzhSAMFWbo3v74Inv3vkqLd/V+WmPJCnvlIEgzIjXz1MP+WX/JYF+WN/ESthLgvO6pezm3eWM872tbN+4OyvehaOejbaPStrPDvlWR4GUgAUACgACoBbAHALQAHwEBA8BKQA+Dcg+DcgBcCLQOBFIAqAV4HBq8AUAD8GAj8GogD4OTD4OTAF8J9KgANBOBCEA0E4EowjwdIcCcaRYBwKyqGgaQ4F5VDQBBQAx4JzLDjHgvNhED4MkubDIHwYhE+D8Wkw8GkwCoByYJGDAgAoAAAUAAAKAAAFAIACAEABAKAAAFAAACgAABQAAAoAAAUAgAIAQAEAoAAAUAAA4uQffH5/SVxnODsAAAAASUVORK5CYII="
 local smallShadowPNG="iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAADvklEQVR42u2asUsjQRSHPS9qTEzUKCoGRTiLEEx1FoYDi2AlIhZ2ARHE6rAUrFIJVqkDVhZWgsWBtWAnCIH8AakEG7lG0ojG3G/hWwiLQd3EqJe38DWTmffm/d6bmd3NdtVqta5OpssEMAFMABPABDABTAATwARoD99eyX8lgDe47hdoqxjtCtwN7jsEGuD+/pwYX0aA54J2gusRvaIPgh7c9l76BhqI8WkF8GbcDdwNul+ExYCIikEPUX4L09cVo16IllfEe2S9PnAnsyEREUNiRIyJCTEp4jBJ2xh9hhgTwkYjIT6FAN7ge8heiKzGxDiBzohZkRBJMQdJ2mbpE2dMDBshbPa0WoT3CD5IKQ8TxBSBOYH+FGmxKDJiCTK0pekzx5gpbAxjM9hqEVodfD+lO0IWf4iUWCDIFbEusmJTbMEmbev0yTAmhY04NiP4aJkIzQrgDd4p11Ey55T0PMGsiQ3xW+yKnNgXB7BP2y59NhiTwUYCm6P4eE6Etgrgql5f9hEmOM2adsp5mczuEGBeHIpjcSJO4YS2Q/rkGJPFRhqb0/iIeJaD7ypoNvsBNqcBSnSKif4Sq5T3HkEdiT/iXFyKoihBkbZz+hwxZg8bq9hM4mMEn33MobudAtSXfi879DDrNEG2nAlvk8kCWb4g2LK4EbfiL9zSVqbPBWMK2NjGZhofcXyGmIPvpdBs9oOsyXE2q3lKdouJOyV9Jq4Izgm0Iu7Fo6jCI20V+pQZc4aNHDaX8fEDn1HmEGiXAPVr381+jLJMsWllKd0CATjlfS3uxIN4qjW+nuhzx5giNgrYzOIjhc+YpwrevBc0u/YjZGKWY2uNzStPCV8RSIVMv/aqMuYaG6fY3MHHAj7HmYPvvcCvAO6xN8R6nCMzG5TrEeu4TDbfEny9CHfYuMBmDh8ZfMaZg3ssvqsA3vIPsxvPcPe2whmeZycvsZ4fav6vB2yUsJnHxwo+Z5hD2O8y8Lv7u0ffGKWY5i5ul03rnMxVXljzL11P2Chj8xAf6/icZQ7ukfjm06CZ9R/lCS7BfXyWEj3mTL9hZ2/2usfWJbZz+FrE9wRz8bUPNHP8DfIYm2RNbnJLe8Lufcvx1uz1iK0itvfxlcH3JHMJfoQA7ga4xDl9wI5d4gan2gIBqtgqYfsAX0t1G6EJ8FECdOwS6OhNsKOPwY6+Eer4W2F7GLLHYXshYq/E7KWovRa3P0bsrzH7c9T+HrcPJOwTGftIyj6Tsw8l7VNZ+1jaBDABTAATwAQwAUwAE+Ar8w/lS/oANrvHMwAAAABJRU5ErkJggg=="
-local softShadowAssets={}
+local assetEnvironment=type(getgenv)=="function"and getgenv()or nil
+local softShadowAssets=assetEnvironment and assetEnvironment.AltairVisualAssetsV1 or {}
+if assetEnvironment then assetEnvironment.AltairVisualAssetsV1=softShadowAssets end
 local function resolveSoftShadowAsset(kind)
  local drag=kind==true or kind=="drag"
  local key=drag and "DragHalo-1" or kind=="small" and "SmallShadow-1" or "FeatheredShadow-1"
@@ -4387,6 +4703,8 @@ local function resolveSoftShadowAsset(kind)
  local register=getcustomasset or getsynasset
  if type(writefile)~="function" or type(register)~="function" then return nil end
  local ok,result=pcall(function()
+  local path="Altair/UI/Assets/"..key..".png"
+  if type(isfile)=="function"and isfile(path)then return register(path)end
   local alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";local lookup={}
   for i=1,#alphabet do lookup[alphabet:byte(i)]=i-1 end
   local bytes={}
@@ -4404,9 +4722,32 @@ local function resolveSoftShadowAsset(kind)
  if ok then softShadowAssets[key]=result end
  return softShadowAssets[key]
 end
+experimentalBadge=function(parent)
+ local badge=Instance.new("TextLabel");badge.Name="Experimental";badge.Position=UDim2.new(1,-112,0,2);badge.Size=UDim2.fromOffset(112,23);badge.Text="EXPERIMENTAL";badge.TextSize=9;badge.Font=Enum.Font.GothamBold;badge.TextColor3=Color3.fromRGB(242,243,247);badge.BackgroundColor3=Color3.fromRGB(73,57,102);badge.BackgroundTransparency=.2;badge.BorderSizePixel=0;badge.ZIndex=parent.ZIndex+2;badge:SetAttribute("AltairThemeIgnore",true);badge.Parent=parent
+ local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(0,7);corner.Parent=badge
+ local shadow=Instance.new("ImageLabel");shadow.Name="ExperimentalShadow";shadow.BackgroundTransparency=1;shadow.AnchorPoint=Vector2.new(.5,.5);shadow.Position=UDim2.new(1,-56,0,15);shadow.Size=UDim2.fromOffset(148,59);shadow.Image=resolveSoftShadowAsset("small")or "";shadow.ScaleType=Enum.ScaleType.Slice;shadow.SliceCenter=Rect.new(31,31,33,33);shadow.SliceScale=.7;shadow.ImageColor3=Color3.fromRGB(112,84,158);shadow.ImageTransparency=.88;shadow.ZIndex=parent.ZIndex+1;shadow:SetAttribute("AltairThemeIgnore",true);shadow.Parent=parent
+ return badge
+end
+local function buildExperimentalSection(parent,title,description)
+ local section=Instance.new("Frame");section.Name=title.."Section";section.Size=UDim2.new(1,-16,0,90);section.BackgroundTransparency=1;section:SetAttribute("AltairExperimentalSection",true);section:SetAttribute("AltairThemeEditor",true);section.Parent=parent
+ local label=Instance.new("TextLabel");label.Name="Title";label.BackgroundTransparency=1;label.Position=UDim2.fromOffset(2,12);label.Size=UDim2.new(1,-122,0,25);label.Font=Enum.Font.GothamBold;label.TextSize=18;label.TextColor3=Color3.fromRGB(242,243,247);label.TextXAlignment=Enum.TextXAlignment.Left;label.Text=title;label.Parent=section
+ local subtitle=label:Clone();subtitle.Name="Description";subtitle.Position=UDim2.fromOffset(2,43);subtitle.Size=UDim2.new(1,-4,0,40);subtitle.Text=description or "Experimental feature. Bugs are to be expected.";subtitle.TextSize=12;subtitle.Font=Enum.Font.Gotham;subtitle.TextColor3=Color3.fromRGB(177,181,194);subtitle.TextWrapped=true;subtitle.TextYAlignment=Enum.TextYAlignment.Top;subtitle.Parent=section
+ experimentalBadge(section)
+ return section
+end
+local function loadingMask(progress)
+ local points={}
+ for index=0,12 do
+  local x=index/12;local front=.22+.56*progress
+  local head=math.exp(-((x-front)/.075)^2)
+  local trail=x<=front and .25 or 0
+  points[#points+1]=NumberSequenceKeypoint.new(x,1-math.max(trail,head))
+ end
+ return NumberSequence.new(points)
+end
 local function bindSoftShadows(root)
  local asset=resolveSoftShadowAsset();local dragAsset=resolveSoftShadowAsset(true);local smallAsset=resolveSoftShadowAsset("small");
- if asset then local preload={asset};if dragAsset then preload[#preload+1]=dragAsset end;if smallAsset then preload[#preload+1]=smallAsset end;pcall(function()game:GetService("ContentProvider"):PreloadAsync(preload)end)end
+ if asset and not softShadowAssets.preloaded then local preload={asset};if dragAsset then preload[#preload+1]=dragAsset end;if smallAsset then preload[#preload+1]=smallAsset end;local ok=pcall(function()game:GetService("ContentProvider"):PreloadAsync(preload)end);softShadowAssets.preloaded=ok end
  local connections={};local records=setmetatable({}, {__mode="k"});local count=0
  local function connect(list,signal,callback)local c=signal:Connect(callback);list[#list+1]=c;return c end
  local function atlas(image,small)
@@ -4422,7 +4763,8 @@ local function bindSoftShadows(root)
   end
   records[image]=true;count+=1
   if asset then
-   local small=smallAsset and math.min(image.Parent.AbsoluteSize.X,image.Parent.AbsoluteSize.Y)<48*(root:GetAttribute("AltairDisplayScale") or 1)
+   local authored=image.Parent.Size;local minimum=math.min(authored.X.Offset,authored.Y.Offset)
+   local small=smallAsset and minimum>0 and minimum<48
    local spread=small and 48 or 96;atlas(image,small);image.AnchorPoint=Vector2.new(.5,.5);image.Position=UDim2.fromScale(.5,.5);image.Size=UDim2.new(1,spread,1,spread)
    image:SetAttribute("AltairFeatheredShadow",true)
    if image.Parent.Name=="Knob"then
@@ -4441,7 +4783,10 @@ local function bindSoftShadows(root)
  addSurface=function(source,strength,color,padding,material,legacy)
   material=material or source
   local handle=source==root.Drag.Drag
-  local small=not handle and source.Parent~=root and not source:GetAttribute("AltairSurface")and smallAsset and math.min(source.AbsoluteSize.X,source.AbsoluteSize.Y)<48*(root:GetAttribute("AltairDisplayScale") or 1)
+  local capsule=source:IsDescendantOf(root.TopCapsules)
+  local authoredSize=source.Size
+  local minimum=math.min(authoredSize.X.Offset,authoredSize.Y.Offset)
+  local small=not handle and source.Parent~=root and not source:GetAttribute("AltairSurface")and smallAsset and minimum>0 and minimum<48
   if small then padding=math.min(padding,24)end
   local key=legacy or source
   if records[key]then return end
@@ -4454,14 +4799,40 @@ local function bindSoftShadows(root)
    local ok,value=pcall(Instance.new,"UIShadow");if not ok then return end
    shadow=value;shadow.Name="SoftShadow";shadow.BlurRadius=UDim.new(0,padding/3);shadow.Color=color;shadow.ZIndex=-1;shadow.Parent=source
   end
+  local rippleMask
+  if handle and asset then
+   rippleMask=Instance.new("UIGradient");rippleMask.Name="CapsuleRippleMask";rippleMask:SetAttribute("AltairThemeIgnore",true);rippleMask.Parent=shadow
+  end
   local function update()
    if not source.Parent or not shadow.Parent then return end
+   if not root.Enabled then if asset then shadow.ImageTransparency=1 else shadow.Transparency=1 end;return end
    local opacity=legacy and (legacy.Visible and math.min(source.Name=="SmartBar"and root:GetAttribute("AltairThemePulse")and .2 or .08,(1-legacy.ImageTransparency)*.45)or 0)or(1-material.BackgroundTransparency)*strength;local current=material
+   if handle then
+    local loading=root:GetAttribute("AltairLoadingProgress")
+    local progress=root:GetAttribute("AltairCapsuleRippleProgress")or 1
+    local pulse=progress>0 and progress<1 and math.sin(progress*math.pi)or 0
+    local baseline=opacity;opacity=math.max(opacity,pulse*.38)
+    if loading~=nil then
+     opacity=math.max(opacity,math.clamp((1-material.BackgroundTransparency)*1.58,0,1))
+     if rippleMask then rippleMask.Transparency=loadingMask(loading)end
+    elseif rippleMask then
+     if pulse>.001 then
+      local minimum=opacity>0 and math.clamp(baseline/opacity,0,1)or 1
+      local points={};local left,right=.5-.65*progress,.5+.65*progress
+      for index=0,8 do
+       local x=index/8;local front=math.min(1,math.exp(-((x-left)/.08)^2)+math.exp(-((x-right)/.08)^2))
+       points[#points+1]=NumberSequenceKeypoint.new(x,1-(minimum+(1-minimum)*front))
+      end
+      rippleMask.Transparency=NumberSequence.new(points)
+     else rippleMask.Transparency=NumberSequence.new(0)end
+    end
+   end
    while current and current~=root do
     if current:IsA("GuiObject") and not current.Visible then opacity=0;break end
     if current:IsA("CanvasGroup")then opacity*=1-current.GroupTransparency end
     current=current.Parent
    end
+   if opacity<.0001 then if asset then shadow.ImageTransparency=1 else shadow.Transparency=1 end;return end
    if asset then
     local position=source.AbsolutePosition-root.AbsolutePosition;local size=source.AbsoluteSize
     local factor=1;local parent=source
@@ -4474,6 +4845,8 @@ local function bindSoftShadows(root)
   end
   local queued=false
   local function queueUpdate()if queued then return end;queued=true;task.defer(function()queued=false;update()end)end
+  connect(localConnections,root:GetPropertyChangedSignal("Enabled"),queueUpdate)
+  if handle then connect(localConnections,root:GetAttributeChangedSignal("AltairCapsuleRippleProgress"),queueUpdate);connect(localConnections,root:GetAttributeChangedSignal("AltairLoadingProgress"),queueUpdate)end
   local function ancestors()
    for _,c in ipairs(ancestorConnections)do c:Disconnect()end;table.clear(ancestorConnections)
    local current=material
@@ -4490,7 +4863,7 @@ local function bindSoftShadows(root)
    if gradient then local copy=gradient:Clone();copy.Parent=shadow;for _,property in ipairs({"Color","Transparency","Rotation","Offset","Enabled"})do connect(localConnections,gradient:GetPropertyChangedSignal(property),function()copy[property]=gradient[property]end)end end
   end
   if handle then connect(localConnections,source:GetPropertyChangedSignal("BackgroundColor3"),update)end
-  for _,property in ipairs({"AbsolutePosition","AbsoluteSize","Rotation","ZIndex","BackgroundTransparency"})do connect(localConnections,source:GetPropertyChangedSignal(property),queueUpdate)end
+  for _,property in ipairs({"AbsolutePosition","AbsoluteSize","Rotation","ZIndex","BackgroundTransparency"})do connect(localConnections,source:GetPropertyChangedSignal(property),capsule and update or queueUpdate)end
   if material~=source then connect(localConnections,material:GetPropertyChangedSignal("BackgroundTransparency"),update)end
   connect(localConnections,source.AncestryChanged,ancestors)
   connect(localConnections,source.Destroying,function()
@@ -4509,10 +4882,18 @@ local function bindSoftShadows(root)
    elseif object.Name=="Content"and object.Parent.Name=="Home"and not object:GetAttribute("AltairHomeRedesign")then addSurface(object,.05,Color3.fromRGB(160,166,180),48)
    elseif object==root.Drag.Drag then addSurface(object,.5,object.BackgroundColor3,30)
    elseif object.Name=="Surface" and object.Parent.Name=="TopCapsules"then addSurface(object,.04,Color3.fromRGB(160,166,180),48)
-   elseif object.Name:match("^Notification_%d+$") or (object.Parent.Name=="Pills" and object.Parent.Parent.Name=="Compact")then local visual=object:FindFirstChild("Visual");addSurface(object,.03,Color3.fromRGB(160,166,180),24,object:FindFirstChild("CardBackground")or(visual and visual:FindFirstChild("Back")))end
+   elseif object.Name:match("^Notification_%d+$") or (object.Parent.Name=="Pills" and object.Parent.Parent.Name=="Compact")then
+    local restore=object:FindFirstChild("Restore")
+    local visual=object:FindFirstChild("Visual")or(restore and restore:FindFirstChild("Visual"))
+    addSurface(object,.07,Color3.fromRGB(75,81,96),24,object:FindFirstChild("CardBackground")or(visual and visual:FindFirstChild("Back")))
+   end
   end
  end
- for _,object in ipairs(root:GetDescendants())do inspect(object)end
+ local workAt=os.clock()
+ for _,object in ipairs(root:GetDescendants())do
+  inspect(object)
+  if os.clock()-workAt>.0015 then game:GetService("RunService").Heartbeat:Wait();workAt=os.clock()end
+ end
  connect(connections,root.DescendantAdded,function(object)task.defer(function()if root.Parent then inspect(object)end end)end)
  connect(connections,root.Destroying,function()for _,c in ipairs(connections)do c:Disconnect()end end)
  return {mode=asset and "feathered-image" or "native",Count=function()return count end}
@@ -4557,6 +4938,196 @@ local function styleSettings(root)
 
 end
 
+-- Capsule placement owns presentation only; media and clock state stay alive.
+local function capsulePlacement(context,controller,root,host,scale,compact,surface)
+ local input=game:GetService("UserInputService")
+ local playerGui=game:GetService("Players").LocalPlayer:FindFirstChildOfClass("PlayerGui")
+ local state={amount=1,target=1,velocity=0,boxes={},probeAt=0,queries=0,lastNotice=-math.huge}
+ local function setting(name,default)
+  local value=context.GetSetting and context.GetSetting(name,default)
+  return value==nil and default or value
+ end
+ local function overlap(a,b)
+  return a[1]<b[3]+8 and a[3]>b[1]-8 and a[2]<b[4]+8 and a[4]>b[2]-8
+ end
+ local function box(object)
+  if not object.Parent or not object:IsA("GuiObject")or not object.Visible then return end
+  local p,s=object.AbsolutePosition-root.AbsolutePosition,object.AbsoluteSize
+  if s.X<4 or s.Y<4 then return end
+  return {p.X,p.Y,p.X+s.X,p.Y+s.Y}
+ end
+ local function gameBox(object)
+  if not playerGui or not object:IsDescendantOf(playerGui)then return end
+  local visual=object.BackgroundTransparency<.94
+  if object:IsA("ImageLabel")or object:IsA("ImageButton")then visual=visual or(object.Image~=""and object.ImageTransparency<.94)end
+  if object:IsA("TextLabel")or object:IsA("TextButton")or object:IsA("TextBox")then visual=visual or(object.Text~=""and object.TextTransparency<.94)end
+  if not visual then return end
+  local b=box(object);if not b then return end
+  if (b[3]-b[1])*(b[4]-b[2])>root.AbsoluteSize.X*root.AbsoluteSize.Y*.45 then return end
+  local parent=object.Parent
+  while parent and parent~=playerGui do
+   if parent:IsA("GuiObject")then
+    if not parent.Visible or parent:IsA("CanvasGroup")and parent.GroupTransparency>.94 then return end
+    if parent.ClipsDescendants then
+     local clip=box(parent);if not clip then return end
+     b={math.max(b[1],clip[1]),math.max(b[2],clip[2]),math.min(b[3],clip[3]),math.min(b[4],clip[4])}
+    end
+   elseif parent:IsA("ScreenGui")and not parent.Enabled then return end
+   parent=parent.Parent
+  end
+  if b[3]-b[1]<3 or b[4]-b[2]<3 then return end
+  return b
+ end
+ local function probe(rect,now)
+  if now<state.probeAt or not playerGui then return end
+  state.probeAt=now+.4
+  local started=os.clock();local seen={}
+  for _,record in ipairs(state.boxes)do seen[record.object]=record end
+  -- Nine native hit tests at most, under a shared sub-millisecond work budget.
+  for x=0,2 do for y=0,2 do
+   if os.clock()-started<.0008 then
+    local px=rect[1]+(rect[3]-rect[1])*x/2+root.AbsolutePosition.X
+    local py=rect[2]+(rect[4]-rect[2])*y/2+root.AbsolutePosition.Y
+    local ok,objects=pcall(playerGui.GetGuiObjectsAtPosition,playerGui,math.floor(px),math.floor(py));state.queries+=1
+    if ok then for _,object in ipairs(objects)do
+     if #state.boxes<64 and not seen[object]and gameBox(object)then
+      local record={object=object,seen=now};seen[object]=record;table.insert(state.boxes,record)
+     elseif seen[object]then seen[object].seen=now end
+    end end
+   end
+  end end
+ end
+ function state:Reveal()
+  if not controller:IsEnabled()then return end
+  controller.revealUntil=os.clock()+math.clamp(tonumber(setting("Capsule Reveal Duration",4))or 4,1,15)
+  controller.layoutAt=0
+ end
+ function state:HoverBar(inside)
+  self.hoverGeneration=(self.hoverGeneration or 0)+1
+  self.hovering=inside;self.hoverReady=false
+  if not inside then return end
+  local generation=self.hoverGeneration
+  task.delay(.65,function()
+   if not controller.alive or generation~=self.hoverGeneration or not self.hovering or not controller.docked then return end
+   local drag=context.GetDragState and context.GetDragState()
+   if drag and not drag.dragging then self.hoverReady=true;self:Reveal()
+   elseif drag and drag.dragging then self.hoverWaitingDrag=true end
+  end)
+ end
+ function state:Retract()
+  controller.revealUntil=0
+  if controller.picker then controller:EndTimerEntry(false)end
+  controller:Open(nil);controller.layoutAt=0
+ end
+ local function notify(status,now)
+  if state.status~=status then state.status=status;state.statusAt=now end
+  if state.notified==status or now-(state.statusAt or now)<.35 or now-state.lastNotice<6 then return end
+  state.notified=status;state.lastNotice=now
+  if context.Notify then
+   local message=status=="bar"and "Capsules are tucked into the drag bar. Hover the bar to reveal them."
+    or status=="moved"and "The top-centre space is occupied. Capsules are tucked into the drag bar."
+    or "Capsules returned to the top of the screen."
+   context.Notify("Capsule position",message,nil,{Duration=4})
+  end
+ end
+ function state:Layout(width,height,factor,obstacles)
+  local now=os.clock();local viewport=root.AbsoluteSize
+  local mode=setting("Capsule Position","Dynamic")
+  local offset=Vector2.zero
+  local left,right=offset.X+12,offset.X+viewport.X-12
+  local top=offset.Y+8
+  local bottom=offset.Y+viewport.Y-12
+  local centerX=offset.X+viewport.X/2
+  local own={}
+  for _,object in ipairs(obstacles)do local b=box(object);if b then table.insert(own,b)end end
+  local desired={centerX-width/2,top,centerX+width/2,top+height}
+  local boxes=table.clone(own)
+  if mode=="Dynamic"and controller:IsEnabled()then
+   probe(self.queryRect or desired,now)
+   for i=#self.boxes,1,-1 do
+    local record=self.boxes[i];local b=gameBox(record.object)
+    if not b or now-record.seen>2 then table.remove(self.boxes,i)else table.insert(boxes,b)end
+   end
+  end
+  local chosen=desired
+  for _,b in ipairs(boxes)do if overlap(desired,b)then chosen=nil;break end end
+  self.queryRect=desired
+  -- Free capsules remain at top centre. Collisions merge into the bar.
+  local docked=mode=="Drag Bar Only"or not chosen
+  local drag=context.GetDragState and context.GetDragState()
+  if docked and not drag then docked=false end
+  controller.docked=docked
+  if self.hoverWaitingDrag and self.hovering and drag and not drag.dragging then self.hoverWaitingDrag=false;self:HoverBar(true)end
+  if drag and drag.dragging then self:Retract()end
+  local hidden=false
+  if docked then
+   local mouse=input:GetMouseLocation()
+   local held=(compact.Visible and box(compact))or(controller.view and box(surface))
+   local active=controller.view~=nil or controller.picker or controller.dragging or self.hovering and self.hoverReady
+   if self.target>0 and host.Visible and held and mouse.X>=held[1]-18 and mouse.X<=held[3]+18
+    and mouse.Y>=held[2]-18 and mouse.Y<=held[4]+18 then active=true end
+   if active and self.target>0 then self:Reveal()end
+   hidden=not active and now>(controller.revealUntil or 0)or drag.dragging
+   local center=drag.center
+   if hidden then controller.targetX=center.X;controller.targetY=center.Y
+   elseif drag.dock=="left"or drag.dock=="right"then
+    local side=drag.dock=="left"and 1 or -1
+    controller.targetX=math.clamp(center.X+side*(drag.size.X/2+12+width/2),left+width/2,math.max(left+width/2,right-width/2))
+    controller.targetY=math.clamp(center.Y-height/2,12,math.max(12,bottom-height))
+   else
+    controller.targetX=math.clamp(center.X,left+width/2,math.max(left+width/2,right-width/2))
+    controller.targetY=math.clamp(center.Y<viewport.Y/2 and center.Y+drag.size.Y/2+12 or center.Y-drag.size.Y/2-height-12,12,math.max(12,bottom-height))
+   end
+   self.drag=drag
+  else
+   chosen=chosen or desired;controller.targetX=(chosen[1]+chosen[3])/2;controller.targetY=chosen[2]
+  end
+  local target=controller:IsEnabled()and not hidden and 1 or 0
+  if self.target~=target and docked and controller.AnimateDrop then controller:AnimateDrop(target==0)end
+  self.target=target
+  if self.target==0 and controller.view then self:Retract()end
+  local status=docked and "bar"or chosen and(math.abs(chosen[1]-desired[1])>2 or math.abs(chosen[2]-top)>2)and "moved"or "top"
+  if not self.status then self.status=status;self.statusAt=now;self.notified=status=="top"and status or nil end
+  if controller:IsEnabled()then notify(status,now)end
+  controller.placementStatus=status;controller.presentationTarget=self.target
+ end
+ function state:Step(dt,factor)
+  local presentation=controller.dropPresentation
+  if presentation and controller.dropProgress==presentation.progress then
+   local t=presentation.progress.Value
+   local amount=presentation.amount+((presentation.merging and 0 or 1)-presentation.amount)*t
+   self.amount=amount;self.velocity=0
+   scale.Scale=factor*math.max(.025,amount)
+   if not controller.view then compact.GroupTransparency=0 end
+   local start,control,destination=presentation.start,presentation.control,presentation.destination
+   local position=start*(1-t)^2+control*(2*(1-t)*t)+destination*t*t
+   host.Position=UDim2.fromOffset(position.X,position.Y);host.Visible=amount>.001
+   if presentation.merging and not presentation.impacted then
+    local object=surface.Visible and surface or compact
+    local visualCenter=position+Vector2.new(0,object.AbsoluteSize.Y/2)
+    if (visualCenter-destination).Magnitude<=8 or t>=.96 then presentation.impacted=true;controller:PulseDrag()end
+   end
+   return
+  end
+  local previous=self.amount
+  local omega=root:GetAttribute("AltairReduceMotion")and 65 or 24
+  local step=math.min(dt,.1);local decay=math.exp(-omega*step)
+  local delta=self.amount-self.target;local j=self.velocity+omega*delta
+  self.amount=self.target+(delta+j*step)*decay;self.velocity=(self.velocity-omega*j*step)*decay
+  if math.abs(self.amount-self.target)<.001 then self.amount=self.target;self.velocity=0 end
+  scale.Scale=factor*math.max(.025,self.amount)
+  if self.amount<.999 or previous<.999 then
+   compact.GroupTransparency=1-math.clamp(self.amount,0,1)
+  end
+  host.Visible=self.amount>0
+  local current=host.Position;local destination=Vector2.new(controller.targetX or root.AbsoluteSize.X/2,controller.targetY or 12)
+  local origin=Vector2.new(current.X.Scale*root.AbsoluteSize.X+current.X.Offset,current.Y.Scale*root.AbsoluteSize.Y+current.Y.Offset)
+  local nextPosition=origin:Lerp(destination,1-math.exp(-20*step))
+  host.Position=UDim2.fromOffset(nextPosition.X,nextPosition.Y)
+ end
+ return state
+end
+
 -- CAPSULES BEGIN: layout, Molto icons, and bindings are authored here.
 local function bindCapsules(context)
 	local root, Clock = context.Root, context.Clock
@@ -4570,6 +5141,13 @@ local function bindCapsules(context)
 		mediaAt=os.clock(), nextPoll=0, failures=0, connections={}, tweens=setmetatable({}, {__mode="k"}),
 		lastErrorAt=-math.huge, commandBusy=false, requestBusy=false, picker=false, layoutAt=0}
 	local clock = controller.clock
+ controller.enabledObservers={}
+ function controller:IsEnabled()return not context.GetSetting or context.GetSetting("Capsules Enabled",true)~=false end
+ function controller:ObserveEnabled(callback)
+  local observer={Connected=true};self.enabledObservers[observer]=callback
+  function observer:Disconnect()self.Connected=false;controller.enabledObservers[self]=nil end
+  return observer
+ end
 	local function get(name, fallback)
 		local value=context.GetSetting and context.GetSetting(name,fallback)
 		if value==nil then return fallback end
@@ -4581,7 +5159,7 @@ local function bindCapsules(context)
 		controller.connections[#controller.connections+1] = connection; return connection
 	end
 	local function make(class, parent, properties)
-		local existing=parent and parent:FindFirstChild(properties.Name or class)
+		local existing=parent and (parent:FindFirstChild(properties.Name or class)or(parent.Name=="center"and parent:FindFirstChild("MediaShelf")and parent.MediaShelf:FindFirstChild(properties.Name or class)))
 		if context.RequireBuiltUI then
 			assert(existing and existing.ClassName==class,"Build.lua is missing capsule object: "..(properties.Name or class))
 			return existing
@@ -4608,12 +5186,20 @@ local function bindCapsules(context)
 			FontFace=medium,TextSize=12,TextColor3=white,BackgroundColor3=color or Color3.fromRGB(28,28,29),
 			BackgroundTransparency=color and 0 or 1,BorderSizePixel=0,AutoButtonColor=false})
 		corner(object,math.min(12,h/2))
+		local feedback=make("UIScale",object,{Name="ButtonFeedback",Scale=1})
+		connect(object.MouseButton1Down,function()
+			if not object:GetAttribute("NoHover")then tweenService:Create(feedback,TweenInfo.new(.07),{Scale=.88}):Play()end
+		end)
+		connect(object.MouseButton1Up,function()
+			if not object:GetAttribute("NoHover")then tweenService:Create(feedback,TweenInfo.new(.24,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()end
+		end)
 		connect(object.Activated,action)
 		if not color then object.BackgroundColor3=Color3.new(1,1,1) end
 		connect(object.MouseEnter,function()
 			if not color and not object:GetAttribute("NoHover") then tweenService:Create(object,TweenInfo.new(.12),{BackgroundTransparency=.92}):Play() end
 		end)
 		connect(object.MouseLeave,function()
+			tweenService:Create(feedback,TweenInfo.new(.18),{Scale=1}):Play()
 			if not color and not object:GetAttribute("NoHover") then tweenService:Create(object,TweenInfo.new(.12),{BackgroundTransparency=1}):Play() end
 		end)
 		return object
@@ -4714,18 +5300,24 @@ local function bindCapsules(context)
 	local sourceStroke=smartBar and smartBar:FindFirstChildOfClass("UIStroke")
 	local outline=surface:FindFirstChild("CapsuleOutline") or (sourceStroke and sourceStroke:Clone()) or Instance.new("UIStroke")
 	outline:SetAttribute("AltairSurfaceOutline",nil);outline:SetAttribute("AltairInsetOutline",nil)
- outline.Name="CapsuleOutline";outline.Color=white;outline.Transparency=.45;outline.Thickness=1
+ outline.Name="CapsuleOutline";outline.Color=white;outline.Transparency=.88;outline.Thickness=.7
 	outline.Enabled=true;outline.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;outline.Parent=surface
 	local inner=frame(surface,"Back",5,5,0,0,smartBar and smartBar.Back.BackgroundColor3 or Color3.fromRGB(50,50,50),7)
 	inner.Size=UDim2.new(1,-10,1,-10);inner.BackgroundTransparency=.1
-	local innerStroke=make("UIStroke",inner,{Name="InnerOutline",Color=white,Thickness=1,Transparency=.65,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+	local innerStroke=make("UIStroke",inner,{Name="InnerOutline",Color=white,Thickness=.7,Transparency=.94,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
 	local accentOutlines={outline,innerStroke}
 	local function barTile(object,sourceName)
 		local source=smartBar and smartBar.Back.Buttons:FindFirstChild(sourceName)
 		local gradient=source and source:FindFirstChildOfClass("UIGradient")
 		object.BackgroundColor3=Color3.new(1,1,1)
-		make("UIGradient",object,{Name="TileGradient",Rotation=90,
+		local tile=make("UIGradient",object,{Name="TileGradient",Rotation=32,
 			Color=gradient and gradient.Color or ColorSequence.new(controlColor,barColor)})
+        tile:SetAttribute("AltairThemeIgnore",true);tile:SetAttribute("AltairAlbumDriven",false)
+        if gradient then
+         tile.Color=gradient.Color
+         local connection=connect(gradient:GetPropertyChangedSignal("Color"),function()if tile.Parent and not tile:GetAttribute("AltairAlbumDriven")then tile.Color=gradient.Color end end)
+         if connection then object.Destroying:Once(function()connection:Disconnect()end)end
+        end
 	end
 	-- The collapsing shell takes on the source pill's material before handoff.
 	local morphMaterial=frame(surface,"MorphMaterial",2,2,0,0,Color3.new(1,1,1),12)
@@ -4744,10 +5336,10 @@ local function bindCapsules(context)
 		local v=make("CanvasGroup",surface,{Name=name,Size=UDim2.fromOffset(w,h),BackgroundTransparency=1,GroupTransparency=1,Visible=false})
 		views[name]=v;return v
 	end
-	local center=view("center",300,146)
-	local music=view("music",220,82)
-	local timer=view("timer",208,68)
-	local watch=view("watch",208,94)
+	local center=view("center",300,180)
+	local music=view("music",248,132)
+	local timer=view("timer",224,100)
+	local watch=view("watch",224,130)
 	local duration=view("duration",300,166)
 	local morphChevron=icon(surface,"MorphChevron","chevron-down",0,0,12,white)
 	morphChevron.AnchorPoint=Vector2.new(.5,.5);morphChevron.Position=UDim2.fromScale(.5,.5);morphChevron.ImageTransparency=1
@@ -4757,15 +5349,20 @@ local function bindCapsules(context)
 	function controller:Open(name)
 		assert(name==nil or sizes[name],"Unknown capsule view")
 		if self.picker and name~="duration" then return end
+		if name and not self:IsEnabled()then return end
 		if name==self.view then return end
+		self.hoverGraceUntil=name and os.clock()+.85 or nil
+		self.hoverReachedSurface=false
         if self.restoreMusicCarry then self.restoreMusicCarry();self.restoreMusicCarry=nil end
         if self.restoreReturningMusic then self.restoreReturningMusic();self.restoreReturningMusic=nil end
+        if self.restoreNeighbors then self.restoreNeighbors();self.restoreNeighbors=nil end
         if self.musicCarry then self.musicCarry:Destroy();self.musicCarry=nil end
         if self.circleCarry then self.circleCarry:Destroy();self.circleCarry=nil end
         local liveMusic=views.music
         if liveMusic:FindFirstChild("Title") then liveMusic.Title.Visible=true end
         if liveMusic:FindFirstChild("Artwork") then liveMusic.Artwork.Visible=true end
 		local previous=self.view
+		if previous=="music"and name==nil then self.musicHoldUntil=os.clock()+.65 end
 		self.view=name;self.transition=(self.transition or 0)+1
 		local transition=self.transition
 		self.finishMorph=nil
@@ -4812,28 +5409,60 @@ local function bindCapsules(context)
             end
 
 
-            if previous=="center" and strip:FindFirstChild("Music") and strip.Music.Visible then
-             local actual=strip.Music;local saved={parent=strip,position=actual.Position,anchor=actual.AnchorPoint}
-             local slot=Instance.new("Frame");slot.Name="MusicReturnSlot";slot.Size=actual.Size;slot.LayoutOrder=actual.LayoutOrder;slot.BackgroundTransparency=1;slot.Parent=strip
-             actual.Visual.GroupTransparency=1;actual.Parent=host;actual.AnchorPoint=Vector2.new(.5,0);self.returningMusic=actual
-             tween(actual.Visual,.12,{GroupTransparency=0})
-             self.restoreReturningMusic=function()
-              actual.Parent=saved.parent;actual.AnchorPoint=saved.anchor;actual.Position=saved.position;slot:Destroy();self.returningMusic=nil
+            -- Borrow every neighbouring capsule for the return, not just Spotify.
+            -- Their layout slots stay reserved while the real visuals glide home.
+            local returning={};local factor=math.max(.001,scale.Scale)
+            for _,actual in ipairs(strip:GetChildren())do
+             if actual:IsA("GuiObject")and actual.Visible and actual.Name~="ControlCenter"and actual~=origin.source then
+              local record={object=actual,parent=strip,position=actual.Position,size=actual.Size,anchor=actual.AnchorPoint,z={}}
+              local width=actual.AbsoluteSize.X/factor
+              local slot=Instance.new("Frame");slot.Name="NeighbourReturnSlot";slot.Size=actual.Size;slot.LayoutOrder=actual.LayoutOrder;slot.BackgroundTransparency=1;slot.Parent=strip
+              record.slot=slot
+              local target=(slot.AbsolutePosition+Vector2.new(slot.AbsoluteSize.X/2,0)-host.AbsolutePosition)/factor
+              local carry=Instance.new("CanvasGroup");carry.Name="ReturningNeighbour";carry.BackgroundTransparency=1;carry.GroupTransparency=1
+              carry.AnchorPoint=Vector2.new(.5,0);carry.Size=UDim2.fromOffset(width,24);carry.ZIndex=surface.ZIndex+5
+              carry.Position=UDim2.fromOffset(surface.Position.X.Offset+surface.Size.X.Offset/2+width/2+8+#returning*12,6);carry.Parent=host
+              record.carry=carry
+              for _,object in ipairs({actual,table.unpack(actual:GetDescendants())})do if object:IsA("GuiObject")then record.z[object]=object.ZIndex;object.ZIndex=carry.ZIndex+1 end end
+              actual.Parent=carry;actual.AnchorPoint=Vector2.zero;actual.Position=UDim2.fromOffset(0,0);actual.Size=UDim2.fromScale(1,1)
+              task.defer(function()
+               runService.Heartbeat:Wait()
+               if self.alive and self.transition==transition and carry.Parent and slot.Parent then
+                local destination=(slot.AbsolutePosition+Vector2.new(slot.AbsoluteSize.X/2,0)-host.AbsolutePosition)/math.max(.001,scale.Scale)
+                tween(carry,.32,{Position=UDim2.fromOffset(destination.X,destination.Y),GroupTransparency=0},Enum.EasingStyle.Quart)
+               end
+              end)
+              returning[#returning+1]=record
              end
             end
+            self.restoreNeighbors=function()
+             for _,record in ipairs(returning)do
+              local actual=record.object
+              if actual.Parent then
+               actual.Parent=record.parent;actual.Position=record.position;actual.Size=record.size;actual.AnchorPoint=record.anchor
+               for object,z in pairs(record.z)do if object.Parent then object.ZIndex=z end end
+              end
+              record.slot:Destroy();record.carry:Destroy()
+             end
+            end
+
 			tween(morphMaterial,.14,{BackgroundTransparency=origin.source and .18 or 1})
 			-- Remove the inner material before the outer shell reaches its circle.
 			tween(inner,.06,{BackgroundTransparency=1})
+            task.delay(.065,function()if self.alive and transition==self.transition and not self.view then inner.Visible=false end end)
 			tween(innerStroke,.1,{Transparency=1})
 			tween(morphChevron,.24,{ImageTransparency=origin.width<=26 and 0 or 1})
-			self.morphTarget={x=origin.x,width=origin.width,height=24}
+			tween(surface.UICorner,.28,{CornerRadius=UDim.new(0,6)})
+            tween(morphMaterial.UICorner,.28,{CornerRadius=UDim.new(0,6)})
+            self.morphTarget={x=origin.x,y=origin.y or 0,width=origin.width,height=24}
 			tween(surface,.2,{BackgroundTransparency=.08})
-			tween(outline,.38,{Transparency=.45})
+			tween(outline,.38,{Transparency=.88})
 			self.finishMorph=function()
 				if self.alive and transition==self.transition then
 					compact.Visible=true;compact.GroupTransparency=1
                     if self.restoreMusicCarry then self.restoreMusicCarry();self.restoreMusicCarry=nil end
                     if self.restoreReturningMusic then self.restoreReturningMusic();self.restoreReturningMusic=nil end
+                    if self.restoreNeighbors then self.restoreNeighbors();self.restoreNeighbors=nil end
                     compact.GroupTransparency=0;surface.Visible=false
                     if self.musicCarry then self.musicCarry:Destroy();self.musicCarry=nil end
                     if self.circleCarry then self.circleCarry:Destroy();self.circleCarry=nil end
@@ -4845,24 +5474,27 @@ local function bindCapsules(context)
 				local factor=math.max(.01,scale.Scale)
 				local x=source and ((source.AbsolutePosition.X+source.AbsoluteSize.X/2-host.AbsolutePosition.X)/factor) or 150
 				local width=source and source.AbsoluteSize.X/factor or 24
-				self.origin={x=x,width=width,source=source}
+				self.origin={x=x,y=source and(source.AbsolutePosition.Y-host.AbsolutePosition.Y)/factor or 0,width=width,source=source}
 				if not previous then syncMorphMaterial(source);morphMaterial.BackgroundTransparency=source and .18 or 1 end
-				if not surface.Visible then surface.Size=UDim2.fromOffset(width,24);surface.Position=UDim2.fromOffset(x,0);self.morphState=nil end
+				if not surface.Visible then surface.Size=UDim2.fromOffset(width,24);surface.Position=UDim2.fromOffset(x,self.origin.y);self.morphState=nil end
 				surface.BackgroundTransparency=0
 			end
 			compact.Visible=true
             tween(compact,.1,{GroupTransparency=1})
             task.delay(.12,function() if self.alive and transition==self.transition and self.view~=nil then compact.Visible=false end end)
 			tween(morphMaterial,.12,{BackgroundTransparency=1})
+			inner.Visible=true
 			tween(inner,.24,{Position=UDim2.fromOffset(5,5),Size=UDim2.new(1,-10,1,-10),BackgroundTransparency=.1})
-			tween(innerStroke,.36,{Transparency=.65})
+			tween(innerStroke,.36,{Transparency=.94})
 			if not previous then morphChevron.ImageTransparency=self.origin.width<=26 and 0 or 1 end
 			tween(morphChevron,.16,{ImageTransparency=1})
 			local size=sizes[name]
 			surface.Visible=true;views[name].Visible=true;views[name].GroupTransparency=1
-			self.morphTarget={x=host.Size.X.Offset*.5,width=size.X,height=size.Y}
+			tween(surface.UICorner,.28,{CornerRadius=UDim.new(0,14)})
+            tween(morphMaterial.UICorner,.28,{CornerRadius=UDim.new(0,14)})
+            self.morphTarget={x=host.Size.X.Offset*.5,y=0,width=size.X,height=size.Y}
 			tween(surface,.24,{BackgroundTransparency=.08})
-			tween(outline,.28,{Transparency=.45})
+			tween(outline,.28,{Transparency=.88})
 			task.delay(.06,function()
 				if self.alive and transition==self.transition then tween(views[name],.22,{GroupTransparency=0}) end
 			end)
@@ -4874,6 +5506,7 @@ local function bindCapsules(context)
 			if event and event.UserInputType==Enum.UserInputType.Touch then action() end
 		end)
 		connect(p.MouseEnter,function()
+			controller.hoverSource=p
 			controller.hoverSession=true;controller.hoverLeftAt=nil;action()
 		end)
 		local visual=p
@@ -4884,17 +5517,18 @@ local function bindCapsules(context)
 			corner(visual,8)
 		else p.BackgroundTransparency=.08 end
 		local back=frame(visual,"Back",2,2,0,0,controlColor,7);back.Size=UDim2.new(1,-4,1,-4)
-		barTile(back,({ControlCenter="Settings",Music="Home",Timer="Scripts",Stopwatch="Playerlist"})[name])
+		barTile(back,({ControlCenter="Settings",Music="Playerlist",Timer="Scripts",Stopwatch="Character"})[name])
 		back.BackgroundTransparency=.18
 		local edge=frame(visual,"Edge",1,1,0,0,nil,8);edge.Size=UDim2.new(1,-2,1,-2)
-		accentOutlines[#accentOutlines+1]=make("UIStroke",edge,{Name="PillOutline",Color=white,Thickness=1,
-			Transparency=.45,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+		accentOutlines[#accentOutlines+1]=make("UIStroke",edge,{Name="PillOutline",Color=white,Thickness=.7,
+			Transparency=.88,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
 		if name~="Music" then
 			p.Text=""
 			local value=label(visual,"Value",text,0,0,width,24,8,white)
 			value.TextXAlignment=Enum.TextXAlignment.Center;value.FontFace=medium
 		end
 		p.LayoutOrder=#strip:GetChildren();p.TextSize=8;p.TextColor3=color or white
+		p.UICorner.CornerRadius=UDim.new(0,6)
 		return p,visual
 	end
 	local menuPill=pill("ControlCenter","",24,white,function() controller:Open("center") end)
@@ -4907,7 +5541,7 @@ local function bindCapsules(context)
 	for _,p in {timerPill,watchPill} do icon(p,"ClockIcon","timer",5,6,12,white) end
 	pills.center,pills.music,pills.timer,pills.watch=menuPill,musicPill,timerPill,watchPill
 	artwork(musicVisual,3,3,18,9,7,7,10)
-	local compactTitle=label(musicVisual,"Title","Spotify",27,0,60,24,7,white);compactTitle.FontFace=medium
+	local compactTitle=label(musicVisual,"Title","Spotify",27,0,60,24,8,white);compactTitle.FontFace=medium
 	compactTitle.TextTruncate=Enum.TextTruncate.None
 	local function renderedTitleWidth()
 		if compactTitle.Text==controller.measuredTitle and compactTitle.TextBounds.X>0 then
@@ -4934,6 +5568,7 @@ local function bindCapsules(context)
 	controller.musicShown=false;controller.musicTransition=0
 	musicPill.Size=UDim2.fromOffset(0,24)
 	local function animateMusic(active,width)
+        if controller.iconOnly then width=24 end
 		if active~=controller.musicShown then
 			controller.musicShown=active;controller.musicTransition+=1
 			local generation=controller.musicTransition
@@ -4965,15 +5600,73 @@ local function bindCapsules(context)
 	timerPill.Visible,watchPill.Visible=false,false
 	local function syncCompactBounds()
 		if root.AbsoluteSize.X<=0 then return end
-		local factor=math.max(.01,scale.Scale*compactFit.Scale)
+		local factor=math.max(.0001,scale.Scale*compactFit.Scale)
 		local width=math.max(24,pillLayout.AbsoluteContentSize.X/factor)
+        local height=controller.iconOnly and math.max(24,pillLayout.AbsoluteContentSize.Y/factor)or 24
 		local fit=math.min(1,(root.AbsoluteSize.X-24)/math.max(1,(width+8)*scale.Scale))
 		set(compactFit,"Scale",math.max(.05,fit))
-		set(strip,"Size",UDim2.fromOffset(width,24))
-		set(compact,"Size",UDim2.fromOffset(width+8,32))
+		set(strip,"Size",UDim2.fromOffset(width,height))
+		set(compact,"Size",UDim2.fromOffset(width+8,height+8))
 		set(compact,"Position",UDim2.new(.5,0,0,-4*compactFit.Scale))
 		controller.compactWidth=(width+8)*compactFit.Scale
+        controller.compactHeight=(height+8)*compactFit.Scale
 	end
+ controller.externalHandles={}
+ function controller:RegisterExternal(options)
+  self.externalSerial=(self.externalSerial or 0)+1
+  local group=Instance.new("CanvasGroup");group.Name="ExternalCapsule"..self.externalSerial;group.BackgroundTransparency=1
+  group.Size=UDim2.fromOffset(0,24);group.GroupTransparency=1;group.Visible=false;group.ClipsDescendants=true;group.LayoutOrder=100+self.externalSerial;group.ZIndex=291;group.Parent=strip
+  local button=musicPill:Clone();button.Name="Restore";button.Position=UDim2.fromOffset(0,0);button.Size=UDim2.fromScale(1,1);button.Visible=true;button.Parent=group
+  local visual=button.Visual;visual.Size=UDim2.fromScale(1,1);visual.GroupTransparency=0
+  local variants={"Scripts","Character","Playerlist","Home","Settings"}
+  barTile(visual.Back,variants[(self.externalSerial-1)%#variants+1])
+  local title=visual.Title;title.Text=tostring(options.Title or "Rayfield");title.TextSize=compactTitle.TextSize;title.TextTruncate=Enum.TextTruncate.None;title.Size=UDim2.new(1,-35,1,0)
+  local cover=visual.Artwork.Cover;cover.Image=type(options.Icon)=="string"and options.Icon:match("^rbx")and options.Icon or "";cover.Visible=cover.Image~=""
+  local note=visual:FindFirstChild("Note");if note then note.Visible=false end
+  if not cover.Visible then applyIcon(cover,"square-terminal");cover.Visible=true;visual.Artwork.Visible=true end
+  local outline=visual.Edge:FindFirstChildOfClass("UIStroke");if outline then table.insert(accentOutlines,outline)end
+  local press=Instance.new("UIScale");press.Name="InteractionScale";press.Parent=button
+  local handle={group=group,generation=0,width=math.clamp(#title.Text*4+35,62,220),connections={}}
+  local function animate(object,duration,goals,style)tweenService:Create(object,TweenInfo.new(duration,style or Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goals):Play()end
+  function handle:TargetWidth()return controller.iconOnly and 24 or self.width end
+  function handle:SetIconOnly(enabled)
+   animate(title,.18,{TextTransparency=enabled and 1 or 0})
+   if self.shown then animate(group,.24,{Size=UDim2.fromOffset(self:TargetWidth(),24)})end
+  end
+  controller.externalHandles[handle]=true
+  function handle:Show(reveal)
+   self.generation+=1;self.shown=true;group.Visible=true
+   animate(group,.3,{Size=UDim2.fromOffset(self:TargetWidth(),24),GroupTransparency=reveal and 0 or .12})
+   syncCompactBounds()
+  end
+  function handle:Hide()
+   self.generation+=1;self.shown=false;local generation=self.generation
+   animate(group,.24,{Size=UDim2.fromOffset(0,24),GroupTransparency=1})
+   task.delay(.25,function()if group.Parent and self.generation==generation then group.Visible=false;syncCompactBounds()end end)
+  end
+  function handle:Rect()
+   if controller.docked and controller.presentationTarget==0 and controller.placement and controller.placement.drag then
+    local center=controller.placement.drag.center+root.AbsolutePosition
+    return center-Vector2.new(7,2),Vector2.new(14,4)
+   end
+   local factor=scale.Scale*compactFit.Scale;local delta=(self:TargetWidth()-group.Size.X.Offset)*factor
+   return group.AbsolutePosition-Vector2.new(delta/2,0),Vector2.new(self:TargetWidth(),24)*factor
+  end
+  function handle:Destroy()controller.externalHandles[self]=nil;for _,connection in ipairs(self.connections)do connection:Disconnect()end;group:Destroy();syncCompactBounds()end
+  local function listen(signal,callback)table.insert(handle.connections,signal:Connect(callback))end
+  listen(button.MouseEnter,function()animate(press,.18,{Scale=1.025});if outline then animate(outline,.18,{Transparency=.68})end end)
+  listen(button.MouseLeave,function()animate(press,.3,{Scale=1},Enum.EasingStyle.Back);if outline then animate(outline,.2,{Transparency=.88})end end)
+  listen(button.MouseButton1Down,function()animate(press,.1,{Scale=.94})end)
+  listen(button.Activated,function()animate(press,.35,{Scale=1},Enum.EasingStyle.Back);if controller.alive and options.Restore then options.Restore()end end)
+  task.spawn(function()
+   local params=Instance.new("GetTextBoundsParams");params.Font=title.FontFace;params.Size=title.TextSize;params.Text=title.Text;params.Width=1000
+   local ok,bounds=pcall(game:GetService("TextService").GetTextBoundsAsync,game:GetService("TextService"),params);params:Destroy()
+   if ok and group.Parent then handle.width=math.clamp(math.ceil(bounds.X)+(cover.Visible and 35 or 16),62,240);if group.Visible then animate(group,.2,{Size=UDim2.fromOffset(handle:TargetWidth(),24)})end end
+  end)
+  handle:SetIconOnly(controller.iconOnly==true)
+  return handle
+ end
+
 	connect(pillLayout:GetPropertyChangedSignal("AbsoluteContentSize"),syncCompactBounds)
 	connect(root:GetPropertyChangedSignal("AbsoluteSize"),syncCompactBounds)
 	local function notifyError(message)
@@ -5051,7 +5744,7 @@ local function bindCapsules(context)
 	local unlinkCard=frame(unlinkDialog,"Card",0,0,380,184,Color3.fromRGB(20,20,22),18)
 	unlinkCard.AnchorPoint=Vector2.new(.5,.5);unlinkCard.Position=UDim2.fromScale(.5,.5);unlinkCard.Size=UDim2.new(1,-32,0,184);unlinkCard.Active=true
 	make("UISizeConstraint",unlinkCard,{Name="Bounds",MaxSize=Vector2.new(380,184)})
-	make("UIStroke",unlinkCard,{Color=white,Transparency=.65,Thickness=1})
+	make("UIStroke",unlinkCard,{Color=white,Transparency=.94,Thickness=.7})
 	local unlinkTitle=label(unlinkCard,"Title","Disconnect Spotify?",22,20,336,24,18,white)
 	local unlinkBody=label(unlinkCard,"Description","",22,56,336,54,13,gray)
 	unlinkBody.TextWrapped=true;unlinkBody.TextTruncate=Enum.TextTruncate.None;unlinkBody.Size=UDim2.new(1,-44,0,54)
@@ -5098,6 +5791,8 @@ local function bindCapsules(context)
 		local previous=table.clone(self.media)
 		previous.progress=math.min(previous.duration or 0,(previous.progress or 0)+(previous.playing and os.clock()-self.mediaAt or 0))
 		if not self:Enqueue("control",{action=action,value=value},previous) then return false end
+        self.fastPollUntil=os.clock()+2.5
+        if action=="next"or action=="previous"then self.trackDirection=action=="next"and 1 or -1;if self.AnimateTrack then self:AnimateTrack(self.trackDirection,false)end end
 		local optimistic=table.clone(previous)
 		if action=="seek" then optimistic.progress=value
 		elseif action=="volume" then optimistic.volume=value
@@ -5119,7 +5814,10 @@ local function bindCapsules(context)
 		state.artist=tostring(state.artist or ""):sub(1,300)
         state.connected=state.connected==true;state.playing=state.playing==true
         if state.linked==nil then state.linked=state.connected or(self.media and self.media.linked)or false end
-		self.media,self.mediaAt=state,os.clock()
+		local trackChanged=self.media.title~=state.title and self.media.title~="Spotify"
+        self.media,self.mediaAt=state,os.clock()
+        if trackChanged and self.AnimateTrack then self:AnimateTrack(self.trackDirection or 1,true)end
+        if self.ApplyPalette then self:ApplyPalette(state.palette)end
 		if context.Session and(state.connected or state.linked~=nil)then
 			context.Session.media=table.clone(state);context.Session.mediaAt=self.mediaAt
 		end
@@ -5141,10 +5839,13 @@ local function bindCapsules(context)
 		hit:SetAttribute("NoHover",true)
 		local dragging,lastPosition=false,nil
 		local state={bar=bar,fill=fill,value=0}
-		local function ratio(position) return math.clamp((position.X-bar.AbsolutePosition.X)/math.max(1,bar.AbsoluteSize.X),0,1) end
+		local function ratio(position)
+   if bar:GetAttribute("AltairVertical")then return math.clamp(1-(position.Y+root.AbsolutePosition.Y-bar.AbsolutePosition.Y)/math.max(1,bar.AbsoluteSize.Y),0,1)end
+   return math.clamp((position.X+root.AbsolutePosition.X-bar.AbsolutePosition.X)/math.max(1,bar.AbsoluteSize.X),0,1)
+  end
 		local function move(position,finished)
 			lastPosition=position;state.value=ratio(position)
-			fill.Size=UDim2.new(state.value,0,1,0);callback(state.value,finished)
+			fill.Size=bar:GetAttribute("AltairVertical")and UDim2.fromScale(1,state.value)or UDim2.fromScale(state.value,1);callback(state.value,finished)
 		end
 		local function cancel() dragging=false;controller.dragging=false end
 		dragCancels[#dragCancels+1]=cancel
@@ -5180,8 +5881,25 @@ local function bindCapsules(context)
 		if kind=="next" or kind=="previous" then
 			play.Visible=false;pause.Visible=false
 			icon(glyph,"Skip",kind=="previous" and "skip-back" or "skip-forward",1,1,14,color)
+            connect(parent.MouseButton1Down,function()tween(glyph,.08,{Position=UDim2.new(.5,kind=="next"and 3 or -3,.5,0)})end)
+            connect(parent.MouseButton1Up,function()tween(glyph,.24,{Position=UDim2.fromScale(.5,.5)},Enum.EasingStyle.Back)end)
+            connect(parent.MouseLeave,function()tween(glyph,.2,{Position=UDim2.fromScale(.5,.5)})end)
 		else play.Visible=kind=="play";pause.Visible=kind=="pause" end
-		return function(playing) play.Visible=not playing;pause.Visible=playing end
+        local playScale=make("UIScale",play,{Name="GlyphScale",Scale=1})
+        local pauseScale=make("UIScale",pause,{Name="GlyphScale",Scale=1})
+        play.AnchorPoint=Vector2.new(.5,.5);play.Position=UDim2.fromScale(.5,.5)
+        pause.AnchorPoint=Vector2.new(.5,.5);pause.Position=UDim2.fromScale(.5,.5)
+        local last=kind=="pause";local generation=0
+		return function(playing)
+         playing=playing==true;if last==playing then return end;last=playing;generation+=1;local current=generation
+         local incoming,outgoing=playing and pause or play,playing and play or pause
+         local incomingScale,outgoingScale=playing and pauseScale or playScale,playing and playScale or pauseScale
+         incoming.Visible=true;outgoing.Visible=true;incomingScale.Scale=.4;incoming.Rotation=playing and -22 or 22;incoming.ImageTransparency=.5
+         tween(incomingScale,.24,{Scale=1},Enum.EasingStyle.Back)
+         tween(incoming,.2,{Rotation=0,ImageTransparency=0})
+         tween(outgoingScale,.16,{Scale=.25});tween(outgoing,.16,{Rotation=playing and 22 or -22,ImageTransparency=1})
+         task.delay(.2,function()if controller.alive and current==generation then outgoing.Visible=false end end)
+        end
 	end
 	local playerViews={}
 	for _,spec in ipairs({{center,300,true},{music,220,false}}) do
@@ -5204,13 +5922,28 @@ local function bindCapsules(context)
 		playbackGlyph(previous,"previous",white);playbackGlyph(nextButton,"next",white)
 		playerViews[#playerViews+1]={title=title,artist=artist,play=play,renderPlay=playbackGlyph(play,"play",white),seek=seek,elapsed=elapsed,duration=duration}
 	end
+    controller.trackRest=setmetatable({}, {__mode="k"})
+ function controller:AnimateTrack(direction,arriving)
+  for _,player in ipairs(playerViews)do
+   for _,object in ipairs({player.title,player.artist})do
+    local rest=self.trackRest[object]or object.Position;self.trackRest[object]=rest
+    if arriving then
+     object.Position=rest+UDim2.fromOffset(direction*18,0)
+     tween(object,.3,{Position=rest},Enum.EasingStyle.Quart)
+    else
+     tween(object,.1,{Position=rest+UDim2.fromOffset(-direction*5,0)})
+     task.delay(.11,function()if self.alive and object.Parent then tween(object,.3,{Position=rest},Enum.EasingStyle.Back)end end)
+    end
+   end
+  end
+ end
 	local originalBrightness=lighting.Brightness
 	local brightnessChanged=false
 	local brightness=slider(center,"Brightness",11,71,136,22,white,function(value)
 		brightnessChanged=true;lighting.Brightness=value*3
 	end)
 	icon(center,"BrightnessIcon","sun",20,77,12,Color3.fromRGB(194,148,35))
-	brightness.fill.Size=UDim2.fromScale(math.clamp(originalBrightness/3,0,1),1)
+	brightness.fill.Size=brightness.bar:GetAttribute("AltairVertical")and UDim2.fromScale(1,math.clamp(originalBrightness/3,0,1))or UDim2.fromScale(math.clamp(originalBrightness/3,0,1),1)
 	local volume=slider(center,"SpotifyVolume",153,71,136,22,white,function(value,finished)
 		if finished then controller:Control("volume",value) end
 	end)
@@ -5334,8 +6067,8 @@ local function bindCapsules(context)
 	for _,tile in {timerTile,watchTile} do
 		barTile(tile,tile==timerTile and "Scripts" or "Playerlist")
 		tile.Label.TextColor3=white:Lerp(gray,.15)
-		accentOutlines[#accentOutlines+1]=make("UIStroke",tile,{Name="InsetOutline",Color=white,Thickness=1,
-			Transparency=.55,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+		accentOutlines[#accentOutlines+1]=make("UIStroke",tile,{Name="InsetOutline",Color=white,Thickness=.7,
+			Transparency=.9,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
 	end
 	label(timer,"Title","Timer",11,8,100,12,9,gray)
 	local timerTime=label(timer,"Time","05:00",11,22,120,21,18,amber);timerTime.FontFace=medium
@@ -5364,6 +6097,222 @@ local function bindCapsules(context)
 			value=label(row,"Value","",135,0,51,12,9,white)}
 		lapRows[index].value.TextXAlignment=Enum.TextXAlignment.Right
 	end
+    if context.BuildOnly then
+     music.Artwork.Position=UDim2.fromOffset(12,12);music.Artwork.Size=UDim2.fromOffset(60,60)
+     music.Note.Position=UDim2.fromOffset(33,33);music.Note.Size=UDim2.fromOffset(18,18)
+     music.Title.Position=UDim2.fromOffset(84,16);music.Title.Size=UDim2.fromOffset(152,26);music.Title.TextSize=12
+     music.Artist.Position=UDim2.fromOffset(84,43);music.Artist.Size=UDim2.fromOffset(152,26);music.Artist.TextWrapped=true
+     for index,name in ipairs({"Previous","PlayPause","Next"})do music[name].Position=UDim2.fromOffset(96+(index-1)*52,76)end
+     music.Seek.Position=UDim2.fromOffset(12,104);music.Seek.Size=UDim2.fromOffset(224,4)
+     music.Elapsed.Position=UDim2.fromOffset(12,112);music.Duration.Position=UDim2.fromOffset(171,112)
+     timer.Time.Position=UDim2.fromOffset(12,30);timer.Time.Size=UDim2.fromOffset(130,32);timer.Time.TextSize=24
+     timer.Pause.Position=UDim2.fromOffset(155,30);timer.Cancel.Position=UDim2.fromOffset(190,30)
+     timer.Ruler.Position=UDim2.fromOffset(12,79);timer.Ruler.Size=UDim2.fromOffset(200,10)
+     watch.Time.Position=UDim2.fromOffset(12,30);watch.Time.Size=UDim2.fromOffset(120,32);watch.Time.TextSize=24
+     watch.Fraction.Position=UDim2.fromOffset(80,42)
+     watch.Lap.Position=UDim2.fromOffset(132,32);watch.Pause.Position=UDim2.fromOffset(188,32)
+     watch.Empty.Position=UDim2.fromOffset(12,83)
+     for index=1,3 do watch["Lap"..index].Position=UDim2.fromOffset(12,82+(index-1)*13)end
+    end
+    -- Control Centre-inspired asymmetric grid: a media tile and two tall faders.
+ local mediaShelf=frame(center,"MediaShelf",10,10,180,118,controlColor,12)
+ mediaShelf.BackgroundTransparency=.18
+ if context.BuildOnly then
+  for _,name in ipairs({"Artwork","Note","Title","Artist","Previous","PlayPause","Next","Seek","Elapsed","Duration"})do
+   local object=center:FindFirstChild(name)
+   if object then object.Parent=mediaShelf end
+  end
+  mediaShelf.Artwork.Position=UDim2.fromOffset(12,10);mediaShelf.Artwork.Size=UDim2.fromOffset(32,32)
+  mediaShelf.Note.Position=UDim2.fromOffset(21,19)
+  mediaShelf.Title.Position=UDim2.fromOffset(12,49);mediaShelf.Title.Size=UDim2.fromOffset(156,14)
+  mediaShelf.Artist.Position=UDim2.fromOffset(12,65);mediaShelf.Artist.Size=UDim2.fromOffset(156,12)
+  for index,name in ipairs({"Previous","PlayPause","Next"})do mediaShelf[name].Position=UDim2.fromOffset(27+(index-1)*54,89)end
+  mediaShelf.Seek.Position=UDim2.fromOffset(12,82);mediaShelf.Seek.Size=UDim2.fromOffset(156,3)
+  mediaShelf.Elapsed.Visible=false;mediaShelf.Duration.Visible=false
+  for index,name in ipairs({"Brightness","SpotifyVolume"})do
+   local bar=center[name];local fill=bar.Fill
+   bar.Position=UDim2.fromOffset(200+(index-1)*46,10);bar.Size=UDim2.fromOffset(38,118)
+   bar.UICorner.CornerRadius=UDim.new(0,12);bar:SetAttribute("AltairVertical",true)
+   fill.AnchorPoint=Vector2.new(0,1);fill.Position=UDim2.fromScale(0,1)
+   fill.Size=UDim2.fromScale(1,index==1 and math.clamp(originalBrightness/3,0,1)or 0)
+   fill.Color.AnchorPoint=Vector2.new(0,1);fill.Color.Position=UDim2.fromScale(0,1);fill.Color.Size=UDim2.fromOffset(38,118)
+   fill.Color.UICorner.CornerRadius=UDim.new(0,12);bar.Input.Size=UDim2.fromScale(1,1)
+  end
+  center.BrightnessIcon.Position=UDim2.fromOffset(213,105)
+  center.VolumeIcon.Position=UDim2.fromOffset(259,105);center.VolumeMute.Position=center.VolumeIcon.Position
+  for _,name in ipairs({"TimerTile","WatchTile"})do center[name].Position+=UDim2.fromOffset(0,34)end
+ end
+ inner:SetAttribute("AltairInsetMaterial",true);inner.BackgroundTransparency=1
+ innerStroke:SetAttribute("AltairInsetOutline",true);innerStroke.Transparency=1
+
+ for index,tile in ipairs({timerTile,watchTile})do
+  tile:SetAttribute("AltairInsetSurface",true)
+  tile.BackgroundColor3=tile:GetAttribute("AltairTheme_BackgroundColor3")or controlColor
+  tile.BackgroundTransparency=.18;tile.TileGradient.Enabled=false
+  tile.UICorner.CornerRadius=UDim.new(0,8);tile.Size=UDim2.fromOffset(136,36)
+  tile.Label.Position=UDim2.fromOffset(38,4);tile.Value.Position=UDim2.fromOffset(38,17)
+  local badge=frame(tile,"UtilityAccent",6,6,24,24,white,7)
+  barTile(badge,index==1 and "Scripts"or "Character")
+  icon(badge,"UtilitySymbol",index==1 and "timer"or "play",5,5,14,white)
+ end
+ -- Dark album-derived materials stay legible independently of interface lightness.
+ mediaShelf:SetAttribute("AltairThemeIgnore",true);music:SetAttribute("AltairThemeIgnore",true)
+ mediaShelf.BackgroundColor3=white
+ local albumBackdrop=frame(music,"AlbumBackdrop",0,0,248,132,white,14);albumBackdrop.ZIndex=music.ZIndex-1
+ local albumGradient=make("UIGradient",albumBackdrop,{Name="AlbumGradient",Rotation=0,Color=ColorSequence.new(Color3.fromRGB(17,19,24),Color3.fromRGB(36,39,46))})
+ local shelfGradient=make("UIGradient",mediaShelf,{Name="AlbumGradient",Rotation=0,Color=albumGradient.Color})
+ controller.albumColors={Color3.fromRGB(17,19,24),Color3.fromRGB(36,39,46)}
+ controller.albumTargets=table.clone(controller.albumColors)
+ function controller:ApplyPalette(palette)
+  local valid=type(palette)=="table"and type(palette[1])=="table"and type(palette[2])=="table"
+  local colors={}
+  if valid then for index=1,2 do
+   local rgb=palette[index]
+   for channel=1,3 do if type(rgb[channel])~="number"or rgb[channel]~=rgb[channel]or rgb[channel]<0 or rgb[channel]>255 then valid=false;break end end
+   if not valid then break end
+   local h,s,v=Color3.fromRGB(rgb[1],rgb[2],rgb[3]):ToHSV()
+   colors[index]=Color3.fromHSV(h,s*.72,math.clamp(v*(index==1 and .11 or .4),index==1 and .035 or .09,.4))
+  end end
+  self.albumTargets=valid and colors or {Color3.fromRGB(17,19,24),Color3.fromRGB(36,39,46)}
+  musicVisual.Back.TileGradient:SetAttribute("AltairAlbumDriven",valid)
+  if not valid and smartBar then musicVisual.Back.TileGradient.Color=smartBar.Back.Buttons.Playerlist.UIGradient.Color end
+ end
+ function controller:StepAlbum(dt)
+  local alpha=1-math.exp(-10*math.min(dt,.1));local changed=false
+  for index=1,2 do
+   local current,target=self.albumColors[index],self.albumTargets[index]
+   if math.abs(current.R-target.R)+math.abs(current.G-target.G)+math.abs(current.B-target.B)>.001 then self.albumColors[index]=current:Lerp(target,alpha);changed=true end
+  end
+  if changed then
+   local first,second=self.albumColors[1],self.albumColors[2]
+   local gradient=ColorSequence.new(first,second)
+   albumGradient.Color=gradient;shelfGradient.Color=gradient
+   if musicVisual.Back.TileGradient:GetAttribute("AltairAlbumDriven")then musicVisual.Back.TileGradient.Color=gradient end
+  end
+ end
+ controller.placement=capsulePlacement(context,controller,root,host,scale,compact,surface)
+ local placement=controller.placement
+ local dragHandle=root:FindFirstChild("Drag")
+ if dragHandle and dragHandle:FindFirstChild("Interact")then
+  connect(dragHandle.Interact.MouseEnter,function()if controller.docked then placement:HoverBar(true)end end)
+  connect(dragHandle.Interact.MouseLeave,function()placement:HoverBar(false)end)
+ end
+ function controller:Reveal()placement:Reveal()end
+ function controller:Retract()placement:Retract()end
+ -- One bounded animation owns the drop and the centre-out handle ripple.
+ local dragVisual=dragHandle and dragHandle:FindFirstChild("Drag")
+ local ripple=dragVisual and make("Frame",dragVisual,{Name="CapsuleRipple",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,BorderSizePixel=0,ClipsDescendants=true,ZIndex=dragVisual.ZIndex+2})
+ local wave=ripple and make("Frame",ripple,{Name="Wave",AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromScale(0,1),BackgroundColor3=white,BackgroundTransparency=1,BorderSizePixel=0,ZIndex=ripple.ZIndex})
+ if wave then
+  wave:SetAttribute("AltairThemeIgnore",true);corner(wave,8)
+  make("UIGradient",wave,{Name="Wavefront",Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(.12,0),NumberSequenceKeypoint.new(.5,1),NumberSequenceKeypoint.new(.88,0),NumberSequenceKeypoint.new(1,1)})})
+ end
+ local reaction=dragVisual and make("UIScale",dragVisual,{Name="CapsuleReaction",Scale=1})
+ local rippleProgress=make("NumberValue",root,{Name="CapsuleRippleProgress",Value=1})
+ connect(rippleProgress.Changed,function(value)root:SetAttribute("AltairCapsuleRippleProgress",value)end)
+ function controller:ReactDrag(preparing)
+  if not reaction or root:GetAttribute("AltairReduceMotion")then return end
+  self.reactionGeneration=(self.reactionGeneration or 0)+1;local generation=self.reactionGeneration
+  tween(reaction,preparing and .18 or .1,{Scale=preparing and .98 or 1.065},Enum.EasingStyle.Back)
+  if not preparing then task.delay(.22,function()if self.alive and self.reactionGeneration==generation then tween(reaction,.36,{Scale=1},Enum.EasingStyle.Back)end end)end
+ end
+ function controller:PulseDrag()
+  if not wave or not wave.Parent then return end
+  if self.waveTween then self.waveTween:Cancel()end
+  if self.rippleTween then self.rippleTween:Cancel()end
+  local vertical=dragVisual.AbsoluteSize.Y>dragVisual.AbsoluteSize.X
+  wave.Wavefront.Rotation=vertical and 90 or 0
+  wave.Size=vertical and UDim2.fromScale(1,0)or UDim2.fromScale(0,1)
+  wave.BackgroundTransparency=.08
+  local duration=root:GetAttribute("AltairReduceMotion")and .2 or 1
+  self.waveTween=tween(wave,duration,{Size=vertical and UDim2.fromScale(1,1.35)or UDim2.fromScale(1.35,1),BackgroundTransparency=1},Enum.EasingStyle.Sine)
+  rippleProgress.Value=0;self.rippleTween=tween(rippleProgress,duration,{Value=1},Enum.EasingStyle.Sine)
+  self:ReactDrag(false)
+ end
+ function controller:AnimateDrop(merging)
+  if not context.GetDragState then return end
+  if self.dropTween then self.dropTween:Cancel()end
+  if self.dropProgress then self.dropProgress:Destroy();self.dropProgress=nil end
+  local dragState=context.GetDragState();if not dragState then return end
+  local p=host.Position;local start=Vector2.new(p.X.Scale*root.AbsoluteSize.X+p.X.Offset,p.Y.Scale*root.AbsoluteSize.Y+p.Y.Offset)
+  local destination=Vector2.new(self.targetX or dragState.center.X,self.targetY or dragState.center.Y)
+  local amount=placement.amount
+  if not merging and amount<.001 then start=dragState.center end
+  local direction=destination-start;local distance=direction.Magnitude
+  local normal=distance>.01 and Vector2.new(-direction.Y,direction.X)/distance or Vector2.zero
+  local progress=Instance.new("NumberValue");progress.Value=0;self.dropProgress=progress
+  self.dropPresentation={start=start,destination=destination,control=start:Lerp(destination,.55)+normal*math.min(18,distance*.035),amount=amount,merging=merging,progress=progress}
+  if merging then self:ReactDrag(true)else self:PulseDrag()end
+  local duration=root:GetAttribute("AltairReduceMotion")and .12 or (merging and .4 or .18)
+  local animation=tweenService:Create(progress,TweenInfo.new(duration,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{Value=1});self.dropTween=animation
+  animation.Completed:Once(function(status)
+   if self.dropProgress~=progress then return end
+   local presentation=self.dropPresentation
+   if status==Enum.PlaybackState.Completed and merging and presentation and not presentation.impacted and self.alive then self:PulseDrag()end
+   progress:Destroy();self.dropProgress=nil;self.dropTween=nil;self.dropPresentation=nil
+  end)
+  animation:Play()
+ end
+ -- Active timekeeping remains independently visible while other capsules merge.
+ local activityShelf=make("CanvasGroup",root,{Name="CapsuleActivities",BackgroundTransparency=1,GroupTransparency=1,Visible=false,Size=UDim2.fromOffset(105,24),AnchorPoint=Vector2.new(.5,0),ZIndex=292})
+ local activityScale=make("UIScale",activityShelf,{Name="ActivityScale",Scale=1})
+ local activityLayout=make("UIListLayout",activityShelf,{FillDirection=Enum.FillDirection.Horizontal,HorizontalAlignment=Enum.HorizontalAlignment.Center,VerticalAlignment=Enum.VerticalAlignment.Center,Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
+ local indicators={}
+ for index,spec in ipairs({{"Timer",timerPill,"timer","Scripts"},{"Stopwatch",watchPill,"watch","Character"}})do
+  local indicator=activityShelf:FindFirstChild(spec[1])
+  if context.BuildOnly then indicator=spec[2]:Clone();indicator.Name=spec[1];indicator.Parent=activityShelf end
+  assert(indicator,"Missing persistent activity indicator")
+  indicator.LayoutOrder=index;indicator.Size=UDim2.fromOffset(58,24)
+  indicator.Value.Size=UDim2.fromOffset(58,24);indicator.Value.TextTransparency=0
+  barTile(indicator.Back,spec[4]);indicators[index]=indicator
+  connect(indicator.MouseEnter,function()placement:Reveal();controller.hoverSession=true;controller:Open(spec[3])end)
+  connect(indicator.Activated,function()placement:Reveal();controller:Open(spec[3])end)
+  connect(indicator.MouseButton1Down,function()tween(indicator.ButtonFeedback,.08,{Scale=.9})end)
+  connect(indicator.MouseButton1Up,function()tween(indicator.ButtonFeedback,.24,{Scale=1},Enum.EasingStyle.Back)end)
+ end
+ function controller:StepActivities(dt)
+  local timerActive=clock.timer~=nil
+  local watchActive=clock.watch.active
+  local wanted=self:IsEnabled()and self.docked and(timerActive or watchActive)
+  if not wanted and(self.activityAlpha or 0)==0 then self.activityVisible=false;return end
+  self.activityAlpha=(self.activityAlpha or 0)+((wanted and 1 or 0)-(self.activityAlpha or 0))*(1-math.exp(-18*math.min(dt,.1)))
+  if math.abs(self.activityAlpha-(wanted and 1 or 0))<.001 then self.activityAlpha=wanted and 1 or 0 end
+  activityShelf.Visible=self.activityAlpha>0;activityShelf.GroupTransparency=1-self.activityAlpha
+  self.activityVisible=activityShelf.Visible
+  if not activityShelf.Visible then return end
+  indicators[1].Visible=timerActive;indicators[2].Visible=watchActive
+  indicators[1].Value.Text="    "..Clock.Format(clock:Remaining(),false,true)
+  indicators[2].Value.Text="    "..Clock.Format(clock:Elapsed())
+  local count=(timerActive and 1 or 0)+(watchActive and 1 or 0)
+  local dragState=context.GetDragState and context.GetDragState();if not dragState then return end
+  local vertical=dragState.dock=="left"or dragState.dock=="right"
+  activityLayout.FillDirection=vertical and Enum.FillDirection.Vertical or Enum.FillDirection.Horizontal
+  local width=vertical and 58 or count*58+math.max(0,count-1)*5
+  local height=vertical and count*24+math.max(0,count-1)*5 or 24
+  activityShelf.Size=UDim2.fromOffset(width,height)
+  local factor=self.baseScale or 1;activityScale.Scale=factor*(.85+.15*self.activityAlpha)
+  width*=factor;height*=factor
+  local center=dragState.center;local viewport=root.AbsoluteSize;local x,y
+  if vertical then
+   x=center.X+(dragState.dock=="left"and 1 or -1)*(dragState.size.X/2+12+width/2);y=center.Y-height/2
+  else x=center.X;y=center.Y<viewport.Y/2 and center.Y+dragState.size.Y/2+12 or center.Y-dragState.size.Y/2-height-12 end
+  x=math.clamp(x,width/2+8,math.max(width/2+8,viewport.X-width/2-8));y=math.clamp(y,8,math.max(8,viewport.Y-height-8))
+  local current=activityShelf.Position;local position=Vector2.new(current.X.Offset,current.Y.Offset)
+  if not self.activityInitialized then position=Vector2.new(x,y+6);self.activityInitialized=true end
+  position=position:Lerp(Vector2.new(x,y),1-math.exp(-22*math.min(dt,.1)))
+  activityShelf.Position=UDim2.fromOffset(position.X,position.Y)
+ end
+
+ function controller:GetDockObstacle()
+  if not self.docked then return nil end
+  if self.activityVisible and(placement.amount<.03 or not host.Visible)then
+   local p,z=activityShelf.AbsolutePosition,activityShelf.AbsoluteSize;return {p.X,p.Y,p.X+z.X,p.Y+z.Y}
+  end
+  if placement.amount<.03 or not host.Visible then return nil end
+  local object=surface.Visible and surface or compact
+  local p,z=object.AbsolutePosition,object.AbsoluteSize
+  return {p.X,p.Y,p.X+z.X,p.Y+z.Y}
+ end
 	local obstacles={}
 	for _,name in ipairs({"SmartBar","Drag","Character","Scripts","Playerlist","Settings","ScriptSearch","CustomScriptPrompt","ModeratorDetectionPrompt"}) do
 		local object=root:FindFirstChild(name);if object then obstacles[#obstacles+1]=object end
@@ -5377,9 +6326,22 @@ local function bindCapsules(context)
 		local factor=math.clamp(requested,.65,2)
 		factor=math.min(factor*(root:GetAttribute("AltairDisplayScale") or displayScale(viewport)),math.max(.45,(viewport.X-24)/300))
 		factor=math.min(factor,math.max(.3,(viewport.Y-24)/180))
-		scale.Scale=factor
+		if not self.placement then scale.Scale=factor end
+        local dock=context.GetDragState and context.GetDragState()
+        local iconOnly=dock and(dock.dock=="left"or dock.dock=="right")and(self.docked or get("Capsule Position","Dynamic")=="Drag Bar Only")or false
+        if self.iconOnly~=iconOnly then
+         self.iconOnly=iconOnly
+         pillLayout.FillDirection=iconOnly and Enum.FillDirection.Vertical or Enum.FillDirection.Horizontal
+         for handle in pairs(self.externalHandles)do handle:SetIconOnly(iconOnly)end
+         tween(compactTitle,.18,{TextTransparency=iconOnly and 1 or 0})
+         for _,pill in ipairs({timerPill,watchPill})do
+          tween(pill,.22,{Size=UDim2.fromOffset(iconOnly and 24 or 50,24)})
+          tween(pill.Value,.18,{TextTransparency=iconOnly and 1 or 0})
+         end
+         syncCompactBounds()
+        end
 		local width=(self.view and sizes[self.view].X or self.compactWidth or 250)*factor
-		local height=(self.view and sizes[self.view].Y or 24)*factor
+		local height=(self.view and sizes[self.view].Y or self.compactHeight or 32)*factor
 				local top=12*factor
 		local x,y=viewport.X/2-width/2,top
 		local candidates={}
@@ -5389,29 +6351,25 @@ local function bindCapsules(context)
 			if object:IsA("GuiObject") and object.Visible and object.Name~="Template" then candidates[#candidates+1]=object end
 		end end
 		if context.Notifications then for _,object in ipairs(context.Notifications:GetObstacles()) do candidates[#candidates+1]=object end end
-		local origin=root.AbsolutePosition
-		-- Resolve overlapping top obstacles without changing to a bottom anchor/dock.
-		for _=1,#candidates+1 do
-			local nextY=y
-			for _,object in ipairs(candidates) do
-				local p,s=object.AbsolutePosition-origin,object.AbsoluteSize
-				if s.Y>0 and p.Y<viewport.Y*.5 and s.Y<viewport.Y*.8 and intersects(x,width,p.X,p.X+s.X)
-					and y<p.Y+s.Y+8 and y+height>p.Y-8 then nextY=math.max(nextY,p.Y+s.Y+8) end
-			end
-			if nextY==y then break end;y=nextY
-		end
-		y=math.clamp(y,top,math.max(top,viewport.Y-height-top))
-		self.targetY=y
-		set(host,"Visible",get("Capsules Enabled",true)==true)
+		placement:Layout(width,height,factor,candidates)
+  self.baseScale=factor
+  local enabled=self:IsEnabled()
+  if self.lastEnabled~=enabled then
+   self.lastEnabled=enabled
+   for observer,callback in pairs(self.enabledObservers)do if observer.Connected then callback(enabled)end end
+  end
 	end
 	local function inside(object,position)
 		local p,s=object.AbsolutePosition,object.AbsoluteSize
+		local x,y=position.X+root.AbsolutePosition.X,position.Y+root.AbsolutePosition.Y
 		-- Keep edge controls usable without changing the visible capsule dimensions.
 		local margin=math.max(18,24*scale.Scale)
-		return position.X>=p.X-margin and position.X<=p.X+s.X+margin
-			and position.Y>=p.Y-margin and position.Y<=p.Y+s.Y+margin
+		return x>=p.X-margin and x<=p.X+s.X+margin
+			and y>=p.Y-margin and y<=p.Y+s.Y+margin
 	end
-	connect(surface.MouseEnter,function() controller.hoverSession=true;controller.hoverLeftAt=nil end)
+	connect(surface.MouseEnter,function()
+		controller.hoverSession=true;controller.hoverLeftAt=nil;controller.hoverReachedSurface=true
+	end)
 	connect(input.InputBegan,function(event)
 		if controller.picker and event.KeyCode==Enum.KeyCode.Escape then controller:EndTimerEntry(false);return end
 		if controller.view and not controller.picker and not input:GetFocusedTextBox() and (event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch)
@@ -5422,12 +6380,12 @@ local function bindCapsules(context)
 		local target=controller.morphTarget;if not target then return end
 		local state=controller.morphState
 		if not state then
-			state={x=surface.Position.X.Offset+surface.Position.X.Scale*host.Size.X.Offset,width=surface.Size.X.Offset,height=surface.Size.Y.Offset,vx=0,vwidth=0,vheight=0}
+			state={x=surface.Position.X.Offset+surface.Position.X.Scale*host.Size.X.Offset,y=surface.Position.Y.Offset,width=surface.Size.X.Offset,height=surface.Size.Y.Offset,vx=0,vy=0,vwidth=0,vheight=0}
 			controller.morphState=state
 		end
 		local omega=root:GetAttribute("AltairReduceMotion")==true and 100 or 30
 		local step=math.min(dt,.1);local decay=math.exp(-omega*step);local settled=true
-		for _,key in ipairs({"x","width","height"}) do
+		for _,key in ipairs({"x","y","width","height"}) do
 			local velocity="v"..key;local delta=state[key]-target[key]
 			local j=state[velocity]+omega*delta
 			state[key]=target[key]+(delta+j*step)*decay
@@ -5435,9 +6393,9 @@ local function bindCapsules(context)
 			if math.abs(state[key]-target[key])>.12 then settled=false end
 		end
 		if settled then
-			for _,key in ipairs({"x","width","height"}) do state[key]=target[key];state["v"..key]=0 end
+			for _,key in ipairs({"x","y","width","height"}) do state[key]=target[key];state["v"..key]=0 end
 		end
-		surface.Size=UDim2.fromOffset(math.max(1,state.width),math.max(1,state.height));surface.Position=UDim2.fromOffset(state.x,0)
+		surface.Size=UDim2.fromOffset(math.max(1,state.width),math.max(1,state.height));surface.Position=UDim2.fromOffset(state.x,state.y)
         if controller.circleCarry then controller.circleCarry.Position=UDim2.fromOffset(state.x-state.width/2-17,0) end
         if controller.returningMusic then controller.returningMusic.Position=UDim2.fromOffset(state.x+state.width/2+5+controller.returningMusic.Size.X.Offset/2,0) end
         if settled then controller.morphTarget=nil;if controller.finishMorph then local finish=controller.finishMorph;controller.finishMorph=nil;finish()end end
@@ -5445,15 +6403,27 @@ local function bindCapsules(context)
 	connect(runService.Heartbeat,function(dt)
 		if context.Alive and not context.Alive() then return end
 		if clock:Tick() then
-			context.Notify("Timer finished","Your countdown has ended.",nil,{Duration=8})
+			controller.flashIconUntil=os.clock()+3
+            context.Notify("Timer finished","Your countdown has ended.",nil,{Duration=8})
 			if controller.view~="timer" then controller:Open("timer") end
 		end
 		local now=os.clock()
+        controller:StepAlbum(dt)
 		if controller.hoverSession and controller.view and not controller.picker and not controller.dragging and not input:GetFocusedTextBox() then
 			local pointer=input:GetMouseLocation()
 			local inset=root.IgnoreGuiInset and Vector2.zero or game:GetService("GuiService"):GetGuiInset()
 			pointer-=inset
-			if inside(surface,pointer) or (compact.Visible and inside(compact,pointer)) then
+			local source=controller.hoverSource
+			local crossing=false
+			if source and source.Parent and not controller.hoverReachedSurface then
+				local a,b=source.AbsolutePosition,surface.AbsolutePosition
+				local sa,sb=source.AbsoluteSize,surface.AbsoluteSize
+                local point=pointer+root.AbsolutePosition
+				crossing=point.X>=math.min(a.X,b.X)-18 and point.X<=math.max(a.X+sa.X,b.X+sb.X)+18
+					and point.Y>=math.min(a.Y,b.Y)-18 and point.Y<=math.max(a.Y+sa.Y,b.Y+sb.Y)+18
+			end
+			if inside(surface,pointer) or (compact.Visible and inside(compact,pointer)) or crossing
+				or now<(controller.hoverGraceUntil or 0) then
 				controller.hoverLeftAt=nil
 			else
 				controller.hoverLeftAt=controller.hoverLeftAt or now
@@ -5468,10 +6438,8 @@ local function bindCapsules(context)
           local object=entry[1];local color=object:GetAttribute("AltairTheme_BackgroundColor3")or(oled and entry[3]or entry[2]);if object.BackgroundColor3~=color then object.BackgroundColor3=color end
          end
         end
-		local y=host.Position.Y.Offset
-		if controller.targetY and math.abs(y-controller.targetY)>.1 then
-			host.Position=UDim2.new(.5,0,0,y+(controller.targetY-y)*(1-math.exp(-18*dt)))
-		end
+        placement:Step(dt,controller.baseScale or 1.25)
+        controller:StepActivities(dt)
 		if get("Spotify Connection",false) and now>=controller.nextPoll and not controller.requestBusy and not controller.commandBusy then
 			controller.requestBusy=true;controller.nextPoll=now+1.5
 			task.spawn(function()
@@ -5494,21 +6462,40 @@ local function bindCapsules(context)
 			controller:SetMedia({connected=false,title="Spotify"})
 		end
 		renderAccumulator+=dt
-		if renderAccumulator<(controller.view and 1/60 or .1) or not host.Visible then return end
+		if renderAccumulator<(controller.view and 1/60 or .1) or not host.Visible and not controller.activityVisible then return end
 		local renderDt=renderAccumulator;renderAccumulator=0
 		do
 			local rainbow=get("Rainbow Mode",false)==true
 			local accent=rainbow and ((context.GetRainbowColor and context.GetRainbowColor()) or Color3.fromHSV((os.clock()/8)%1,.65,.8)) or white
-			for _,stroke in ipairs(accentOutlines) do set(stroke,"Color",accent) end
+			for _,stroke in ipairs(accentOutlines) do if stroke.Parent then set(stroke,"Color",rainbow and accent or stroke:GetAttribute("AltairTheme_Color")or white)end end
 		end
+        local contextIcon="chevron-down"
+        if now<(controller.flashIconUntil or 0)then contextIcon="check"
+        elseif clock.timer then contextIcon=clock.timer.started and "timer"or "pause"
+        elseif clock.watch.active then contextIcon="clock"
+        elseif controller.media.playing then contextIcon="music-2"
+        elseif controller.media.connected and(controller.view=="music"or now<(controller.musicHoldUntil or 0))then contextIcon="pause"
+        else for handle in pairs(controller.externalHandles)do if handle.shown then contextIcon="square-terminal";break end end end
+        if contextIcon~=controller.contextIcon then
+         controller.contextIcon=contextIcon;controller.iconGeneration=(controller.iconGeneration or 0)+1
+         local generation=controller.iconGeneration
+         tween(menuPill.Chevron,.08,{ImageTransparency=1})
+         task.delay(.09,function()
+          if controller.alive and generation==controller.iconGeneration then
+           applyIcon(menuPill.Chevron,contextIcon);applyIcon(morphChevron,contextIcon)
+           tween(menuPill.Chevron,.14,{ImageTransparency=0})
+          end
+         end)
+        end
 		local remaining,elapsed=clock:Remaining(),clock:Elapsed()
-		set(timerPill,"Visible",clock.timer~=nil);set(watchPill,"Visible",clock.watch.active)
+		set(timerPill,"Visible",clock.timer~=nil and not controller.docked);set(watchPill,"Visible",clock.watch.active and not controller.docked)
 		local musicActive=controller.media.connected and controller.media.playing and (controller.media.duration or 0)>0
+		local retainMusic=controller.view=="music"or now<(controller.musicHoldUntil or 0)
 		-- Retain the title during exit so the whole pill fades as a single visual.
 		if musicActive then set(compactTitle,"Text",controller.media.title) end
-		if controller.view=="music" and not musicActive then controller:Open(nil) end
+		if controller.view=="music"and not controller.media.connected and not controller.media.linked then controller:Open(nil)end
 		local pillWidth=math.max(60,(controller.titleWidth or 0)+35)
-		animateMusic(musicActive==true,pillWidth)
+		animateMusic(musicActive==true or retainMusic,pillWidth)
 		set(timerPill.Value,"Text","    "..Clock.Format(remaining,false,true));set(watchPill.Value,"Text","    "..Clock.Format(elapsed))
 		if controller.view=="duration" then
 			controller.rulerDisplay+=(controller.rulerTarget-controller.rulerDisplay)*(1-math.exp(-22*renderDt))
@@ -5531,7 +6518,7 @@ local function bindCapsules(context)
 			rulerStrip.Position=UDim2.fromOffset(-(((clock.timer and clock.timer.duration or 0)-remaining)*18.5%18.5),0)
 		elseif controller.view=="watch" then
 			set(watchTime,"Text",Clock.Format(elapsed));set(fraction,"Text",string.format(".%02d",math.floor((elapsed%1)*100)))
-			fraction.Position=UDim2.fromOffset(watchTime.TextBounds.X/math.max(.01,scale.Scale)+12,27)
+			fraction.Position=UDim2.fromOffset(watchTime.TextBounds.X/math.max(.01,scale.Scale)+12,42)
 			renderWatchPause(clock.watch.started~=nil);set(lapButton,"Text",clock.watch.started and "Lap" or "Reset")
 			local laps=clock.watch.laps;lapEmpty.Visible=#laps==0
 			local maximum=math.max(.01,elapsed-clock.watch.splitAt)
@@ -5549,7 +6536,7 @@ local function bindCapsules(context)
 			local m=controller.media
 			for _,player in ipairs(playerViews) do
 				set(player.title,"Text",m.connected and m.title or "Connect Spotify")
-				set(player.artist,"Text",m.connected and m.artist or "Settings → Capsules & Spotify")
+				set(player.artist,"Text",m.connected and m.artist or "Settings → Experimental → Spotify")
 				player.renderPlay(m.playing)
 				set(player.elapsed,"Text",Clock.Format(progress()):gsub("^0([0-9]):","%1:"))
 				set(player.duration,"Text",(m.duration or 0)>0 and Clock.Format(m.duration):gsub("^0([0-9]):","%1:") or "--:--")
@@ -5559,8 +6546,12 @@ local function bindCapsules(context)
 			set(timerSummary,"TextColor3",clock.timer and amber or white);set(timerCancel,"Visible",clock.timer~=nil or controller.picker)
 			set(watchSummary,"TextColor3",clock.watch.active and green or white);set(watchCancel,"Visible",clock.watch.active)
 			set(watchSummary,"Text",clock.watch.active and Clock.Format(elapsed,true) or "Start")
-			if not volume.IsDragging() then volume.fill.Size=UDim2.fromScale(math.clamp(tonumber(m.volume) or 0,0,1),1) end
+			if not volume.IsDragging() then volume.fill.Size=UDim2.fromScale(1,math.clamp(tonumber(m.volume) or 0,0,1)) end
 			set(mute,"Visible",(tonumber(m.volume) or 0)<=.001);set(speaker,"Visible",not mute.Visible)
+            local dark=Color3.fromRGB(24,26,31)
+            local volumeColor=(tonumber(m.volume)or 0)>.18 and dark or white
+            set(speaker,"ImageColor3",volumeColor);set(mute,"ImageColor3",volumeColor)
+            set(center.BrightnessIcon,"ImageColor3",brightness.fill.Size.Y.Scale>.18 and dark or white)
 		end
 	end)
 	function controller:Destroy()
@@ -5570,6 +6561,10 @@ local function bindCapsules(context)
 		end
 		self.pendingDisconnect=nil;unlinkDialog:Destroy()
 		self.alive=false
+        if self.dropTween then self.dropTween:Cancel()end
+        if self.dropProgress then self.dropProgress:Destroy()end
+        activityShelf:Destroy();if ripple then ripple:Destroy()end
+        for observer in pairs(self.enabledObservers)do observer:Disconnect()end
 		self.cancelDrag();table.clear(self.commands)
 		for _,connection in ipairs(self.connections) do connection:Disconnect() end
 		for _,animation in pairs(self.tweens) do animation:Cancel() end
@@ -5732,12 +6727,190 @@ local function bindUIAvoidance(root, enabled)
  return service
 end
 
-local bindings={StyleGallery=buildStyleGallery,UIAvoidance=bindUIAvoidance,SlideContent=slideContent,SlideHeading=slideHeading,BounceReset=bounceReset,HomeContainer=function(root)local content=Instance.new("CanvasGroup");content.Name="Content";content.BackgroundTransparency=1;content:SetAttribute("AltairHomeGroup",true);content.Parent=root.Home;return content end,Performance=motionStats,DragContrast=bindDragContrast,Dock=bindDock,Capsules=bindCapsules,Clock=Clock,Notifications=buildNotifications,ApplyIcon=applyIcon,RefreshIcon=refreshIcon,Motion=motionService,Resize=resizeInterface,DisplayScale=displayScale,Slider=buildSlider,Stats=buildStats,SoftShadows=bindSoftShadows,Surface=styleSurface,HomeSurface=styleHome,ColorPicker=buildColorPicker,Theme=bindTheme}
+local function buildChoice(template,parent,setting,changed)
+ local motion=motionService()
+ local row=template:Clone();row.Name=setting.name;row.Visible=true;row.Size=UDim2.new(1,-16,0,126)
+ row.Title.Text=setting.name;row.Title.TextTransparency=0
+ row.Description.Text=setting.description or "";row.Description.Visible=true
+ row.Description.TextTransparency=.3;row.Description.TextWrapped=true
+ row.Description.Position=UDim2.fromOffset(18,39);row.Description.Size=UDim2.new(1,-36,0,32)
+ row.BackgroundTransparency=.9;row.UIStroke.Transparency=.88
+ if row:FindFirstChild("Interact")then row.Interact:Destroy()end
+ if row:FindFirstChild("LicenseDisplay")then row.LicenseDisplay.Visible=false end
+ local items={}
+ local function update()
+  for value,item in pairs(items)do
+   local selected=setting.current==value
+   motion:Create(item.button,TweenInfo.new(.22,Enum.EasingStyle.Quint),{BackgroundTransparency=selected and .15 or .7}):Play()
+   motion:Create(item.stroke,TweenInfo.new(.22),{Transparency=selected and .5 or .94}):Play()
+  end
+ end
+ for index,value in ipairs(setting.values)do
+  local button=Instance.new("TextButton");button.Name=value;button.Text=value;button.AutoButtonColor=false
+  button.Font=Enum.Font.GothamMedium;button.TextSize=11;button.TextColor3=Color3.fromRGB(245,246,250)
+  button.BackgroundColor3=Color3.fromRGB(46,50,60);button.BorderSizePixel=0
+  button.Size=UDim2.new(1/#setting.values,-8,0,32);button.Position=UDim2.new((index-1)/#setting.values,12,0,82)
+  button.ZIndex=row.Title.ZIndex;button.Parent=row
+  local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(0,8);corner.Parent=button
+  local stroke=Instance.new("UIStroke");stroke.Color=Color3.fromRGB(190,198,215);stroke.Thickness=.7;stroke.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;stroke.Parent=button
+  local scale=Instance.new("UIScale");scale.Parent=button
+  items[value]={button=button,stroke=stroke}
+  button.MouseEnter:Connect(function()motion:Create(scale,TweenInfo.new(.18),{Scale=1.025}):Play()end)
+  button.MouseLeave:Connect(function()motion:Create(scale,TweenInfo.new(.25,Enum.EasingStyle.Back),{Scale=1}):Play()end)
+  button.MouseButton1Down:Connect(function()motion:Create(scale,TweenInfo.new(.1),{Scale=.96}):Play()end)
+  button.Activated:Connect(function()
+   motion:Create(scale,TweenInfo.new(.28,Enum.EasingStyle.Back),{Scale=1}):Play()
+   if setting.current~=value then setting.current=value;update();changed(value)end
+  end)
+ end
+ row.Parent=parent;update();return row
+end
+
+local function loadingCloud()
+ if softShadowAssets.cloud then return softShadowAssets.cloud end
+ if type(writefile)~="function"or type(getcustomasset)~="function"then return nil end
+ local path="Altair/CloudzLoading.png"
+ local ok,result=pcall(function()
+  if type(isfile)~="function"or not isfile(path)then
+   if type(makefolder)=="function"then pcall(makefolder,"Altair")end
+   local hex="89504e470d0a1a0a0000000d4948445200000200000002000806000000f478d4fa00001000494441547801ecdd0d7ae338ceaee1f2d9d837bdb2a95e59f7ac2c074859d54eda4efc23520479d725966459228107b4f092929dfff7c33f04104000010410588e0001b05cc8398c0002082080c08f1f04805e800002082080c0820408800583ce650410400081b509a4f704405250104000010410588c0001b058c0b98b00020820b03a815ffe1300bf38f81f010410400081a50810004b859bb30820800002ab13d8fc27003612d60820800002082c4480005828d85c4500010410589dc03ffe1300ffb0b0850002082080c0320408806542cd510410400081d5095cfa4f005cd2b08d0002082080c0220408804502cd4d0410400081d5097cf49f00f8c8c32b041040000104962040002c11664e2280000208ac4ee0b3ff04c067225e238000020820b0000102608120731101041040607502fff69f00f837137b104000010410989e0001307d88398800020820b03a816bfe1300d7a8d8870002082080c0e4040880c903cc3d0410400081d5095cf79f00b8cec55e041040000104a62640004c1d5ece2180000208ac4ee096ff04c02d32f62380000208203031010260e2e0720d01041040607502b7fd27006eb3f10e020820800002d3122000a60d2dc710400001045627f095ff04c05774bc870002082080c0a40408804903cb2d0410400081d5097ced3f01f0351fef2280000208203025010260cab0720a01041040607502dff94f007c47c8fb0820800002084c4880009830a85c4200010410589dc0f7fe1300df337204020820800002d3112000a60b298710400001045627708fff04c03d941c830002082080c064040880c902ca1d0410400081d509dce73f01701f27472180000208203015010260aa70720601041040607502f7fa4f00dc4bca710820800002084c4480009828985c4100010410589dc0fdfe1300f7b37224020820800002d3102000a609254710400001045627f088ff04c023b41c8b0002082080c0240408804902c90d0410400081d5093ce63f01f0182f4723800002082030050102608a307202010410406075028ffa4f003c4accf10820800002084c4080009820885c4000010410589dc0e3fe13008f337306020820800002e5091000e543c8010410400081d5093ce33f01f00c35e7208000020820509c0001503c80cc4700010410589dc073fe1300cf717316020820800002a5091000a5c3c7780410400081d5093ceb3f01f02c39e7218000020820509800015038784c4700010410589dc0f3fe1300cfb37326020820800002650910006543c7700410400081d509bce23f01f00a3de722800002082050940001503470cc4600010410589dc06bfe1300aff173360208208000022509100025c3c6680410400081d509bcea3f01f02a41e7238000020820509000015030684c4600010410589dc0ebfe1300af335403020820800002e5081000e542c6600410400081d509ece13f01b0074575208000020820508c0001502c60cc4500010410589dc03efe1300fb70540b020820800002a5081000a5c2c5580410400081d509ece53f01b01749f5208000020820508800015028584c4500010410589dc07efe1300fbb15413020820800002650810006542c5500410400081d509ece93f01b0274d7521800002082050840001502450cc4400010410589dc0befe1300fbf2541b0208208000022508100025c2c4480410400081d509eced3f01b03751f5218000020820508000015020484c4400010410589dc0fefe1300fb335523020820800002c3132000860f110311400001045627d0c27f02a00555752280000208203038010260f000316f1c026f6f6ffff954fe1baf3f97bf625f96cffb3f9c3b8e572c410081f109b4b1900068c355ad450944f2de127526f04ce45962f7db5bb8f4d7a7f2335e7f2eff897d593eefff70ee7b851fffcb76b2cd2c797e546341000104da112000dab155f3e00422ff6ec93e936f96cb249f093c1371961e9e643bd96696775bc2be5ca720c892eff7b0431b082030188156e61000adc8aa773802915033e16732cdc47a99ec33b96619cde6b429054196779bc3875cd287ff8e662c7b1040a0160102a056bc58fb2081c89699f4df93679c9ad3f0994c33b1c6cbb24bfaf0337cdb961404d57d2a1b0c8623d09640bbda0980766cd57c0081c88899f0b35c26fdd993630a82777fc37f62e0807ea749042a1220002a468dcdff221089ef3de9c71b39cacf327bd20f57af2e9fc5805b055731d989400d022dad24005ad2557753025bd28ff5763f7fd5a47f8b738a81ed560121708b92fd082c4a80005834f095dd8e847f39da97f4ef0b2621701f274721301081b6a610006df9aa7d2702e7a49ff7b78df65f63fa5b080453b302afb1743602a5091000a5c337bff191a42e47fb39a53dbfd37d3c4c962906525411027d986b05818708b43e9800684d58fd4f1388e49f8969e507fa9e66f7c0899b1008dc6fc9fb81531d8a00029509100095a337a9ed918972549a53fd999c26f57248b77e06fb5c088121c3c3a8b508b4f7960068cf580b771288cc23f1dfc9aaf16129048880c690558fc0d1040880a323a0fd1f91f8b7fbfc46fce3f4871401119a3742609c98b06421023d5c25007a50d6c64d02916132c1b8cf7f93d0e16ffc8c18e592713adc18062080c07e040880fd58aae90102915172d4ef3eff03cc0e3e3485001170701034bf0a813e7e12007d386be5824024ff1cf167b9d86bb30081140111be3742a040b09888c077040880ef08797f37029139b651bf5fefdb8dea2115fd8c58e6039be278087e8dce4ea0977f04402fd28bb79309231018f5078449967c6033ff02a1d9804902ca8df5081000ebc5bcabc791f873d49f893f1346d7b635d685c0fb6c4097963482c01204fa394900f463bd5c4b99fcc3e94cfea68a03c4c40b11307170b9362f010260ded81eea5924ff9c1acee47fa81d1aef4620454084fd8dd8eb865c433312e8e91301d093f6226d4516c8c46fca7f91787f72d373019f807889c0a8040880512353d0ae48fc79bfff2d4c370a0c080b2f391b9033400b23e03a02cf10e87b0e01d097f7b4ad65f20fe772e41f2b0b023f88009d0081c10910008307a88279927f85281d62638a00a2f010f41aad48a0b7cd04406fe293b517c9ffbfe1928b7c40b05c2590b785f48fab68ec44e0580204c0b1fc4bb77e4efe1ef62b1dc52ec613015d306ba43681fed61300fd994fd1a2e43f45187b3a4104f4a4ad2d04ee204000dc01c9211f0948fe1f797875370122e06e540e5c8dc011fe120047502fdca6e45f387863984e048c11075620f08300d009ee2620f9df8dca815f132002bee6e3dde5081ce33001700cf772ad46f2cf1ff7f1c05fb9c80d6b3011306c6818b60a0102609548bfe0e739f9fb2ad70b0c9d7a95001170158b9dab1138ca5f02e028f245da95fc8b04aaae994440ddd8b1bc380102a078003b989f3ff4d3a1194d2c4c2045807eb6700758dbf5e3bc27008e633f7ccb31facf8b72defb1fde56069627903f1bacaf950f23072a1120002a45aba3ade7e4efa1bf8ecc35f523ff943011a0232c45e04867098023e90fdab6e43f6860d6302b679dd6f09497081c4c800038380083366fe43f68601630cbf3000b04998b1b8163d704c0b1fc876b3d46ffbeee375c549633289f073013b05cd839dc9b0001d09bf8c0ed45f2cf8bae7bb003c76821d35204e88b0b057c45578ff69900383a0283b47f4efea6fe0789c72066fc1d766c25fbc6b5f2471c736fb9767eeedbda88aa3e2c29483fecf0020104f6234000ecc7b27a4d7921aeee03fbef27b025dd5c67ec7f27f1d33ffffe88cdadfc19dbd7cadfb1ffde72edfcdcb7b51155fd5ac28db4e7cf10a666010286654602c7fb44001c1f83c32d888bac91d6e15168664026f82cbf93fcaf147bda926eae3309ff4ee2cd2c79a0e2d3e934943d0f98ee5004ca102000ca84aa8da191fc738495c9a14d036aed4920137d968c6726f6c8a3a75c67f99de47b1aa42d0410b84e6084bd04c0085138d606a3ff63f9bfd27a26fb2c99e04ff12fd759de93fd2b153b170104e6274000cc1fe39b1ec6e83f937fce00dc3cc61bc311784ff8615526faade4bed8654100811a04c6b0920018230e47599153c547b5adddfb086472cf07e232d9c720ff94ebf7fbe3f79dee28041040e03a0102e03a97e9f79e47ffd3fb59d4c1cba42fe1170d22b311b8456094fd04c02891e868c739f91bfd77647e475399f4b364c2cf62947f0734872080c0f3040880e7d9553ed37dff71a27799f4df13ff38a6b1040104f627304e8d04c038b1e862c979f44f0074a17db3912de99fe29fa47f1393371040a0250102a025dd31eb36f57f5c5cb6c42fe91f17032d23702881911a2700468a46635bcea3ffc6ada8fe0a0189ff0a14bb1040e0580204c0b1fc7bb76ef4df97f8cf98e2cfc588bf2f77ad21302881b1cc2200c68a47336b8cfe9ba1fd5cf136dacfc4ffe7e737bd46000104462140008c1289f67618fd77601c59df68bf3d672d205092c068461300a345a4813d46ff0da07eac32bfb31fb9ff64c4ff918b5708203030010260e0e0306d7802db747ffe54eff0c6321001048e24305edb04c07831d9d5a218fde777fe4dffef4af5c7efc47f3a9d72fb877f0820804035020440b5883d6eefff3d7e8a33be2090f7f8b348fc5f40f21602087c2430e22b0260c4a8ec6b93d1ff3e3cb7fbfc12ff3e3cd5820002071320000e0e40cbe663faffbf2deb5fa8ee1cf1bbcf7f0e78f4abffdc28ff8dfd9fcbd563cf555921b0088131dd2400c68ccb5e5619fdbf467299517f24eecb449d49fcafd89725561f9740fad78d92fded73b97aecc71adf5f655b59b2edade4f32bd1940501045a1020005a501da0ceb8a4ba78be16872947fdd92fa26482cd64bb95b7407599a8338967ffc9126f7559b2ad2cd9f656d2be30f77dc9ed2c697b963cb68b611a41e05502a39e4f008c1a99d7edf2f0df730ca719f547dadc46f59938b36c893e136c26d0ad3c47aaef599bad697b96777fc2c75ca72070bbab6f3cb436010102608220de70212f9237deb2fb0681fcedfeb2f7fa231966c2cf649849714bf639b2df92e70db74bef4edfb2afff0cff7349df9341967cafb4738c9f81c0b83e1000e3c6e669cbe22ae8c2f738bd9cf22ff74b7e19eb2899f4b6849fc970e5f8a7efc920cb3b97e09362c00cc1e39f09674c4e80009833c0a6ffef8f6ba929ff486639cacff29edcc2cd6d841f9b961b04520c6c3304c4c00d4876b7213072ad04c0c8d179deb6bce03d7ff63a679698f2bf4cfa119a4cf85972a41b2f2d0f12c8cf0631f0203487cf4980009833aebcfa9e4026ffa1a7fccf893f93fd5624fdefe3fac811c4c023b41cfb0481b14f2100c68ecfc3d645d270aff36b6af94b7e43dfefcf1846d9eee94bfa5fc773af773731e016c15e44d5333c010260f8103d6ca084711b59deefcfe49f22e0f65107bc1309fff2be7e26a303acd0641048f6bf6f11c46b0b024f1318fd440260f4083d6e1f01709dd97bf2bffed6717bb7c41f16e434bfd8058881164260a06030657f0204c0fe4c0fab3193c9618d8fddf070c93f631525937e16897fecfef35b0844ccdc621b3b56035937be2904c0f8317ac4425ffffb37ad7cd86f981ff78904f23ed51f664afc01a1d8b2dd1e20028a058eb9d7091000d7b9d83b07814cfe433ce92ff1cfd1a1ce5efc9e1138bfb642e03043890900001000494441545f042aec20002a44e97e1b738472ffd1731f3952f2cfd17e1653fd73f5394260ae782ee70d01b05cc897707888e41fa3fefc4a597e9d4fe29fbbdba510c85f66746b60ee383fe05d8d4309801a71fad6ca4c36df1eb4c6018727ff88c5769fdf8ccc1a7d2ebd4c9197428008481a4a09020440893031f24e022324ff4c00a6fbef0cd88487a508080df896fd6042f7b8740f812ac7100045221557941c556e25a7963f947063f5d1e6a1c9ff1c9f4cfcabc721baa22508fc8c3e41040408cbb8040880816213178c2dc1e7fdc4adc4eeb7bc8f9cc9652b99643e97813ce96e4a7ecfffb0a7fd234079a1cfd8e4347077e735382c819fd13772c9fe31ac910cdb9b409dfa08808362155785cfc9fe32c96722d9ca411696693693ff21dff33fc730137f8ab132c018da9d400a0122a03b760d7e478000f88ed08eef9f134626fe4c1a5b91e85f637cc8c83f629917f48c61c6ef350f9cbd02811401d95f56f075691f2b394f00348e56248af7841febfcf06f45d2d887fb217fd8276299c9dfa87f9f18ae544b5e0ba2fbbc65ff59c96fbe0e4a8000681498f894e787fd32e14bfafbb2ce87febaff55bf886bc654f2df3796abd5f633fa11113065d46b394500ec18aff850bf27fd586ff7f325fd1df95e5495c9bfebd47fc4f43db66183980604cbcb0488809711aae0550204c0ab04e3fc8be490a343092298345c0e49fee18fd80604cbae0488805d711e5f59350b0880172226f1bf00efc9534fa753ef917f4ed566f27fd262a721f025811401fad79788bcd98a0001f024d948fe5b6230e27f92e113a775bdf77e8e71d7369f60e294fa04f2f65274b737d792d2b1ac673c01f060cce2539abfc0f716a7490c01a1e3d275ea3fe31cbe897140b07423903ffe450474c3ad2102e0ce3e100921557a4ed5490a7732dbf130c97f4798aa1a9a00113074786e1b57f11d02e08ea845f237dd7f07a756879c3adef73fc79ac86b154cf5de438008b88792635e2640007c8130928151ff177c3abdd52d1947bc53e8756baf133fcdd4244004948a5b4d6309801b713b27839cf2774fee06a30ebbbb4dfd9fe32df97708aa26ee264004dc8dca81cf102000ae50930cae40396057afa97ff13e20b89abc9740ce4add7bace30e2250b55902e053e42219e4a8df48f01397035e768941c43b2fb05dda3a80a126eb13d86e43d6f78407c3112000ce218944b07dd04cf99f991cb8ea32f51f3197fc0f0cb2a6ef26b05d9bee3ec1813d09d46d8b0088d84522c8a49f23ff5cc71ecb91047a4dfd878f46fe01c15282001150224cb58c5c5e005c24ff5a919bd7da2e4939e29e826f5e8a3c9b91408a809cb59ad1b7b23e55367c690110492047fc12c1383db8e7d47fc67e1ccf5982c07d04f26f07e8bbf7b172d4370496150091fc53494bfedf74909e6ff798fa3fc7bdcb2c434f76da5a8a80ebd630e1ae6dc89202401218b2d3364fca11f71c39356f6748ba8c9a8a40f4652260aa881ee3cc7202203e3892c0317dedcb567b8cfec30017cd8060998280e701060863751396130011304920200cb6341f9587f0cb5b3e83b9cd1c045e2290cf03e8d72f215cfbe4a504402401c97fc0fede7af41f71cf8b64739131205a26cd4f204540ce6aceefe9701ed637681901704e023e28e3f5d91e89b9471be39165d12a0452e0aee22b3f7724b0840038277f4960c78eb357559d46ff7b99ab1e04462490cf0318dc748ecc0ccd4d2f0024ffa1bb69535126f643c79e71fb12707b735f9e4bd436bd008828364d3251bfe54902ad47ff6196d80704cb1a0442f01201dd423d4743530b80f840b837366e3f6d9a9cc57edcc0b3ac1901b7029aa19db3e26905c03901344d327376893e5eb51cfd8b7d9f186a654802063d1dc2324b13d30a800890e41f10065d5ac7a675fd83626516023f7216e0bf3820700f812905c07904788fff8e39804087d1ff015e6912816108f86d80a6a198a7f2e904c039f91b018edb475bc7a675fde392651902ff10300bf00f0b5b37084c2700c24f0920208cba18fd8f1a19764d46206f05f86d8006419da9caa904c079f43f537c66f3a5b5386b5dff6cf1e0cfdc04cc02cc1ddf97bd9b4a00040d092020acb8107f2b469dcfdf10300bf00da0c7df9eeb8c69048004307ec76c39fd1fde137f01c182c0270266013e01f1f21f02d308807049020808032fcde243fc0d1c75a61d4dc02cc08e1198adaa29048004307eb734fa1f3f462c9c968059806943fb9a6353088040d06c7419755b5e27d02c3ec4dfebc151c3f404cc02ec12e2f92a292f002480f93ae5831e3513170fdae170044626601660e4e81c645b790110dc24808030f2d26afa9ff81b39ea6c1b8c805980170332e3e9a505800450a24bb614682deb2e019791083c40c02cc003b05638b4b4005821407cbc4e80f8bbcec55e04be20e09701bf80f3f55b73be5b5d0018010ede2f5b4dff0fee36f31018924008672260c8c81c63545901101dd974d6317de691565b0ab496753fe2a36311a844c075f38968cd7a4a5901306b40f8f53d01e2ef7b468e40e006010f03de00b3e2eeca02c00870f01edb70fa5fec078f3df386266016e0a1f0cc7b704901600458a2433649d2625f22f68c1c9b80e700c68e4f37eb4a0a806e7434840002084c482084341170675c673eacaa006832ba9c39d0bd7d33fddf9bb8f610788880db000fe19af3e0720280722dd111ff6e6165c4de45ab055875ae48c00cc05d519ffba0720220c2f17f512c6313682200c676997508d42210829a08a815b2ddadad28007687a0c2dd09fc6ff71a7f55e8d6cf2f0efe47600f0266d4bea138fbdb150580243078af3c9d4ebbcf00c468c5c56af0b833af1c013300e542b6afc11505c0be04d4b63701026d6fa2ea43a0118110d644c04db6f3bf514a00e8acf377c82f3c242cbe80e32d049e246066ed4970339c564a0004700f000684c197ddefff137e83479c7995099801b811bd15765713002bc4a4a28f79cf3fcb1f2deeff0710c22f205810684180c06e41b5469dd50400b53a46bf7a4ff6614a26fcc8f9a75c67c9fdb17bf745dc7747aa42047e1320b07fa3d836d6585713006b44653c2f33b167c9247f8a7fb9fe3bd6b9af87b504400fcada589580cfd7a291af260074d47e1d3593fb1fd15c26fbade4bed8d56f313dd98fb5969625e0bafa29f4abbcac26005689cb117e6672cf27ed33d9c7e0fe94eb9ea3fc5b3e9b9ebc45c67e0476224068ef04b258350440b180353037137f26fb2c7f9e1afc884f039b55890002083422b04eb565040085ba7ba7bc4cfcb9bd7b033b5598b3123b55a51a0410b841c0ef01dc0033f3ee320260e62074f42d137d8ef463a07fca75beeed8bca610400081b109ac641d01b046b433d167c2cf92db25bc8e591fa392129162e404043c083841101f758100789458ade333d967d2cf92dbb5ac672d0208742310829b08f8d10df7100d1100438461772332d967d2cf92dbbb37d0a94217a44ea035834010f08d9b80b0d24200cc15ed4cf699f4b3e47675ef0880ea11647f2502cb7fde2a056b0f5b09803d288e51c7cfd3e9344be21f83282b1040008189091000f5839b23fd4cfc7fd677e51f0fdc8ffc87852d043a11587c06a013e5819a2923004e7ea0e673b7d9127f26ffdcfefc7ef5d7ee47568f20fb11406068026504c0d014fb1b67babf3f732d22303d819567dea60fee150709802b5006de95bfcd1f9321a7a9a6fb07e6cd34041040605a0204409dd0be8ffaeb98fbb2a5ee47be8c5005083c4c60d15b6f0f739ae2846a0260c67bddf774a4bccfbfdaa89f00b8a7673806817d09f8dcedcb73e8daaa0980a16136302e054f26ff5c37a85e950820800002ab12a82600564a84ef53fea789befd900f185d94ffc6f665f92b5eff2eab7e20f98dc0c104fe73f9398cedcbcfe8b69dc7bc97836dd5fc8b04aa0980ffbde86f95d333f9979cf28f0bc6fb8521d679b1d8127abc7c7b0bf87f5d94fc33bf9725a71e2f4b1c6a41008103085c7e0e2f3fa3dbf6efcff1fb07fbd77ff959cfcf7c963cff00b39f6d72ddf3aa098015229553fe65927f7cf6b7849f1780df178608545e2cf24290255e5a1040606202f939cfcf7c96bc16c4a5e12dd72908fc55cf41035f4a00cc341d7ea53f6c5ff11bfa36c7dbdbdbad849f17802c575cb30b0104162490d7839fe1f7cfb86ee432a42008fb965d4a09807394864e90671b1f5de594ff1f8f9ed4f3f8f8f466e2bf1ce1e7873b4b4f33b48500027509e4f5e25210981d3838961505c0c1c8766f3e93ff9053fe5bd28ff576ff3e3fc0bb03502102082c49e083183886c0daad56140033cd000c99fc23e1a732df46fb92fedad708de23d083c087db043d1ad4c68f1f1505c02cdf04182af947d27f9fe28f758ef653994bfcae100820d09b405e773631d0fce1c1dece8dd65e390130c98380c324ff48f8ef893f3a668ef8f3c3179b16041040e070028440e310941300671e956f030c91fc25fe734fb2420081d109341202a3bbdddebeaa0260c887e6ee08577ed5ef70db23f9e7d49a11ff1d01730802080c438010d83914250540d1db0099fc0ffdaa5f24fe6dba3feff1efdc95548700020874219042201f547ee99665174b076fa4a4003833ad741be0d0e47f91f88dfacf9dc70a01044a13c841ccfb0f0b95f6e260e32b0b80c3a7d2ef8cddd1c9df74ff9d8172180208942390b30131c679cbebdc03c63b3409541600697f85728850894f84e9fe0abd838d0820b007819f71cd23021e245956009c9f0318fd36403ef1dfddc6f820e4bd31d3fd0f7e181c8e0002a509a408c8db0279fdfbd2116ffe22505600fc32ffc721a3eb73dbdfad32f977b72f927faae04cfedfd9e77d04104060360299fc5304e4757036df76f7a7b40018781620effb774dfe91f84df9effef150210208142590b301374440518f1a985d5a009c79744db4e736bf5c8530e9fa75bf4cfe61508efa53fdc6a605010410589e408a80bc2e2e0fe21680f20220926df77becb7609ef7e7d753ce9bed5791fc53e5eae4ed516b010104ea11c899d1b84cbefd1e1cd573a19dc5e505c0194dd7a47b6ef3daaaeb7dffe8d599fc47f1fd1a0ffb104000811108e4730144c0a748cc220046f80b8192ffa7cee525020820301081bfdedede72d0349049c79a32850038df063874241c36747b16c1c8ffd80f8dd61140a02c819fe7eb675907f6347c0a0190407a26e06cef53e9263ece9db75b7b9ffcf412010410284be06c38117006318d0038fb734462ec36f52ff99fa36c85000208bc468008087e530980f32c40d76f059cdb0c946d17c9bf2d5fb52380c0ec04fee5dff222602a01700e6fb77bf1d15e971907c93f485b10400081fd09a40858f6db01d309801891e70c4096fdbbcaa71aa3ade66243f2ff04dd4b041040e009025f9cb2ec5704a71300e720374fccd14ef3d1bfe41f942d082080407b024b8a802905408ccc7306a06582eef5e05f4b1fda7fa4b4800002080c41e02e2396fb8d80290540863a4440ce02a410c8977b97e63f3c14a37f3fefbb77d4d487000208dc26903f1bbc9408985600648c4304e41fe5d95b04e4e87fef3ad3dcdf25927f76c2651f4cf90dc206020820b0038107aa58eaa1c0a905c039e8391370de7c7d15a262d7fa3e5b744efea6fe3f83f11a010410e8436099e701a6170091b073b4be5742ddab9eafba718f36be6adf7b082080c0440424f87d3300001000494441549e722567619f3ab1d249d30b800c4688801cb5a710c8974f97733d4f9fffdd8931fa77dfff3b48de47000104da1358e27980250440f69548deaf3e0fd074641ec93f15a7fbfe192c05010410d889c00bd54cff3cc03202203bc15904e4e6c325cecd598487cf7be084a602e3013b1c8a00020820f08b400ecc7e6d4df8ff5202e01cbf9c09386fdebd6a9a9ccfa3ffbb8d712002082080c03d045e3e66ea5b01cb098018c9e7b300cf8880977bd2b50acec9bfa9c0b8d6ae7d0820800002771198f656c0720220c3fda008f83b8e6f39fd2ff96750140410406067023b5637e5ad80250540768a48ea3913704ff2cde3f294ddcb79f4bf7bbd2a4400010410d89540de0a98ee21ed650540768d100139b2ff52049c8fc9c35b942fdb6ed1a03a114000813508eceee574b3004b0b80ec1ee7047feb99806609dae83fe92b082080401902d3cd022c2f00b2eb8508c8fbfca7d8fe30dd1ffb7386207637599a898b26d6aa140104102844a091a953cd02100017bd24127ece046c89795b5f1cb1cfa6d1ff3e1cd582000208742630d52c0001f0a9f78408c8517fb3e47f6eae75fde766ac10400081150934f5799a590002e04a3f491190e5ca5b2fef32fa7f19a10a1040008123094c330b4000f4ef4646fffd996b1101041622d0c1d529660108800e3d656bc2e87f23618d000208942630c52c0001d0b70f1afdf7e5ad350410588e403787cbcf0210009dfa8ad17f27d09a41000104fa1028ffcb8004409f8ea21504104000810e047a361103bbd2228000e8d75b4cfff763ad25041040a00781d2b70108800e5d245462e94ed2019126104000811d0874afa2f4c3800440f7fea2410410400001048e274000f48981e9ff3e9cb58200020b1338c8f5b233bc0440e31e63fabf3160d523800002c71228fb202001706cc7d13a02082080c02e048eab24067a25450001d0becf98fe6fcf580b082080c091044ade0620008eec32da4600010410d885804a1e2740003cceecee33625aa8a42abcdb410722800002082481925f07240032740a020820804061024c7f860001f00cb5fbcf71ffff7e568e440001042a132837e34b0054ee6e6c4700010410f801c173040880e7b87d7bd6dbdb5bc9af857ceb98031040000104ae112877cd2700ae85719f7dffb74f356a4100010410b84d609c77aa0dfc088071fa0e4b104000010410e84680006887badc74503b146a46000104da1018acd65233bf04c060bd873908208000026509941af81100edfa59a98ed00e839a114000815604d4fb0a0102e0157a37ceadf620c80d37ec4600010410788c40a9811f01f058701d8d0002082030080166bc468000788d9fb3114000010410284980002819364623800002ab13e0ffab04088057095e3fbfd45741aebb602f02082080c0a3042a3d0346003c1a5dc723800002081c4e8001af1320005e67a806041040000104ca112000ca858cc1082080c0ea04f8bf070102600f8aea400001041040a0180102a058c0988b000208ac4e80fffb102000f6e1a8160410400001044a1120004a858bb1082080c0ea04f8bf170102602f92ea410001041040a0100102a04db0fed7a65ab5228000026b1318ddfbd3e9f4f7e8366ef611001b096b041040000104162240002c146cae22800002b509b07e4f0204c09e34d5850002082080401102044091403113010410589d00fff7254000eccbf3bdb64a0f81bc1bec3f04104000813d08947900309d250092429b52aa23b441a056041040602f0225ea2975dd27004af42946228000020820b02f0102605f9e97b59552829786db46000104462350c49e52bf014300b4eb55a53a423b0c6a46000104d62050edf92f02608d7ec94b041040a03001a6b7204000b4a01a7556538261b20501041040e07902e56efb1200cf07fb9e33cb75887b9c720c020820d0934091b6ca5def0980223d8b99082080000208ec498000d893e6bfebfaf3dfbbec4100010410b89f408d23e3b66fb9eb3d01d0b06f4587283725d41087aa11400081590994bcd61300edbb63c98ed11e8b1610400081ef091439a2e4759e0068dfbb4a768cf658b4800002084c43a0e4efbe1000edfb5fc98ed11e8b1610400081ef08d478bfeaed5e02a071ffaada311a63513d020820300b819f551d2100fa44ce6d803e9cb58200021311e04a5b0204405bbe5bede5be1eb2196e8d00020820709b40ccf296bdbe1300b7e3badb3bd141720620cb6e75aa08010410989b4009efca4eff275d022029f42904401fce5a4100010410b88300017007a49d0ef16d809d40aa060104e62750c1c398dd2d3bfd9f7c0980a4d0a14447c919802c1d5ad30402082080406302a5a7ff930d019014fa95d26ab11f262d2180c0da04c6f73e0675e5afe70440c77e161d266700b2746c555308208000023b13283ffa4f1e044052e85bcaabc6beb8b4860002ab1118dddf18cc4d711d27003af7b4e83866003a33d71c020820b023812946ffc98300480afdcb341da83f3a2d2280c0dc0478d78b0001d08bf4453b310b30c5f4d1854b36114000811508fc9ce9fa4d001cd765cd021cc75ecb082030280166f5234000f463fda1a59954e407c7bc40000104e62430d5e83f4344002485e3ca1fc735ad65041040603402e3da33e3a08d0038b0bf4587ca6f046439d00a4d23800002087c4360ca5bb604c03751eff0b607023b40d60402088c4f60540b63b036e5759a0038b8c745c7ca198029d5e5c168358f000208ec4160daeb3301b047f778b18e1001a92e5308bc5893d311400081aa0486b47bba07ff2e29130097348edd4e1170ac055a4700010410f84de03c38fbfd7ab60d026090884647cb198069a79a06c1cc0c04101894c080664d7f3d260006ea75210272162085c040563105010410588ec0d453ff5b3409808dc438eb1401e358c312041040a03981a11af8fb3c181bcaa816c610002da8be506774bc9c01987eeae905444e450001045a125866104600b4ec464fd61d22203b2011f0243fa72180402d0203599b53ff39081bc8a476a61000edd8be54f359042cd3115f82e564041040e0750299fc73f0f57a4d456a2000c60ed4529d71ec50b00e0104da1018a2d665eefb5fd226002e690cb61db3003903e00f060d1617e62080c0540432f92f799d250006efc744c0e001621e0208bc44e0e093974dfec99d00480a8397b308f050e0e071621e0208d42210d7d62547fe5b9408808dc4e0ebe8a8f93c001130789c988700028f1038f4d8a5937f92270092429142041409143311406074027fc4f5349fb11addcea6f611004df1ee5f79745a3301fb63552302081c40e0a02625ff337802e00ca2d28a08a8142db62280c0200472c42ff95f048300b8805169f32c0296bf875529666c4500814b025db7df9ff68feb668a80ae0d8fdc1801307274beb1eddc9989806f38791b01049626f09efc972670c37902e006982abb5304443985bd946d40b02080400d029daccc9ff73548ba019b00b801a6daee1001d9c97d4db05ae0d88b0002ad0864f2cf87a65bd55fbe5e02a07c08ff71204440767622e01f24b610406048024d8dcad9d07cd82faf874d1baa5e3901503d829fec4f1110c52d814f5cbc4400812508e4a83f937f8a80251c7ec54902e0157a039f1b22c02d8181e3c334045626d0c8f74cfe46fd0fc025001e8055edd01001f961c85b02d470b5e0b1170104ee2590d7b71cf5e7f5eede731c170408808030f39222208ad9809983cc37044a11d8cdd82df167f2cfeddd2a5ea522026091488708f8334a3e1b9033028b78cd4d04109894404ef74bfc2f069700781160b5d34304e4341911502d70ec456012022fba9123fd4cfc791d7bb12aa713000bf681140151cc062c187b2e235094c096f833f9e7765137c6329b00182b1e5dad091170795bc087aa2b7d8d21b02281877dceeb5226fd2cb9fd70054eb84d8000b8cd669977ce42607b50d0ed816522cf5104862590c93e937e96dc1ed6d0ca86110095a3b7b3ed672190f7d6520464d9b905d52180c0ca04bef13d137d964cfa5972fb9b53bcfd0a0102e0157a939ebb0981586fcf09100393c69a5b080c4020137d26fcade4eb01cc9adf040260fe18bfe46188807c4e20cb26067c385f22ea64045625f0c1efbc8e64c28f4bcc29d7f9fac3015eb4274000b4673c4d0ba7d32985c01fa7f8174ee5ac4096d8b4208000025f12c8049fe5fdfa1197905ce7eb2f4ff2665b0204405bbed3d61e1fe014035962f3b4cd0e1004d3469c63083c4420937b964cf4a7f8f7c7b9e4be872a72703b0204403bb64bd51c1fee14035962f3948220bf5590254541161ffca57a04671720909fe9ade467fdbd9c7efdcbc49f25df5f00454d1709809a711bdeeab806fc7d2e290ab2e4c52076fd5ac281f78bc5a7750a05e5c70f0c3018a10f5cfb8c5e7e8e737b2bdbe7fd46c2ffe1df800408800183b2824921037e5f302eb6532828a71306188cd007ae7d4625f8892ed004c044c1e40a020820302201368d49800018332eac420001041040a0290102a0295e9523800002ab13e0ffa80408805123c32e0410400001041a1220001ac25535020820b03a01fe8f4b80001837362c430001041040a0190102a0195a1523800002ab13e0ffc804088091a3c3360410400001041a1120001a81552d020820b03a01fe8f4d8000183b3eac430001041040a0090102a009569522800002ab13e0ffe8040880d123c43e0410400001041a1020001a405525020820b03a01fe8f4f8000183f462c44000104104060770204c0ee485588000208ac4e80ff1508100015a2c44604104000010476264000ec0c5475082080c0ea04f85f83000150234eac44000104104060570204c0ae385586000208ac4e80ff550810005522c54e04104000010476244000ec085355082080c0ea04f85f8700015027562c45000104104060370204c06e285584000208ac4e80ff9508100095a2c55604104000010476224000ec045235082080c0ea04f85f8b0001502b5eac45000104104060170204c02e185582000208ac4e80ffd5081000d522c65e04104000010476204000ec005115082080c0ea04f85f8f0001502f662c460001041040e0650204c0cb085580000208ac4e80ff1509100015a3c6660410400001045e244000bc08d0e9082080c0ea04f85f93000150336eac460001041040e0250204c04bf89c8c000208ac4e80ff550910005523c76e0410400001045e204000bc00cfa9082080c0ea04f85f9700015037762c470001041040e0690204c0d3e89c88000208ac4e80ff9509100095a3c7760410400001049e2440003c09ce69082080c0ea04f85f9b0001503b7eac470001041040e0290204c053d89c84000208ac4e80ffd5091000d523c87e0410400001049e2040003c01cd29082080c0ea04f85f9f0001503f863c400001041040e0610204c0c3c89c80000208ac4e80ff331020006688221f10400001041078900001f020308723800002ab13e0ff1c04088039e2c80b0410400001041e2240003c84cbc1082080c0ea04f83f0b0102609648f203010410400081070810000fc07228020820b03a01fecf4380009827963c410001041040e06e0204c0dda81c88000208ac4e80ff33112000668a265f104000010410b89300017027288721800002ab13e0ff5c040880b9e2c91b041040000104ee224000dc85c941082080c0ea04f83f1b010260b688f20701041040f38ab057000002934944415400813b08100077407208020820b03a01fecf478000982fa63c420001041040e05b0204c0b7881c80000208ac4e80ff33122000668c2a9f104000010410f8860001f00d206f23800002ab13e0ff9c04088039e3ca2b041040000104be2440007c89c79b082080c0ea04f83f2b010260d6c8f20b0104104000812f0810005fc0f116020820b03a01fecf4b80009837b63c430001041040e0260102e0261a6f20800002ab13e0ffcc04088099a3cb370410400001046e1020006e80b11b010410589d00ffe7264000cc1d5fde2180000208207095000170158b9d082080c0ea04f83f3b010260f608f30f0104104000812b0408802b50ec420001045627c0fff9091000f3c79887082080000208fc8b0001f02f247620800002ab13e0ff0a04088015a2cc470410400001043e1120003e01f112010410589d00ffd7204000ac11675e228000020820f0810001f0018717082080c0ea04f8bf0a0102609548f3130104104000810b0204c0050c9b082080c0ea04f8bf0e0102609d58f314010410400081df040880df286c20800002ab13e0ff4a04088095a2cd57041040000104ce04088033082b041040607502fc5f8b0001b056bc798b0002082080c03b0102e01d83ff10400081d509f07f350204c06a11e72f020820800002418000080816041040607502fc5f8f0001b05ecc798c0002082080c00f02402740000104962700c08a04088015a3ce670410400081e5091000cb7701001040607502fc5f930001b066dc798d00020820b038010260f10ec07d0410589d00ff57254000ac1a797e23800002082c4d8000583afc9c470081d509f07f5d0204c0bab1e73902082080c0c20408808583cf750410589d00ff57264000ac1c7dbe23800002082c4b80005836f41c470081d509f07f6d02ff1f0000ffff30ebcadd00000006494441540300fecc7bb53fae82e00000000049454e44ae426082"
+   writefile(path,(hex:gsub("..",function(pair)return string.char(tonumber(pair,16))end)))
+  end
+  return getcustomasset(path)
+ end)
+ if ok then softShadowAssets.cloud=result end
+ return ok and result or nil
+end
+-- No idle RenderStepped work: guide animation only exists during a drag.
+local function snapDotAsset()
+ if softShadowAssets.dots then return softShadowAssets.dots end
+ if type(writefile)~="function"or type(getcustomasset)~="function"then return nil end
+ local ok,asset=pcall(function()
+  local path="Altair/SnapDots.png";if type(makefolder)=="function"then pcall(makefolder,"Altair")end
+  if type(isfile)~="function"or not isfile(path)then local hex="89504e470d0a1a0a0000000d4948445200000008000000080806000000c40fbe8b0000001649444154789c63f88f000cd8308820a8002f1e120a00c5dcc33da7e805b40000000049454e44ae426082";writefile(path,(hex:gsub("..",function(pair)return string.char(tonumber(pair,16))end)))end
+  return getcustomasset(path)
+ end);if ok then softShadowAssets.dots=asset end;return ok and asset or nil
+end
+local function buildSnapGuides(root)
+ local motion=motionService();local service={lines={},keys={}};local dotAsset=snapDotAsset()
+ for _,axis in ipairs({'X','Y'})do
+  local line=Instance.new('CanvasGroup');line.Name='SnapGuide'..axis;line.BackgroundTransparency=1;line.GroupTransparency=1;line.BorderSizePixel=0;line.ZIndex=0;line:SetAttribute('AltairThemeIgnore',true);line.Parent=root
+  if dotAsset then
+   local dots=Instance.new('ImageLabel');dots.Name='Dots';dots.BackgroundTransparency=1;dots.Size=UDim2.fromScale(1,1);dots.Image=dotAsset;dots.ScaleType=Enum.ScaleType.Tile;dots.TileSize=UDim2.fromOffset(8,8);dots.ImageColor3=Color3.fromRGB(210,220,235);dots.ZIndex=0;dots.Parent=line
+  else
+   for index=0,32 do local dot=Instance.new('Frame');dot.Name='Dot';dot.BorderSizePixel=0;dot.Size=UDim2.fromOffset(2,2);dot.BackgroundColor3=Color3.fromRGB(210,220,235);dot.ZIndex=0;dot.Parent=line end
+  end
+  local gradient=Instance.new('UIGradient');gradient.Rotation=axis=='X'and 90 or 0;gradient.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(.36,1),NumberSequenceKeypoint.new(.5,0),NumberSequenceKeypoint.new(.64,1),NumberSequenceKeypoint.new(1,1)});gradient.Parent=line
+  service.lines[axis]=line
+ end
+ function service:Update(point,x,y,enabled)
+  local fresh=false;local size=root.AbsoluteSize;local origin=root.AbsolutePosition
+  for _,axis in ipairs({'X','Y'})do
+   local value;if enabled then if axis=='X'then value=x else value=y end end;local line=self.lines[axis]
+   if value then
+    local localPoint=point-origin;local coordinate=value-(axis=='X'and origin.X or origin.Y)
+    line.Position=axis=='X'and UDim2.fromOffset(coordinate,0)or UDim2.fromOffset(0,coordinate)
+    line.Size=axis=='X'and UDim2.new(0,1,1,0)or UDim2.new(1,0,0,1)
+    if not dotAsset then
+     for index,dot in ipairs(line:GetChildren())do if dot:IsA('Frame')then
+      local distance=(index-17)*8;dot.Position=axis=='X'and UDim2.fromOffset(0,localPoint.Y+distance)or UDim2.fromOffset(localPoint.X+distance,0)
+     end end
+    end
+    local gradient=line.UIGradient;gradient.Offset=axis=='X'and Vector2.new(0,localPoint.Y/math.max(1,size.Y)-.5)or Vector2.new(localPoint.X/math.max(1,size.X)-.5,0)
+    if self.keys[axis]~=value then motion:Create(line,TweenInfo.new(.16),{GroupTransparency=.62}):Play();fresh=true end
+   elseif self.keys[axis]then motion:Create(line,TweenInfo.new(.65),{GroupTransparency=1}):Play()end
+   self.keys[axis]=value
+  end
+  return fresh
+ end
+ function service:Clear()self:Update(Vector2.zero,nil,nil,false)end
+ return service
+end
+local function buildLoading(root,parent,cloudAsset,position)
+ local screen=Instance.new('ScreenGui');screen.Name='AltairLoading';screen.IgnoreGuiInset=true;screen.DisplayOrder=root.DisplayOrder+1;screen.ResetOnSpawn=false;pcall(function()screen.ScreenInsets=Enum.ScreenInsets.None end);screen.Parent=parent
+ local group=Instance.new('CanvasGroup');group.Name='Sequence';group.BackgroundTransparency=1;group.AnchorPoint=Vector2.new(.5,.5);group.Position=UDim2.fromScale(.5,.65);group.Size=UDim2.fromOffset(240,130);group.Parent=screen
+ local scale=Instance.new('UIScale');scale.Parent=group
+ local cloud=Instance.new('ImageLabel');cloud.Name='Cloudz';cloud.BackgroundTransparency=1;cloud.Size=UDim2.fromOffset(68,54);cloud.Position=UDim2.fromOffset(86,0);cloudAsset=cloudAsset or loadingCloud();cloud.Image=cloudAsset or '';cloud.ScaleType=Enum.ScaleType.Fit;cloud.Parent=group
+ if not cloudAsset then applyIcon(cloud,'cloud')end
+ local text=Instance.new('TextLabel');text.Name='Stage';text.BackgroundTransparency=1;text.Size=UDim2.fromOffset(240,24);text.Position=UDim2.fromOffset(0,68);text.Text='Building interface';text.TextSize=12;text.TextColor3=Color3.fromRGB(235,237,242);text.Font=Enum.Font.GothamMedium;text.Parent=group
+ local track=Instance.new('Frame');track.Name='LoadingBar';track.Size=UDim2.fromOffset(160,4);track.Position=UDim2.fromOffset(40,108);track.BackgroundColor3=Color3.new(1,1,1);track.BackgroundTransparency=.84;track.BorderSizePixel=0;track.ClipsDescendants=true;track.Parent=group
+ local corner=Instance.new('UICorner');corner.CornerRadius=UDim.new(1,0);corner.Parent=track
+ local fill=track:Clone();fill:ClearAllChildren();fill.Name='Progress';fill.Position=UDim2.fromOffset(0,0);fill.Size=UDim2.fromScale(0,1);fill.BackgroundTransparency=.12;fill.Parent=track;corner:Clone().Parent=fill
+ local glow=Instance.new('UIGradient');glow.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,.4),NumberSequenceKeypoint.new(.8,.05),NumberSequenceKeypoint.new(1,0)});glow.Parent=fill
+ local shadow=Instance.new('ImageLabel');shadow.Name='LoadingShadow';shadow.BackgroundTransparency=1;shadow.AnchorPoint=Vector2.new(.5,.5);shadow.Image=resolveSoftShadowAsset(true)or '';shadow.ScaleType=Enum.ScaleType.Slice;shadow.SliceCenter=Rect.new(64,0,192,64);shadow.Size=UDim2.fromOffset(288,64);shadow.ImageColor3=Color3.new(1,1,1);shadow.ImageTransparency=.62;shadow.ZIndex=0;shadow.Parent=group
+ local mask=Instance.new('UIGradient');mask.Parent=shadow
+ local loadingProgress=Instance.new('NumberValue');loadingProgress.Name='LoadingProgressValue';loadingProgress.Parent=screen
+ loadingProgress.Changed:Connect(function(value)root:SetAttribute('AltairLoadingProgress',value);mask.Transparency=loadingMask(value)end)
+ root:SetAttribute('AltairLoadingProgress',0);mask.Transparency=loadingMask(0)
+ local motion=motionService(function()return root:GetAttribute('AltairReduceMotion')==true end);local service={Screen=screen,progress=0}
+ function service:Anchor(point,animated)
+  local viewport=screen.AbsoluteSize;if viewport.X<=0 then viewport=workspace.CurrentCamera.ViewportSize end
+  local upper=point.Y<viewport.Y/2;local x=math.clamp(point.X,120,math.max(120,viewport.X-120))
+  local destination=UDim2.fromOffset(x,point.Y+(upper and 45 or -45))
+  if animated then motion:Create(group,TweenInfo.new(.2,Enum.EasingStyle.Quint),{Position=destination}):Play()else group.Position=destination end
+  track.Position=UDim2.fromOffset(40+point.X-x,upper and 18 or 108)
+  shadow.Position=UDim2.fromOffset(120+point.X-x,upper and 20 or 110)
+  cloud.Position=UDim2.fromOffset(86,upper and 64 or 0)
+  self.textRest=UDim2.fromOffset(0,upper and 37 or 68);text.Position=self.textRest
+ end
+ local viewport=screen.AbsoluteSize;if viewport.X<=0 then viewport=workspace.CurrentCamera.ViewportSize end
+ local x=type(position)=='table'and tonumber(position.x)or .5;local y=type(position)=='table'and tonumber(position.y)or nil
+ service:Anchor(Vector2.new(math.clamp(x or .5,0,1)*viewport.X,y and math.clamp(y,0,1)*viewport.Y or viewport.Y-38),false)
+ function service:Stage(value,label)
+  if not screen.Parent then return end
+  self.progress=math.max(self.progress,math.clamp(value,0,1))
+  self.stageGeneration=(self.stageGeneration or 0)+1;local generation=self.stageGeneration
+  motion:Create(text,TweenInfo.new(.07),{TextTransparency=1,Position=self.textRest-UDim2.fromOffset(0,3)}):Play()
+  task.delay(.075,function()
+   if not screen.Parent or self.stageGeneration~=generation then return end
+   text.Text=label;text.Position=self.textRest+UDim2.fromOffset(0,4)
+   motion:Create(text,TweenInfo.new(.15,Enum.EasingStyle.Quint),{TextTransparency=0,Position=self.textRest}):Play()
+  end)
+  motion:Create(fill,TweenInfo.new(.22,Enum.EasingStyle.Quint),{Size=UDim2.fromScale(self.progress,1)}):Play()
+  motion:Create(loadingProgress,TweenInfo.new(.22,Enum.EasingStyle.Quint),{Value=self.progress}):Play()
+  game:GetService('RunService').Heartbeat:Wait() -- Render this milestone before the next initialization batch.
+ end
+ function service:Finish(drag,hideBar)
+  local real=drag and drag:FindFirstChild('Drag')
+  if real then
+   drag.Visible=true;real.Visible=true
+   local vertical=real.AbsoluteSize.Y>real.AbsoluteSize.X
+   real.Size=vertical and UDim2.fromOffset(4,160)or UDim2.fromOffset(160,4)
+   local origin=screen.AbsolutePosition;local center=real.AbsolutePosition+real.AbsoluteSize/2-origin
+   track.Visible=false;shadow.Visible=false
+   local completedFill=Instance.new('Frame');completedFill.Name='LoadingProgress';completedFill.BorderSizePixel=0;completedFill.BackgroundColor3=Color3.new(1,1,1);completedFill.BackgroundTransparency=.12;completedFill.Size=real.AbsoluteSize.Y>real.AbsoluteSize.X and UDim2.fromScale(1,self.progress)or UDim2.fromScale(self.progress,1);completedFill.ZIndex=real.ZIndex+1;completedFill.Parent=real;corner:Clone().Parent=completedFill
+   local halo=Instance.new('UIStroke');halo.Name='LoadingGlow';halo.Color=Color3.new(1,1,1);halo.Thickness=3;halo.Transparency=1;halo.Parent=completedFill
+   motion:Create(completedFill,TweenInfo.new(.22,Enum.EasingStyle.Quint),{Size=UDim2.fromScale(1,1)}):Play()
+   motion:Create(halo,TweenInfo.new(.2),{Transparency=.65}):Play()
+   self.completedFill=completedFill
+  end
+  self:Stage(1,'Ready');task.wait(root:GetAttribute('AltairReduceMotion')and .05 or .24)
+  if not screen.Parent then return end
+  if self.completedFill then
+   local completedFill=self.completedFill;motion:Create(completedFill,TweenInfo.new(.24),{BackgroundTransparency=1}):Play()
+   motion:Create(completedFill.LoadingGlow,TweenInfo.new(.24),{Transparency=1}):Play()
+   task.delay(.26,function()completedFill:Destroy()end)
+  end
+  motion:Create(group,TweenInfo.new(.24),{GroupTransparency=1}):Play()
+  if real and hideBar then
+   motion:Create(real,TweenInfo.new(.24),{BackgroundTransparency=1}):Play()
+   task.wait(.24);if drag.Parent then drag.Visible=false end
+  end
+  root:SetAttribute('AltairLoadingProgress',nil)
+  task.delay(.26,function()screen:Destroy()end)
+ end
+ return service
+end
+
+local bindings={ExperimentalSection=buildExperimentalSection,SnapGuides=buildSnapGuides,Loading=buildLoading,Choice=buildChoice,StyleGallery=buildStyleGallery,UIAvoidance=bindUIAvoidance,SlideContent=slideContent,SlideHeading=slideHeading,BounceReset=bounceReset,HomeContainer=function(root)local content=Instance.new("Frame");content.Name="Content";content.BackgroundTransparency=1;content.Parent=root.Home;return content end,Performance=motionStats,HomeIsolation=bindHomeIsolation,RayfieldBridge=bindRayfieldBridge,DragContrast=bindDragContrast,Dock=bindDock,Capsules=bindCapsules,Clock=Clock,Notifications=buildNotifications,ApplyIcon=applyIcon,RefreshIcon=refreshIcon,Motion=motionService,Resize=resizeInterface,DisplayScale=displayScale,Slider=buildSlider,Stats=buildStats,SoftShadows=bindSoftShadows,Surface=styleSurface,HomeSurface=styleHome,ColorPicker=buildColorPicker,Theme=bindTheme}
 return function(options)
 	if options and options.BindingsOnly then return bindings end
 	local objects = table.create(#nodes)
+ local buildAt=os.clock()
+ local function budget()if os.clock()-buildAt>.002 then game:GetService("RunService").Heartbeat:Wait();buildAt=os.clock()end end
 	local ok, result = pcall(function()
 		for index, node in ipairs(nodes) do
+   budget()
 			local class=classes[node[2]]
 			local object = Instance.new(class)
 			objects[index] = object -- Register before assigning properties so failure cleans up.
@@ -5759,6 +6932,7 @@ return function(options)
 		end
 		-- Link children only after configuration; never mount into the live DataModel here.
 		for index = 2, #nodes do
+   budget()
 			objects[index].Parent = objects[nodes[index][1]]
 		end
 		for _,object in ipairs(objects) do refreshIcon(object) end
@@ -5832,7 +7006,7 @@ return function(options)
         fadeGroup(objects[1].Scripts.Interactions,"AltairFadeGroup")
         fadeGroup(objects[1].Settings.SettingLists,"AltairFadeGroup")
 
-		objects[1]:SetAttribute("AltairUIRevision",23)
+		objects[1]:SetAttribute("AltairUIRevision",25)
 		bindCapsules({Root=objects[1],BuildOnly=true})
 		return objects[1]
 	end)

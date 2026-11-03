@@ -2,7 +2,7 @@
 
 Build.lua contains all interface construction and embedded assets. Altair.lua loads and binds it. No uploaded Roblox UI is required.
 
-General contains colour, opacity and sizing controls. Experimental contains Styles (Altair/Roblox) and optional Avoid Game UI. Styles have visual previews and reset. HUD avoidance uses bounded native hit tests only during dragging; hidden widgets and large full-screen backgrounds are excluded. Newly appearing widgets and very fast movement may precede the bounds cache.
+General contains colour, opacity and sizing controls. Experimental groups Styles (Altair/Roblox), Game UI Avoidance, Capsules, and Spotify. Each section is marked experimental; bugs are to be expected. Styles have visual previews and reset. HUD avoidance uses bounded native hit tests only during dragging; hidden widgets and large full-screen backgrounds are excluded. Newly appearing widgets and very fast movement may precede the bounds cache.
 
 Notifications: Altair.notification(title, description). Notify and QueueNotification are compatibility aliases. UI size defaults to 110%.
 

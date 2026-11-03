@@ -536,7 +536,12 @@ local altairSettings = {
 				id = "friendnotifs",
 			},
 			{
-				name = "Load Hidden",
+				name = "Snap Visual Effects",
+                description = "Pulse the Smartbar and show alignment guides when dragging onto a snap line.",
+                settingType = "Boolean", current = true, id = "snapvisuals",
+            },
+            {
+                name = "Load Hidden",
 				settingType = "Boolean",
 				current = false,
 
@@ -954,14 +959,15 @@ local altairSettings = {
 			},
 		},
 	},
-	{
-		name = "Capsules & Spotify",
-		description = "Top capsules, clocks, and your own Spotify connection.",
-		color = Color3.fromRGB(55,224,92), minimumLicense = "Free",
-		categorySettings = {
-			{name="Capsules Enabled", settingType="Boolean", current=true, id="capsulesenabled"},
+ {name="Experimental",description="Early features: styles, HUD avoidance, capsules and Spotify. Bugs are to be expected.",color=Color3.fromRGB(157,119,231),minimumLicense="Free",categorySettings={
+  {name="Styles",settingType="Styles",current="Altair",id="interfacestyle",description="Experimental interface styles."},
+  {section="Game UI Avoidance",sectionDescription="Keep Altair outside game HUD elements. This experimental feature may miss fast-changing interfaces.",name="Avoid Game UI",settingType="Boolean",current=false,id="avoidgameui",description="Keep the dragged Smartbar and handle outside visible game HUD elements, sliding along their edges."},
+
+			{section="Capsules",sectionDescription="Top controls, timers and stopwatch. Bugs may occur while these features are experimental.",name="Capsules Enabled", settingType="Boolean", current=true, id="capsulesenabled"},
 			{name="Capsule Scale", settingType="Number", current=1.25, values={0.65,2}, id="capsulescale"},
-			{name="Spotify Connection", settingType="Boolean", current=false, id="spotifyenabled", confirmDisable=true, description="Reconnect automatically across Altair reruns. Turning this off asks before pausing updates; the saved account remains linked."},
+            {name="Capsule Position",settingType="Choice",current="Dynamic",values={"Dynamic","Fixed","Drag Bar Only"},id="capsuleposition",description="Dynamic avoids game HUDs. Fixed stays at the top. Drag Bar Only reveals on hover."},
+            {name="Capsule Reveal Duration",settingType="Slider",current=4,values={1,15},step=1,suffix=" s",id="capsulerevealtime",description="Time to reach a revealed capsule. Hovering or using its panel keeps it open."},
+			{section="Spotify",sectionDescription="Your personal playback connection and account controls. Bugs may occur with this experimental integration.",name="Spotify Connection", settingType="Boolean", current=false, id="spotifyenabled", confirmDisable=true, description="Reconnect automatically across Altair reruns. Turning this off asks before pausing updates; the saved account remains linked."},
 			{name="Spotify Client ID", settingType="Input", current="", id="spotifyclientid", description="Public Client ID from your Spotify developer app. Never enter a client secret."},
 			{name="Spotify Bridge Key", settingType="Input", current="", id="spotifybridgekey", description="Paste the local key printed by the companion. Account tokens stay in the companion."},
 			{name="Spotify Bridge Port", settingType="Number", current=43827, values={1024,65535}, id="spotifyport"},
@@ -969,11 +975,6 @@ local altairSettings = {
 			{name="Connect Spotify", settingType="Action", description="Restore the saved connection, or approve Spotify once in your browser.", action=function() if altairValues.capsules then altairValues.capsules:LinkSpotify() end end},
             {name="Spotify Status",settingType="Action",description="Check the saved account link and automatic recovery status.",action=function()if altairValues.capsules then altairValues.capsules:ShowSpotifyStatus()end end},
 			{name="Unlink Spotify", settingType="Action", description="Ask for confirmation before deleting the saved account link.", action=function() if altairValues.capsules then altairValues.capsules:UnlinkSpotify() end end},
-		},
-	},
- {name="Experimental",description="Early features. Try styles and game-HUD avoidance; behavior may change.",color=Color3.fromRGB(157,119,231),minimumLicense="Free",categorySettings={
-  {name="Styles",settingType="Styles",current="Altair",id="interfacestyle",description="Experimental interface styles."},
-  {name="Avoid Game UI",settingType="Boolean",current=false,id="avoidgameui",description="Experimental. Keep the dragged SmartBar and handle outside visible game HUD elements, sliding along their edges."},
  }},
 }
 
@@ -1041,7 +1042,7 @@ function altairValues.loadUIModule(name)
 		local ok, contents = pcall(read, altairValues.altairFolder .. "/UI/" .. name .. ".lua")
 		if ok and type(contents)=="string" and contents:match("%S") then source=contents end
 	end
-	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=23") end
+	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=25") end
 	assert(type(source)=="string" and source:match("%S"), "Empty Altair UI module: "..name)
 	local compile=optional(loadstring)
 	assert(compile,"This executor does not support loadstring")
@@ -1054,7 +1055,7 @@ local function loadInterface()
 	local build=altairValues.loadUIModule("Build")
 	assert(type(build)=="function", "UI/Build.lua must return a UI factory function")
 	local root, bindings = build()
-	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=23) then
+	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=25) then
 		if typeof(root)=="Instance" then root:Destroy() end
 		altairValues.remoteInterface=true
 		root,bindings=altairValues.loadUIModule("Build")()
@@ -1064,7 +1065,7 @@ local function loadInterface()
 	assert(typeof(root) == "Instance" and root:IsA("ScreenGui"), "The UI builder must return a ScreenGui")
 	-- Catch an incompatible builder before mounting it or binding events.
 	local ok, validationError = pcall(function()
-		assert(root:GetAttribute("AltairUIRevision")==23 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: the current UI revision is missing")
+		assert(root:GetAttribute("AltairUIRevision")==25 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: the current UI revision is missing")
 		assert(type(bindings)=="table" and type(bindings.Capsules)=="function" and type(bindings.SoftShadows)=="function" and type(bindings.Dock)=="function" and type(bindings.DragContrast)=="function" and root:FindFirstChild("SharedPanelSurface"), "Update UI/Build.lua: current UI bindings are missing")
 		assert(root:FindFirstChild("TopCapsules") and root:FindFirstChild("NotificationCapsules"), "Update UI/Build.lua: capsule templates are missing")
 		for _, name in ipairs({ "Character", "CustomScriptPrompt", "Disconnected", "GameDetection", "Home",
@@ -1114,6 +1115,9 @@ function altairValues.lifecycle:unload()
 	if self.snapshot then pcall(self.snapshot) end
 	self.alive = false
 	if self.runtimeCleanup then pcall(self.runtimeCleanup) end
+ if altairValues.homeFovBinding then runService:UnbindFromRenderStep(altairValues.homeFovBinding)end
+ if altairValues.rayfieldBridge then pcall(altairValues.rayfieldBridge.Destroy,altairValues.rayfieldBridge)end
+ if altairValues.homeIsolation then pcall(altairValues.homeIsolation.Destroy,altairValues.homeIsolation)end
 	for _, connection in ipairs(connections) do pcall(connection.Disconnect, connection) end
 	table.clear(connections)
 	for key, replacement in pairs(self.globals) do
@@ -1196,12 +1200,20 @@ do
 end
 
 local UI = altairValues.lifecycle:own(uiResult)
-altairValues.theme=altairValues.interfaceBindings.Theme(UI)
 UI.Destroying:Once(function() altairValues.lifecycle:unload() end)
 espContainer = altairValues.lifecycle:own(Instance.new("Folder"))
 espContainer.Parent = guiParent
 UI.Enabled = false -- Never render the interface at its authored position.
 UI.Parent = guiParent
+altairValues.loadingPosition=altairValues.sessionMemory.position
+if not altairValues.loadingPosition and type(readfile)=="function"then
+ local ok,value=pcall(function()return httpService:JSONDecode(readfile(altairValues.altairFolder.."/position.altair"))end)
+ if ok and type(value)=="table"then altairValues.loadingPosition=value end
+end
+altairValues.loading=altairValues.interfaceBindings.Loading(UI,guiParent,nil,altairValues.loadingPosition)
+altairValues.lifecycle:own(altairValues.loading.Screen)
+altairValues.loading:Stage(.2,"Preparing interface")
+altairValues.theme=altairValues.interfaceBindings.Theme(UI)
 
 -- Volt/CoreGui: use the full physical viewport, not Roblox top-bar / safe-area insets.
 -- Do this immediately so every later AbsolutePosition/AbsoluteSize read uses the
@@ -1223,6 +1235,9 @@ local homeChatEnabled
 local characterPanelSize = characterPanel.Size
 local customScriptPrompt = UI.CustomScriptPrompt
 local disconnectedPrompt = UI.Disconnected
+-- The recovery prompt can move into RobloxPromptGui; keep it owned on reload.
+altairValues.lifecycle.objects[disconnectedPrompt]=true
+disconnectedPrompt.Destroying:Once(function()altairValues.lifecycle.objects[disconnectedPrompt]=nil end)
 local gameDetectionPrompt = UI.GameDetection
 local homeContainer = UI.Home
 local moderatorDetectionPrompt = UI.ModeratorDetectionPrompt
@@ -3809,6 +3824,7 @@ local function checkHighPing()
 	return false
 end
 
+altairValues.loading:Stage(.4,"Preparing interactions")
 altairValues.smartBarLayout = (function()
 	local controller = {
 		dragging = false,
@@ -4021,6 +4037,7 @@ altairValues.smartBarLayout = (function()
 	end
 
 	function controller:prepareStartup(hidden)
+  self.loading=true
 		smartBar.Visible = false
 		drag.Visible = false
 		smartBar.Size = self:getBarSize()
@@ -4037,7 +4054,7 @@ altairValues.smartBarLayout = (function()
 		runService.RenderStepped:Wait()
 		self.closedAtDrag = hidden
 		self:cancelDragPositionTween()
-		local target = hidden and self:getClosedDragCenter() or self:getRestDragCenter()
+		local target = centerOf(smartBar)
 		drag.Position = positionAtRenderedCenter(drag, target)
 		self:syncContents(false)
 		self:syncToasts()
@@ -4132,7 +4149,10 @@ altairValues.smartBarLayout = (function()
 	end
 
 	function controller:syncDrag(dt)
+  if self.loading then return end
+  local wasVisible=drag.Visible
 		drag.Visible = not settingValue("Hide Bar")
+  if drag.Visible and not wasVisible then drag.Drag.Visible=true;self:setDragVisual(100,self.dragHovered and .4 or .76,.18)end
 		drag.BackgroundTransparency = 1
 
 		if self.dragging then return end
@@ -4162,14 +4182,36 @@ altairValues.smartBarLayout = (function()
 		local dragSize = drag.AbsoluteSize
 		dragCenter = dragCenter or centerOf(drag)
   if self:isVertical()then
-   local left=self.dock=="left";local line=dragVisual or drag
-   local edge=left and line.AbsolutePosition.X+line.AbsoluteSize.X or line.AbsolutePosition.X
-   local targetLeft=math.clamp(left and edge+gap or edge-gap-toastSize.X,originX+margin,math.max(originX+margin,originX+viewport.X-toastSize.X-margin))
-   local targetTop=math.clamp(centerOf(smartBar).Y-toastSize.Y/2,topEdge,math.max(topEdge,bottomEdge-toastSize.Y))
-   local layout=toastsContainer:FindFirstChildOfClass("UIListLayout");if layout then layout.VerticalAlignment=Enum.VerticalAlignment.Top end
-   for _,toast in ipairs(toastsContainer:GetChildren())do local title=toast:FindFirstChild("Title");if title and title:IsA("TextLabel")then title.TextXAlignment=left and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right end end
-   toastsContainer.Position+=UDim2.fromOffset(targetLeft-toastPos.X,targetTop-toastPos.Y);return
+   self.toastCapsuleTarget=nil
+   local target=Vector2.new(originX+(viewport.X-toastSize.X)/2,bottomEdge-toastSize.Y-20)
+   if not self.toastSidebarTarget or(self.toastSidebarTarget-target).Magnitude>.5 then
+    self.toastSidebarTarget=target
+    tweenService:Create(toastsContainer,TweenInfo.new(.2,Enum.EasingStyle.Sine),{Position=toastsContainer.Position+UDim2.fromOffset(target.X-toastPos.X,target.Y-toastPos.Y)}):Play()
+   end
+   local layout=toastsContainer:FindFirstChildOfClass("UIListLayout");if layout then layout.VerticalAlignment=Enum.VerticalAlignment.Bottom end
+   for _,toast in ipairs(toastsContainer:GetChildren())do local title=toast:FindFirstChild("Title");if title and title:IsA("TextLabel")then title.TextXAlignment=Enum.TextXAlignment.Center end end
+   return
   end
+  self.toastSidebarTarget=nil
+  local capsules=altairValues.capsules
+  local reserved=capsules and capsules.GetDockObstacle and capsules:GetDockObstacle()
+  if reserved then
+   local above=reserved[2]-gap-toastSize.Y
+   local below=reserved[4]+gap
+   local useAbove=dragCenter.Y>screenOriginY()+viewport.Y/2
+   if useAbove and above<topEdge then useAbove=false
+   elseif not useAbove and below+toastSize.Y>bottomEdge and above>=topEdge then useAbove=true end
+   local left=math.clamp((reserved[1]+reserved[3]-toastSize.X)/2,originX+margin,math.max(originX+margin,originX+viewport.X-toastSize.X-margin))
+   local top=math.clamp(useAbove and above or below,topEdge,math.max(topEdge,bottomEdge-toastSize.Y))
+   local target=Vector2.new(left,top)
+   if not self.toastCapsuleTarget or(self.toastCapsuleTarget-target).Magnitude>.5 then
+    self.toastCapsuleTarget=target
+    tweenService:Create(toastsContainer,TweenInfo.new(.18,Enum.EasingStyle.Sine),{Position=toastsContainer.Position+UDim2.fromOffset(left-toastPos.X,top-toastPos.Y)}):Play()
+   end
+   return
+  end
+  self.toastCapsuleTarget=nil
+
 		local above = dragCenter.Y - dragSize.Y * 0.5 - gap - toastSize.Y
 		local below = dragCenter.Y + dragSize.Y * 0.5 + gap
 		local bottomDock
@@ -4296,12 +4338,35 @@ altairValues.smartBarLayout = (function()
 		), barOffset
 	end
 
+ function controller:applySnapping(point,offset)
+  if not self.snapGuides then self.snapGuides=altairValues.interfaceBindings.SnapGuides(UI)end
+  local viewport=screenSize();local origin=UI.AbsolutePosition
+  local factor=UI:GetAttribute("AltairDisplayScale")or 1;local barSize=self:getBarSize()
+  local half=Vector2.new(barSize.X.Offset,barSize.Y.Offset)*factor/2
+  local delta=typeof(offset)=="Vector2"and offset or Vector2.new(0,offset)
+  local function axis(value,length,start,previous,halfSize,barDelta)
+   local best,distance=nil,math.huge
+   for _,ratio in ipairs({.25,.5,.75})do
+    local candidate=start+length*ratio
+    local threshold=previous==candidate and 22 or 12
+    local d=math.abs(value-candidate)
+    if d<threshold and d<distance and candidate+barDelta-halfSize>=start+8 and candidate+barDelta+halfSize<=start+length-8 then best=candidate;distance=d end
+   end
+   return best
+  end
+  local x=not self:isVertical()and axis(point.X,viewport.X,origin.X,self.snapX,half.X,delta.X)or nil
+  local y=axis(point.Y,viewport.Y,origin.Y,self.snapY,half.Y,delta.Y)
+  self.snapX,self.snapY=x,y
+  local target=Vector2.new(x or point.X,y or point.Y)
+  if self.snapGuides:Update(target,x,y,settingValue("Snap Visual Effects",true))and os.clock()-(self.snapBlinkAt or 0)>.3 then self.snapBlinkAt=os.clock();BlinkSmartBar(1)end
+  return target
+ end
 	function controller:moveSmartBar(dragCenter, dt, barOffset)
 		altairValues.smartBarPositionInitialized = true
 		local viewport = screenSize()
 		local half = smartBar.AbsoluteSize * 0.5
 		local middle = viewport.X * 0.5
-		local x = not settingValue("Avoid Game UI",false) and math.abs(dragCenter.X - middle) <= 36 and middle or dragCenter.X
+		local x = dragCenter.X
   if typeof(barOffset)=="Vector2"then
    local target=clampCenter(smartBar,dragCenter+barOffset,8)
    self.mainDragTarget=target;self.lastDragTarget=dragCenter;self.barOffsetY=0
@@ -4431,6 +4496,7 @@ altairValues.smartBarLayout = (function()
 			end
 
 			self.dragging = false
+            self.snapX=nil;self.snapY=nil;if self.snapGuides then self.snapGuides:Clear()end
 			self.touchInput = nil
 			if self.viewportFitPending then self:fitViewport() end
 			tweenService:Create(drag, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
@@ -4461,7 +4527,7 @@ altairValues.smartBarLayout = (function()
 		end))
 
 		track(runService.RenderStepped:Connect(function(dt)
-			if not UI.Parent or self.initializing then
+			if not UI.Parent or self.initializing or self.loading then
 				return
 			end
 
@@ -4476,6 +4542,7 @@ altairValues.smartBarLayout = (function()
 				if self.dragMoved and os.clock()>=(self.dragReadyAt or 0)then
      self:cancelDragPositionTween()
 					local dragCenter, barOffset = self:clampDragTarget(pointer + self.grabOffset, dt)
+     if not settingValue("Avoid Game UI",false)then dragCenter=self:applySnapping(dragCenter,barOffset)elseif self.snapGuides then self.snapGuides:Clear()end
      local rendered=centerOf(drag)
      local nextCenter=rendered:Lerp(dragCenter,1-1e-60^math.min(dt,.1))
      if settingValue("Avoid Game UI",false)then
@@ -5034,6 +5101,7 @@ local function closePanel(panelName, openingOther)
 
 	debounce = true
 	panel:SetAttribute("AltairClosing",true)
+	altairValues.setPanelPointerVisible(panel, button, false, .18)
     altairValues.panelBehindBar(panel,true)
 	local motionVersion=(panel:GetAttribute("AltairMotionVersion") or 0)+1
 	panel:SetAttribute("AltairMotionVersion",motionVersion)
@@ -5408,17 +5476,19 @@ altairValues.serverHop = (function()
 		return a.id<b.id
 	end
 
-	function controller:collect()
+	function controller:collect(generation)
 		local candidates, seen, cursors = {}, { [jobId] = true }, {}
 		if self.previous then seen[self.previous] = true end
 		local cursor
 		local received = false
 		-- Follow the available pages with a bounded retry budget; no background scans.
 		for page = 1, 20 do
+			if generation and (generation~=self.generation or not self.busy) then return {},false end
 			local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Desc&excludeFullGames=true&limit=100"
 			if cursor then url ..= "&cursor=" .. httpService:UrlEncode(cursor) end
 			local response
 			for retry = 1, 3 do
+				if generation and (generation~=self.generation or not self.busy) then return {},false end
 				local ok, data = pcall(function() return httpService:JSONDecode(game:HttpGetAsync(url)) end)
 				if ok and type(data) == "table" and type(data.data) == "table" then
 					response = data
@@ -5454,13 +5524,32 @@ altairValues.serverHop = (function()
 		return candidates, received
 	end
 
+	function controller:cancel(silent)
+		local wasBusy=self.busy
+		self.generation+=1
+		self.busy,self.waiting,self.target=false,false,nil
+		self.lastTeleportAt=os.clock()
+		if wasBusy and not silent then notification("Server hop cancelled","You can try again whenever you're ready.",4370317928)end
+	end
+	function controller:finish(title,message)
+		self:cancel(true)
+		notification(title,message,4370317928)
+	end
+	function controller:isTeleportError(message)
+		local text=string.lower(tostring(message))
+		return text:find("server is full",1,true)~=nil or text:find("game is full",1,true)~=nil
+			or text:find("experience is full",1,true)~=nil
+			or text:find("teleport",1,true)~=nil or text:find("error code: 772",1,true)~=nil
+			or (self.busy or (self.lastTeleportAt and os.clock()-self.lastTeleportAt<45))
+				and (text:find("error code: 773",1,true)~=nil or text:find("error code: 771",1,true)~=nil)
+	end
+
 	function controller:tryNext(generation)
 		if generation ~= self.generation or not self.busy or not checkAltair() then return end
 		self.attempt += 1
 		local server = self.candidates[self.attempt]
-		if not server or self.attempt > 3 then
-			self.busy, self.waiting, self.target = false, false, nil
-			notification("Teleport Failed", "The selected servers could not accept the hop. Try again in a moment.", 4370317928)
+		if not server or self.attempt > 12 then
+			self:finish("Server hop unavailable", "The listed servers couldn't accept the hop. You can retry or keep playing here.")
 			return
 		end
 		self.target, self.waiting = server.id, true
@@ -5469,8 +5558,10 @@ altairValues.serverHop = (function()
 			..(server.ping and ", "..tostring(math.floor(server.ping)).." ms reported ping" or "")..")."
 		notification("Teleporting", message, 4335479121)
 		task.wait(1)
+		if generation~=self.generation or not self.busy or self.attempt~=attempt then return end
+		self.lastTeleportAt=os.clock()
 		local ok = pcall(teleportService.TeleportToPlaceInstance, teleportService, placeId, server.id, localPlayer)
-		if not ok and self.waiting and self.attempt == attempt then
+		if not ok and self.generation==generation and self.waiting and self.attempt == attempt then
 			self.waiting = false
 			task.defer(function() self:tryNext(generation) end)
 			return
@@ -5478,7 +5569,7 @@ altairValues.serverHop = (function()
 		-- Do not start a second teleport merely because departure is taking time.
 		task.delay(30, function()
 			if self.generation == generation and self.attempt == attempt and self.waiting then
-				self.busy, self.waiting, self.target = false, false, nil
+				self:finish("Server hop timed out","Roblox didn't finish the transfer. You can retry; Altair has stopped this attempt.")
 			end
 		end)
 	end
@@ -5494,12 +5585,14 @@ altairValues.serverHop = (function()
 	end))
 
 	function controller:start()
-		if self.busy then return end
+		if self.busy then self:cancel();return end
 		self.busy = true
 		self.generation += 1
+		local generation=self.generation
 		self.attempt = 0
-		notification("Finding a server", "Finding the busiest joinable servers and excluding empty, current, and previous servers.", 4335479121)
-		local ok, candidates, received = pcall(function() return self:collect() end)
+		notification("Finding a server", "Finding populated joinable servers. Select Serverhop again to cancel.", 4335479121)
+		local ok, candidates, received = pcall(function() return self:collect(generation) end)
+		if generation~=self.generation or not self.busy then return end
 		if not ok or not received or #candidates == 0 then
 			self.busy = false
 			notification("No suitable server", (not ok or not received)
@@ -5508,10 +5601,33 @@ altairValues.serverHop = (function()
 			return
 		end
 		self.candidates = candidates
-		self:tryNext(self.generation)
+		self:tryNext(generation)
 	end
 	return controller
 end)()
+
+altairValues.classifyDisconnect=function(reason)
+	local text=string.lower(tostring(reason))
+	if altairValues.serverHop:isTeleportError(text)then return "teleport"end
+	if text:find("banned",1,true)or text:find("permanently",1,true)then return "ban"end
+	if text:find("kicked",1,true)or text:find("error code: 267",1,true)then return "kick"end
+	if text:find("connection",1,true)or text:find("network",1,true)or text:find("error code: 277",1,true)then return "network"end
+	return "unknown"
+end
+
+-- Always provide a dismiss path; never replace Roblox's own error controls.
+do
+ local dismiss=Instance.new("TextButton")
+ dismiss.Name="Dismiss";dismiss.Text="Close";dismiss.Font=Enum.Font.GothamMedium;dismiss.TextSize=12
+ dismiss.TextColor3=Color3.new(1,1,1);dismiss.BackgroundTransparency=1
+ dismiss.Size=UDim2.fromOffset(48,24);dismiss.Position=UDim2.new(1,-54,0,4)
+ dismiss.ZIndex=disconnectedPrompt.Action.ZIndex+1;dismiss.Parent=disconnectedPrompt
+ track(dismiss.Activated:Connect(function()
+  altairValues.serverHop:cancel(true)
+  wipeTransparency(disconnectedPrompt,1,true,true,.16)
+  task.delay(.18,function()if disconnectedPrompt.Parent then disconnectedPrompt.Visible=false end end)
+ end))
+end
 
 local function serverhop()
 	if not altairValues.serverHop.busy then altairValues.activity:record("Server hop requested", "Searching for a server") end
@@ -5680,6 +5796,7 @@ local function promptModerator(player, role)
 	end
 end
 
+altairValues.homeIsolation=altairValues.interfaceBindings.HomeIsolation(UI)
 local homeBlur = altairValues.lifecycle:own(Instance.new("BlurEffect"))
 homeBlur.Size = 0
 UI.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
@@ -7110,46 +7227,32 @@ local homeController = (function()
  end
  local controller={}
 
- function controller.fadeOut(duration)
-  duration=duration or .28
-  if homeContent:GetAttribute("AltairHomeGroup")then tweenService:Create(homeContent,TweenInfo.new(duration),{GroupTransparency=1}):Play();return end
+ local homeFadeGeneration=0
+ local function fadeHome(hidden,duration)
+  homeFadeGeneration+=1;local generation=homeFadeGeneration
   local props=altairValues.transparencyProperties
-  for _,obj in ipairs(homeContent:GetDescendants()) do
-   local list=props[obj.ClassName]
-   if list then
-    local goal={}
-    for _,property in ipairs(list) do
-     local attr='AltairHomeFade_'..property
-     if obj:GetAttribute(attr)==nil then obj:SetAttribute(attr,obj[property]) end
-     goal[property]=1
-    end
-    tweenService:Create(obj,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goal):Play()
-   end
-  end
- end
-
- function controller.fadeIn(duration)
-  duration=duration or .38
-  if homeContent:GetAttribute("AltairHomeGroup")then tweenService:Create(homeContent,TweenInfo.new(duration),{GroupTransparency=0}):Play();return end
-  local props=altairValues.transparencyProperties
-  for _,obj in ipairs(homeContent:GetDescendants()) do
-   local list=props[obj.ClassName]
-   if list then
-    local goal={}
-    local hasGoal=false
-    for _,property in ipairs(list) do
-     local saved=obj:GetAttribute('AltairHomeFade_'..property)
-     if saved~=nil then
-      goal[property]=saved
-      hasGoal=true
+  local function apply()
+   local deadline=os.clock()+.001
+   for _,obj in ipairs(homeContent:GetDescendants())do
+    if not alive or generation~=homeFadeGeneration then return end
+    local list=props[obj.ClassName]
+    if list then
+     local goals={}
+     for _,property in ipairs(list)do
+      local attr="AltairHomeFade_"..property
+      if obj:GetAttribute(attr)==nil then obj:SetAttribute(attr,obj[property])end
+      goals[property]=hidden and 1 or obj:GetAttribute(attr)
      end
+     if duration==0 then for property,value in pairs(goals)do obj[property]=value end
+     else tweenService:Create(obj,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goals):Play()end
     end
-    if hasGoal then
-     tweenService:Create(obj,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goal):Play()
-    end
+    if duration>0 and os.clock()>deadline then runService.Heartbeat:Wait();deadline=os.clock()+.001 end
    end
   end
+  if duration==0 then apply()else task.spawn(apply)end
  end
+ function controller.fadeOut(duration)fadeHome(true,duration or .28)end
+ function controller.fadeIn(duration)fadeHome(false,duration or .38)end
 
  function controller.setOpened(value) opened=value end
  function controller.destroy()
@@ -7253,14 +7356,36 @@ local homeController = (function()
  controller.refreshCurrentGame=refreshCurrentGame
  return controller
 end)()
+-- Prepare Home assets and the native blur pass during initialization, not on first interaction.
+task.spawn(function()
+ pcall(function()game:GetService("ContentProvider"):PreloadAsync({homeContent})end)
+ if not checkAltair()or homeOpen or env.__AltairHomeBlurWarmed then return end
+ env.__AltairHomeBlurWarmed=true
+ homeBlur.Enabled=true;homeBlur.Size=1;homeBlur.Parent=lighting
+ runService.RenderStepped:Wait();runService.RenderStepped:Wait()
+ if checkAltair()and not homeOpen then homeBlur.Size=0;homeBlur.Parent=nil end
+end)
 local function UpdateHome() homeController.tick() end
+altairValues.homeFovTarget=Instance.new("NumberValue")
+altairValues.homeFovTarget.Value=camera.FieldOfView
+altairValues.lifecycle:own(altairValues.homeFovTarget)
+altairValues.homeFovBinding="AltairHomeFov-"..httpService:GenerateGUID(false)
+runService:BindToRenderStep(altairValues.homeFovBinding,Enum.RenderPriority.Last.Value+1,function()
+ if not homeOpen then return end
+ camera=workspace.CurrentCamera or camera
+ local target=altairValues.homeFovTarget.Value
+ if math.abs(camera.FieldOfView-target)>.01 then camera.FieldOfView=target end
+end)
+track(altairValues.homeFovTarget.Changed:Connect(function(value)if homeOpen then camera.FieldOfView=value end end))
 
 openHome = function()
  if homeOpen or not UI.Parent then return end
  homeContainer:SetAttribute("AltairClosing",false)
- homeOpen=true homeFov=homeFov or camera.FieldOfView
- -- Avoid a full-screen world post-processing pass while the dashboard is open.
- homeBlur.Enabled=false;homeBlur.Parent=nil
+ homeFov=homeFov or camera.FieldOfView
+ altairValues.homeFovTarget.Value=camera.FieldOfView
+ homeOpen=true
+ homeBlur.Enabled=true;homeBlur.Parent=lighting
+ altairValues.homeIsolation:SetOpened(true)
  for _,panel in ipairs(UI:GetChildren()) do
   if panel:IsA("GuiObject") and panel.Visible and smartBar.Back.Buttons:FindFirstChild(panel.Name) and isPanel(panel.Name) then
    task.spawn(closePanel,panel.Name,true)
@@ -7268,9 +7393,6 @@ openHome = function()
  end
  if settingsPanel.Visible then task.spawn(closeSettings) end
  if scriptSearch.Visible then task.spawn(closeScriptSearch) end
- pcall(function() homeChatEnabled=starterGui:GetCoreGuiEnabled(Enum.CoreGuiType.Chat) end)
- pcall(function() starterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat,false) end)
- pcall(function() starterGui:SetCore("ChatActive",false) end)
  homeController.setOpened(true)
  if not homeContainer.Visible then homeContent.Position=UDim2.new(.5,-45,.5,0) end
  homeContainer.Visible=true
@@ -7280,7 +7402,9 @@ openHome = function()
  -- Home has no enclosing box; the full-screen scrim provides contrast.
 
  homeBlur.Size=0
- tweenService:Create(camera,TweenInfo.new(.8,Enum.EasingStyle.Quint),{FieldOfView=math.max(20,homeFov-35)}):Play()
+ tweenService:Create(homeBlur,TweenInfo.new(.8,Enum.EasingStyle.Quint),{Size=20}):Play()
+ altairValues.homeTargetFov=math.max(20,homeFov-35)
+ tweenService:Create(altairValues.homeFovTarget,TweenInfo.new(.8,Enum.EasingStyle.Quint),{Value=math.max(20,homeFov-35)}):Play()
  homeController.tick()
 end
 
@@ -7288,8 +7412,8 @@ closeHome = function(immediate)
  if not homeOpen and not immediate then return end
  homeContainer:SetAttribute("AltairClosing",true)
  homeOpen=false homeController.setOpened(false)
+ altairValues.homeIsolation:SetOpened(false)
  tweenService:Create(homeContent,TweenInfo.new(immediate and 0 or .18),{BackgroundTransparency=1}):Play()
- if homeChatEnabled~=nil then pcall(function() starterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat,homeChatEnabled) end) homeChatEnabled=nil end
  homeController.fadeOut(immediate and 0 or .28)
  local slide=tweenService:Create(homeContent,TweenInfo.new(immediate and 0 or .8,Enum.EasingStyle.Quint,Enum.EasingDirection.InOut),{Position=UDim2.new(.5,-45,.5,0)})
  tweenService:Create(homeContainer.Dim,TweenInfo.new(immediate and 0 or .3),{BackgroundTransparency=1}):Play()
@@ -7353,6 +7477,24 @@ function altairValues.scriptSearchState:prepareInput()
 	self.mouseUnlock.Modal = true
 end
 
+-- Keep the shared surface material; legacy search transitions must not whiten it.
+altairValues.scriptSearchColours=function(active)
+ local color=scriptSearch:GetAttribute("AltairTheme_BackgroundColor3")or scriptSearch:GetAttribute("AltairThemeDefault_BackgroundColor3")or Color3.fromRGB(10,11,14)
+ local sequence=scriptSearch.UIGradient:GetAttribute("AltairTheme_Color")or scriptSearch.UIGradient:GetAttribute("AltairThemeDefault_Color")or scriptSearch.UIGradient.Color
+ local points=sequence.Keypoints;local tint=points[1].Value:Lerp(points[#points].Value,.5)
+ local brightness=.2126*color.R*tint.R+.7152*color.G*tint.G+.0722*color.B*tint.B
+ local light=brightness>.58
+ local foreground=light and Color3.fromRGB(22,24,29)or Color3.fromRGB(245,247,252)
+ local muted=light and Color3.fromRGB(75,79,89)or Color3.fromRGB(166,173,187)
+ tweenService:Create(scriptSearch.SearchBox,TweenInfo.new(.2),{TextColor3=active and foreground or muted,PlaceholderColor3=muted}):Play()
+ tweenService:Create(scriptSearch.Icon,TweenInfo.new(.2),{ImageColor3=active and foreground or muted}):Play()
+ return color,sequence
+end
+local function applyScriptSearchMaterial()
+ local color,sequence=altairValues.scriptSearchColours(false)
+ scriptSearch.BackgroundColor3=color;scriptSearch.UIGradient.Color=sequence;scriptSearch.UIGradient.Enabled=true
+end
+
 local function openScriptSearch()
 	local state = altairValues.scriptSearchState
 	if state.phase == "open" or state.phase == "opening" then return end
@@ -7360,7 +7502,7 @@ local function openScriptSearch()
 	local version = state.version
 	state.phase = "opening"
 	state:prepareInput()
-	scriptSearch.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	applyScriptSearchMaterial()
 	scriptSearch.UIGradient.Enabled = true
 	if homeOpen then closeHome() end
 	debounce = true
@@ -7415,8 +7557,7 @@ closeScriptSearch = function()
 	task.wait(0.1)
 	if state.version ~= version then return end
 
-	scriptSearch.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-	scriptSearch.UIGradient.Enabled = false
+	tweenService:Create(scriptSearch,TweenInfo.new(.2),{BackgroundTransparency=1}):Play()
 	tweenService:Create(scriptSearch, TweenInfo.new(0.4, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 520, 0, 0) }):Play()
 	scriptSearch.SearchBox:ReleaseFocus()
 
@@ -7431,7 +7572,7 @@ closeScriptSearch = function()
 
 	task.wait(0.1)
 	if state.version ~= version then return end
-	scriptSearch.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	applyScriptSearchMaterial()
 	state.phase = "closed"
 	scriptSearch.Visible = false
 	scriptSearch.UIGradient.Enabled = true
@@ -7513,6 +7654,7 @@ local function createScript(result, current)
 	if not current() or type(result) ~= "table" or type(result.title) ~= "string" then return end
 	local newScript = UI.ScriptSearch.List.Template:Clone()
 	newScript.Name = result.title
+ newScript.Tags:SetAttribute("AltairThemeIgnore",true) -- Review/verification colours retain their meaning.
 	newScript.Parent = UI.ScriptSearch.List
 	newScript.Visible = true
 
@@ -7916,6 +8058,7 @@ end
 local function openSmartBar()
 	local transition = smartBarTransition:begin()
 	smartBarOpen = true
+	smartBar:SetAttribute("AltairClosing",false)
 	altairValues.smartBarExitDirection=nil;altairValues.smartBarExitVector=nil
 	local layout=altairValues.smartBarLayout
 	if layout.exitPosition then
@@ -8030,6 +8173,16 @@ local function closeSmartBar()
  altairValues.smartBarExitVector=dock=="left"and Vector2.new(-1,0)or dock=="right"and Vector2.new(1,0)or Vector2.new(0,altairValues.smartBarExitDirection)
 
 	smartBarOpen = false
+	smartBar:SetAttribute("AltairClosing",true)
+	for _,button in ipairs(smartBar.Back.Buttons:GetChildren()) do
+		local icon=button:FindFirstChild("Icon")
+		if icon then
+			local rest=icon:GetAttribute("AltairHoverRestPosition")
+			if rest then tweenService:Create(icon,TweenInfo.new(.18),{Position=rest}):Play() end
+			local feedback=icon:FindFirstChild("PressFeedback")
+			if feedback then tweenService:Create(feedback,TweenInfo.new(.18),{Scale=1}):Play() end
+		end
+	end
 	updateBackpackLayout()
 
 	if settingsPanel.Visible then task.spawn(closeSettings,true) end
@@ -10062,6 +10215,7 @@ local function restoreSettings()
 end
 
 local function assembleSettings()
+ local buildAt=os.clock()
 	restoreSettings()
 
 	saveSettings() -- write back quietly, picking up settings added since the file was created
@@ -10119,9 +10273,9 @@ local function assembleSettings()
 		local newCategory = settingsPanel.SettingTypes.Template:Clone()
 		newCategory.Name = category.name
 		newCategory.Title.Text = category.name
-        local categoryIcons={Experimental="flask-conical",General="sliders-horizontal",Keybinds="keyboard",Performance="gauge",Detections="shield-check",Logging="scroll-text",Developer="terminal",["Capsules & Spotify"]="music-2"}
+        local categoryIcons={Experimental="flask-conical",General="sliders-horizontal",Keybinds="keyboard",Performance="gauge",Detections="shield-check",Logging="scroll-text",Developer="terminal"}
         altairValues.interfaceBindings.ApplyIcon(newCategory.CategoryIcon,categoryIcons[category.name] or "settings-2")
-		local cardDescriptions={Experimental="Styles and experimental features",General="Appearance and everyday preferences",Keybinds="Shortcuts for actions and controls",Performance="Performance and rendering options",Detections="Protection and detection options",Logging="Activity and notification logs",Developer="Diagnostics and development tools",["Capsules & Spotify"]="Music, timers, and top capsules"}
+		local cardDescriptions={Experimental="Styles and experimental features",General="Appearance and everyday preferences",Keybinds="Shortcuts for actions and controls",Performance="Performance and rendering options",Detections="Protection and detection options",Logging="Activity and notification logs",Developer="Diagnostics and development tools"}
 		newCategory.Description.Text = cardDescriptions[category.name] or category.description
         newCategory.Description.Visible=false
 		newCategory.LayoutOrder = #settingsPanel.SettingTypes:GetChildren()
@@ -10234,9 +10388,12 @@ local function assembleSettings()
 			tweenService:Create(newCategory.Shadow.UIGradient, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.4) }):Play()
 		end)
 
+		local rowOrder=0
 		for _, setting in ipairs(category.categorySettings) do
+            if os.clock()-buildAt>.002 then runService.Heartbeat:Wait();buildAt=os.clock()end
 			if not setting.hidden then
-				local settingType = setting.settingType
+				if setting.section then rowOrder+=1;local section=altairValues.interfaceBindings.ExperimentalSection(newList,setting.section,setting.sectionDescription);section.LayoutOrder=rowOrder end
+                local settingType = setting.settingType
 				local minimumLicense = setting.minimumLicense
 				local object
 
@@ -10247,6 +10404,8 @@ local function assembleSettings()
 					object.Interact.Activated:Connect(function()
 						if type(setting.action)=="function" then setting.action() end
 					end)
+                elseif settingType=="Choice"then
+                    object=altairValues.interfaceBindings.Choice(settingsPanel.SettingLists.Template.ButtonTemplate,newList,setting,function()saveSettings(true)end)
                 elseif settingType == "Styles"then
                     object,altairValues.styleGallery=altairValues.interfaceBindings.StyleGallery(newList,setting,function(value)
                      setting.current=value
@@ -10417,7 +10576,8 @@ local function assembleSettings()
 
 				end
 
-				if object and settingType~="ColorPicker"and settingType~="Styles"then
+				if object then rowOrder+=1;object.LayoutOrder=rowOrder end
+                if object and settingType~="ColorPicker"and settingType~="Styles"and settingType~="Choice"then
                     object.Size=UDim2.new(1,-16,0,object.Size.Y.Offset)
 					if setting.description then
 						object.Description.Visible = true
@@ -10733,8 +10893,14 @@ do
   local scale=Instance.new("UIScale");scale.Name="AltairFeedback";scale.Parent=button
   local hovered,pressed=false,false
   local function update()
-   local factor=UI:GetAttribute("AltairReduceMotion") and 1 or pressed and .97 or hovered and 1.015 or 1
+   local inactive=button:IsDescendantOf(smartBar)and not smartBarOpen
+   local factor=(inactive or UI:GetAttribute("AltairReduceMotion")) and 1 or pressed and .97 or hovered and 1.015 or 1
    tweenService:Create(scale,TweenInfo.new(pressed and .09 or .18),{Scale=factor}):Play()
+  end
+  if button:IsDescendantOf(smartBar)then
+   track(smartBar:GetAttributeChangedSignal("AltairClosing"):Connect(function()
+    if smartBar:GetAttribute("AltairClosing")then hovered=false;pressed=false;update()end
+   end))
   end
   track(button.MouseEnter:Connect(function() hovered=true;update() end))
   track(button.MouseLeave:Connect(function() hovered=false;pressed=false;update() end))
@@ -10771,6 +10937,7 @@ end
 function altairValues.applyAppearance()
  local ok,color=pcall(Color3.fromHex,settingValue("Theme Color","5B8DEF"))
  if altairValues.theme then altairValues.theme:Apply({style=settingValue("Styles","Altair"),color=ok and color or Color3.fromRGB(91,141,239),custom=settingValue("Custom Theme",false),strength=settingValue("Theme Tint",25)/100,lightness=settingValue("Theme Lightness",0)/100})end
+ if altairValues.scriptSearchColours then altairValues.scriptSearchColours(scriptSearch.SearchBox:IsFocused())end
  local alpha=1-math.clamp(tonumber(settingValue("Panel Opacity",90)) or 90,65,100)/100
  UI:SetAttribute("AltairPanelTransparency",alpha)
  UI:SetAttribute("AltairNotificationDuration",settingValue("Notification Duration",5))
@@ -10843,8 +11010,14 @@ altairValues.capsules = altairValues.interfaceBindings.Capsules({Root=UI, Requir
 	Session=altairValues.spotifySession,
 	GetSetting=settingValue, Request=originalRequest, Notify=notification, Alive=checkAltair, EnableSpotify=altairValues.enableSpotifyConnection,
 	GetRainbowColor=function() return altairValues.rainbowColor end,
-	Notifications=altairValues.notificationController})
+	Notifications=altairValues.notificationController,
+ GetDragState=function()
+  return {center=drag.AbsolutePosition-UI.AbsolutePosition+drag.AbsoluteSize/2,size=drag.AbsoluteSize,
+   dock=altairValues.smartBarLayout:getDock(),dragging=altairValues.smartBarLayout.dragging==true}
+ end})
 altairAPI.Capsules = altairValues.capsules
+altairValues.rayfieldBridge=altairValues.interfaceBindings.RayfieldBridge({Root=UI,Capsules=altairValues.capsules,Notify=notification})
+altairAPI.ConnectRayfield=function(library)return altairValues.rayfieldBridge:WrapLibrary(library)end
 altairAPI.BlinkSmartBar = BlinkSmartBar
 altairAPI.SupportsColoredSmartBarBlink = true
 altairAPI.SupportsQueuedSmartBarBlink = true
@@ -10868,6 +11041,8 @@ end
 
 altairAPI.OpenSmartBar = openSmartBar
 altairAPI.CloseSmartBar = closeSmartBar
+altairAPI.OpenHome = openHome
+altairAPI.CloseHome = closeHome
 altairAPI.OpenPanel = openPanel
 altairAPI.ClosePanel = closePanel
 altairAPI.OpenScriptSearch = openScriptSearch
@@ -10875,6 +11050,7 @@ altairAPI.SearchScripts = searchScriptBlox
 
 altairAPI.Rejoin = rejoin
 altairAPI.ServerHop = serverhop
+altairAPI.CancelServerHop = function()altairValues.serverHop:cancel()end
 altairAPI.LeaveExperience = leaveExperience
 altairAPI.TeleportToPlayer = teleportTo
 altairAPI.ToggleSpectate = toggleSpectate
@@ -11051,6 +11227,7 @@ local function start()
 		end
 	end
 
+	altairValues.loading:Stage(.65,"Building settings")
 	assembleSettings()
 
 	local function syncDeveloperBoolean(name, value)
@@ -11202,13 +11379,19 @@ local function start()
 		end
 	end
 
-	local debugEnabled = developerAvailable and settingValue("Debug Mode", false) == true
+	local hideBarSetting=checkSetting("Hide Bar")
+    if hideBarSetting then hideBarSetting.onChanged=function(hidden)
+     if not hidden then drag.Visible=true;drag.Drag.Visible=true;altairValues.smartBarLayout:setDragVisual(100,.76,.18)end
+     altairValues.smartBarLayout:syncDrag()
+    end end
+    local debugEnabled = developerAvailable and settingValue("Debug Mode", false) == true
 	altairAPI.SetSmartBarPersistentColor(debugEnabled and Color3.fromRGB(126, 104, 220) or nil)
 	developerTools:Sync(debugEnabled)
 
 	ensureFrameProperties()
 	sortActions()
 
+	altairValues.loading:Stage(.85,"Restoring preferences")
 	initialiseAntiKick()
 	checkLastVersion()
 
@@ -11217,7 +11400,10 @@ local function start()
 
 	local startupHidden = settingValue("Load Hidden")
 	if altairValues.continuation.open ~= nil then startupHidden = not altairValues.continuation.open end
+	altairValues.theme:WhenReady()
 	altairValues.smartBarLayout:prepareStartup(startupHidden)
+    altairValues.loading:Finish(drag,settingValue("Hide Bar",false))
+    altairValues.smartBarLayout:setDragVisual(100,.76,.32)
 
 	if not startupHidden then
 		if not altairValues.continuation.quiet and settingValue("Startup Sound Effect") then
@@ -11234,6 +11420,7 @@ local function start()
 	else
 		closeSmartBar()
 	end
+	altairValues.smartBarLayout.loading=false
 	altairValues.continuation.mark(true)
 
 	-- Resume Rivals if this executor lacks a teleport queue; the module deduplicates both paths.
@@ -11492,6 +11679,7 @@ for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
  end
 	if button:IsA("GuiObject") and button.Name ~= "Placeholder" and UI:FindFirstChild(button.Name) and button:FindFirstChild("Interact") then
 		button.Interact.MouseButton1Click:Connect(function()
+			if not smartBarOpen then return end
 			if isPanel(button.Name) then
 				if UI:FindFirstChild(button.Name).Visible and not UI:FindFirstChild(button.Name):GetAttribute("AltairClosing")and not UI:FindFirstChild(button.Name):GetAttribute("AltairDeckSource")then
 					task.spawn(closePanel, button.Name)
@@ -11505,13 +11693,16 @@ for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 			tweenService:Create(button, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.6 }):Play()
 			tweenService:Create(button.Icon, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { ImageTransparency = 0.6 }):Play()
 			task.wait(0.15)
+			if not smartBarOpen then return end
 			tweenService:Create(pressScale,TweenInfo.new(.18),{Scale=1}):Play()
 			tweenService:Create(button, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
 			tweenService:Create(button.Icon, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { ImageTransparency = 0.02 }):Play()
 		end)
 
 		local iconRestPosition=button.Icon.Position
+		button.Icon:SetAttribute("AltairHoverRestPosition",iconRestPosition)
 		button.MouseEnter:Connect(function()
+   if not smartBarOpen then return end
    tweenService:Create(button.Icon,TweenInfo.new(.18),{Position=iconRestPosition+UDim2.fromOffset(0,UI:GetAttribute("AltairReduceMotion")and 0 or -1)}):Play()
 			tweenService:Create(button.UIGradient, TweenInfo.new(.2, Enum.EasingStyle.Quint), { Rotation = 75 }):Play()
 			tweenService:Create(button.UIStroke.UIGradient, TweenInfo.new(.2, Enum.EasingStyle.Quint), { Rotation = 75 }):Play()
@@ -11521,6 +11712,7 @@ for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 		end)
 
 		button.MouseLeave:Connect(function()
+   if not smartBarOpen then return end
    tweenService:Create(button.Icon,TweenInfo.new(.2),{Position=iconRestPosition}):Play()
 			tweenService:Create(button.UIStroke.UIGradient, TweenInfo.new(.22, Enum.EasingStyle.Quint), { Rotation = 50 }):Play()
 			tweenService:Create(button.UIGradient, TweenInfo.new(.22, Enum.EasingStyle.Quint), { Rotation = 50 }):Play()
@@ -11651,19 +11843,16 @@ end))
 
 scriptSearch.SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
 	if #scriptSearch.SearchBox.Text > 0 then
-		tweenService:Create(scriptSearch.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageColor3 = Color3.fromRGB(255, 255, 255) }):Play()
-		tweenService:Create(scriptSearch.SearchBox, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextColor3 = Color3.fromRGB(255, 255, 255) }):Play()
+		altairValues.scriptSearchColours(true)
 	else
-		tweenService:Create(scriptSearch.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageColor3 = Color3.fromRGB(150, 150, 150) }):Play()
-		tweenService:Create(scriptSearch.SearchBox, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextColor3 = Color3.fromRGB(150, 150, 150) }):Play()
+		altairValues.scriptSearchColours(false)
 	end
 end)
 
 scriptSearch.SearchBox.FocusLost:Connect(function(enterPressed)
 	-- ReleaseFocus during close must not start another close coroutine.
 	if altairValues.scriptSearchState.phase ~= "open" or not scriptSearch.Visible then return end
-	tweenService:Create(scriptSearch.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageColor3 = Color3.fromRGB(150, 150, 150) }):Play()
-	tweenService:Create(scriptSearch.SearchBox, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextColor3 = Color3.fromRGB(150, 150, 150) }):Play()
+	altairValues.scriptSearchColours(false)
 
 	if #scriptSearch.SearchBox.Text > 0 then
 		if enterPressed then
@@ -11676,8 +11865,7 @@ end)
 
 scriptSearch.SearchBox.Focused:Connect(function()
 	if #scriptSearch.SearchBox.Text > 0 then
-		tweenService:Create(scriptSearch.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageColor3 = Color3.fromRGB(255, 255, 255) }):Play()
-		tweenService:Create(scriptSearch.SearchBox, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextColor3 = Color3.fromRGB(255, 255, 255) }):Play()
+		altairValues.scriptSearchColours(true)
 	end
 end)
 
@@ -12369,31 +12557,17 @@ local function runtime()
 			local promptOverlay = promptGui and promptGui:FindFirstChild("promptOverlay")
 			local disconnectedRobloxUI = promptOverlay and promptOverlay:FindFirstChild("ErrorPrompt")
 
-			if disconnectedRobloxUI and not promptedDisconnected then
-				local messageArea = disconnectedRobloxUI:FindFirstChild("MessageArea")
-				local errorFrame = messageArea and messageArea:FindFirstChild("ErrorFrame")
-				local errorMessage = errorFrame and errorFrame:FindFirstChild("ErrorMessage")
-				local reasonPrompt = errorMessage and errorMessage.Text or ""
-
-				promptedDisconnected = true
-				disconnectedPrompt.Parent = promptGui
-
-				local disconnectType
-				local foundString
-
-				for _, preDisconnectType in ipairs(altairValues.disconnectTypes) do
-					for _, typeString in pairs(preDisconnectType[2]) do
-						if string.find(reasonPrompt, typeString) then
-							disconnectType = preDisconnectType[1]
-							foundString = true
-							break
-						end
-					end
-				end
-
-				if not foundString then
-					disconnectType = "kick"
-				end
+			local messageArea=disconnectedRobloxUI and disconnectedRobloxUI:FindFirstChild("MessageArea")
+			local errorFrame=messageArea and messageArea:FindFirstChild("ErrorFrame")
+			local errorMessage=errorFrame and errorFrame:FindFirstChild("ErrorMessage")
+			local reasonPrompt=errorMessage and errorMessage.Text or ""
+			local errorVisible=disconnectedRobloxUI and disconnectedRobloxUI.Visible
+			if not errorVisible then promptedDisconnected=false end
+			local disconnectType=altairValues.classifyDisconnect(reasonPrompt)
+			if errorVisible and reasonPrompt~="" and not promptedDisconnected and disconnectType~="teleport" then
+				promptedDisconnected=true
+				disconnectedPrompt.Parent=promptGui
+				if altairValues.disconnectAction then altairValues.disconnectAction:Disconnect()end
 
 				wipeTransparency(disconnectedPrompt, 1, true)
 				disconnectedPrompt.Visible = true
@@ -12427,21 +12601,26 @@ local function runtime()
 					})
 				end
 
+				if disconnectType=="unknown"then
+					disconnectedPrompt.Content.Text="Roblox reported a connection error. You can retry or dismiss this message."
+					disconnectedPrompt.Action.Text="Rejoin"
+				end
 				tweenService:Create(disconnectedPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
 				tweenService:Create(disconnectedPrompt.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 				tweenService:Create(disconnectedPrompt.Content, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.3 }):Play()
 				tweenService:Create(disconnectedPrompt.Action, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.7 }):Play()
 				tweenService:Create(disconnectedPrompt.Action, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
+				tweenService:Create(disconnectedPrompt.Dismiss,TweenInfo.new(.2),{TextTransparency=0}):Play()
 
-				disconnectedPrompt.Action.MouseButton1Click:Connect(function()
+				altairValues.disconnectAction=track(disconnectedPrompt.Action.MouseButton1Click:Connect(function()
 					if disconnectType == "ban" then
 						leaveExperience()
 					elseif disconnectType == "kick" then
 						task.spawn(serverhop)
-					elseif disconnectType == "network" then
+					else
 						rejoin()
 					end
-				end)
+				end))
 			end
 
 			if Pro then
