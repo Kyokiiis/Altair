@@ -519,6 +519,20 @@ local state = {alive=true,callbacks={},lastScan=-100,queue={},index=1,playing=fa
     reconVisits={},intelVisits={},treatedReports={},deployments={},pickupPending={},candyPicked=0,lastThreatNotice=-100,defenseAt=-100,labels={},toolCounts={}}
 env.LastStand = state
 local window, logView
+local function ownsSession()
+    return state.alive and env.LastStand == state
+end
+local function discardRetiredStartup()
+    if ownsSession() then return false end
+    -- Destroy may have run before a yielding UI constructor returned its
+    -- window. Dispose that late result without touching the replacement owner.
+    state.alive = false
+    for _, connection in ipairs(state.connections) do pcall(connection.Disconnect, connection) end
+    table.clear(state.connections)
+    if state.threatGui then pcall(state.threatGui.Destroy, state.threatGui) end
+    if window and not window.unloaded then pcall(window.Unload, window) end
+    return true
+end
 local function log(message)
     local line = os.date("%H:%M:%S").."  "..tostring(message)
     table.insert(state.history,line); if #state.history > 100 then table.remove(state.history,1) end
@@ -672,6 +686,7 @@ function state:Destroy()
 end
 local function guarded(fn)
     return function(...)
+        if not ownsSession() then return end
         local ok,result=pcall(fn,...)
         if not ok then log(result);notify("Last Stand",result) end
     end
@@ -1065,11 +1080,23 @@ local function threatLabels(ctx,reuseSnapshot)
         end
     end
 end
-local loaded, Rayfield = pcall(function() return assert(loadstring(game:HttpGet("https://sirius.menu/gen2")))() end)
+-- Rayfield's supported SIA opt-out; preserve an existing shared value.
+-- Keep the default across yielding loaders; do not disable asset requests.
+if env.RAYFIELD_ANALYTICS == nil then env.RAYFIELD_ANALYTICS = false end
+local loaded, Rayfield = pcall(function()
+    local source = game:HttpGet("https://sirius.menu/gen2")
+    if not ownsSession() then return end
+    local chunk = assert(loadstring(source))
+    if not ownsSession() then return end
+    return chunk()
+end)
+if discardRetiredStartup() then return end
 if not loaded then state:Destroy();error("Last Stand | Rayfield failed to load: "..tostring(Rayfield)) end
 local built, buildError = pcall(function()
+    if discardRetiredStartup() then return end
     window=Rayfield:CreateWindow({name="Last Stand",subtitle="Altair · rescue and containment",icon="shield",sidebarLayout=true,
         configuration={autoSave=false,autoLoad=false,fileName="LastStand"}})
+    if discardRetiredStartup() then return end
     state.window=window
     local overview=window:CreateTab({name="Match",icon="activity"})
     local status=overview:CreateText({name="Match status",text="Reading the active level…"})
@@ -1435,7 +1462,9 @@ local built, buildError = pcall(function()
         if not placed and state.autoDefenses then updateDefenses(ctx) end
         return true
     end
+    if discardRetiredStartup() then return end
     table.insert(state.connections,Input.InputBegan:Connect(function(input,processed)
+        if not ownsSession() then return end
         if input.KeyCode==Enum.KeyCode.F10 then state:Stop();notify("Last Stand","All automation stopped.");return end
         if processed or Input:GetFocusedTextBox() then return end
         if input.KeyCode==Enum.KeyCode.F8 then guarded(function() state:MarkAtCursor() end)()
@@ -1445,7 +1474,7 @@ local built, buildError = pcall(function()
     -- planning stay on the slower scheduler; there is no per-agent render loop.
     table.insert(state.connections,RunService.RenderStepped:Connect(function()
         local ctx=state.lastContext
-        if not state.alive or not state.showThreats or not state.threatGui or not ctx or ctx.sim~=state.bound then return end
+        if not ownsSession() or not state.showThreats or not state.threatGui or not ctx or ctx.sim~=state.bound then return end
         local world=ctx.hud.world
         if not world or not world.Parent then
             for _,label in ipairs(state.labels) do label.Visible=false end
@@ -1454,7 +1483,7 @@ local built, buildError = pcall(function()
         end
     end))
     state.runner=task.spawn(function()
-        while state.alive and not window.unloaded do
+        while ownsSession() and not window.unloaded do
             local updateStart=os.clock()
             local ok,keep=pcall(update)
             state.updateMs=(os.clock()-updateStart)*1000
@@ -1466,9 +1495,10 @@ local built, buildError = pcall(function()
             if not keep then break end
             task.wait(state.fullFarm and .35 or .75)
         end
-        if state.alive then state:Destroy() end
+        if not discardRetiredStartup() then state:Destroy() end
     end)
 end)
+if discardRetiredStartup() then return end
 if not built then state:Destroy();error("Last Stand | UI failed: "..tostring(buildError)) end
 notify("Last Stand ready","Automation starts off. Finish the tutorial, then configure your loadout and reserve.")
 return state

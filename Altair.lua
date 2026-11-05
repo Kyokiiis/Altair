@@ -9,42 +9,14 @@ Altair is a Smart Script based and built around Sirius
 
 --]]
 
---[[
-
-Altair Pre-Hyperion Todo List
-
-High Priority
- - Invisible, Godmode
- - All Scripts buttons and Universal scripts
- - Chat Spam Detection
- - Custom Script Prompts
- - Player Kill, Spectate and ESP via Playerlist
- - http.request support for Altair Intelligent HTTP Interception
- - Performance Improvements to Roblox itself
-
-Moderate Priority
- - Spectate Animation, like GTA serverhop, tween to high in the sky, then tween to other player's head
- - Chat Spy Tracking: Follows who they're whispering to based on original message
- - Starlight 
- - Chatlogs
- - GTA Serverhop
- - Anti-Spam (chat) formula, based on text length, caps, emojis etc.
- - Reduce any form of detection of Altair
- - Automated lowering of graphics on lower FPS, ensure no false positives
-
-Potential Future Setting Options
- - Block entire domain or just the specific page in the Altair Intelligent Flow Interception. Do this on case by case, e.g blocked = {"link.com", true} - true being whether its the domain or not
- - Serverhop type (default/gta)
- - Hook Specific Functions to reduce the need for external scripts
-
---]]
-
-if not game:IsLoaded() then
-	local deadline = os.clock() + 10
-	while not game:IsLoaded() and os.clock() < deadline do
-		task.wait()
-	end
-end
+-- Runtime map (search by symbol):
+-- altairSettings                      Configuration and saved setting IDs
+-- loadInterface / lifecycle           UI loading, ownership and cleanup
+-- smartBarLayout / sharedPanel        Docking, navigation and panel motion
+-- homeController / playerlistUI       Home and server-player views
+-- scriptSearchState / searchTransport Script discovery and request caching
+-- settingsStore / assembleSettings    Persistence and settings presentation
+-- altairAPI / start / runtime         Public integrations and runtime wiring
 
 -- Check License Tier
 local Pro = true -- We're open sourced now!
@@ -61,12 +33,56 @@ local cloneRef = optional(cloneref)
 local getEnv = optional(getgenv)
 
 local env = getEnv and getEnv() or _G
+-- Claim startup before the first deliberate yield, including game readiness.
+local startupClaim={schema=1,alive=true,roots={},previous=env.__AltairStartupClaim}
+env.__AltairStartupClaim=startupClaim
+local function ownsStartup()
+	return startupClaim.alive and env.__AltairStartupClaim==startupClaim
+end
+local function requireStartup()
+	assert(ownsStartup(),"Altair startup superseded")
+end
+function startupClaim:Cancel()
+	self.alive=false
+	if self.cleaned or self.cleaning then return end
+	self.cleaning=true
+	if self.lifecycle then pcall(self.lifecycle.unload,self.lifecycle)end
+	for root in pairs(self.roots)do pcall(root.Destroy,root)end
+	table.clear(self.roots)
+	self.cleaning=false
+	self.cleaned=not self.predecessorCleanup
+	if env.__AltairStartupClaim==self then env.__AltairStartupClaim=nil end
+end
+local function observeStartupRoot(root)
+	if not ownsStartup()then
+		if typeof(root)=="Instance"and not root.Parent then pcall(root.Destroy,root)end
+		requireStartup()
+	end
+	if typeof(root)=="Instance"and not root.Parent and not startupClaim.roots[root]then
+		startupClaim.roots[root]=true
+		root.Destroying:Once(function()startupClaim.roots[root]=nil end)
+	end
+end
+local function initialise()
+startupClaim.predecessorCleanup=true
+local predecessor=startupClaim.previous
+if type(predecessor)=="table"and predecessor.schema==1 and type(predecessor.Cancel)=="function"then
+	predecessor:Cancel()
+	-- Cleanup may itself yield. A third run must await that whole predecessor
+	-- chain before capturing baselines or mounting its own runtime.
+	while type(predecessor)=="table"and predecessor.schema==1 do
+		while not predecessor.cleaned do requireStartup();task.wait()end
+		predecessor=predecessor.previous
+	end
+end
+requireStartup()
 -- Finish the previous session before capturing camera/audio state for this one.
 do
 	local previous = env.Altair
 	if type(previous) == "table" and type(previous.Unload) == "function" then
 		pcall(previous.Unload)
 	end
+	requireStartup()
 	-- Also remove orphaned roots left by an interrupted or older session.
 	-- Destroying a current root invokes its runtime teardown before replacement.
 	local containers={}
@@ -75,6 +91,7 @@ do
 	pcall(function() containers[#containers+1]=game:GetService("Players").LocalPlayer:FindFirstChildOfClass("PlayerGui") end)
 	for _,container in ipairs(containers) do
 		for _,old in ipairs(container:GetChildren()) do
+			requireStartup()
 			if old:IsA("ScreenGui") and (old.Name=="Altair" or old.Name=="AltairCapsuleQA" or old:GetAttribute("AltairCapsuleSchema")==2)
 				and (old:FindFirstChild("SmartBar") or old:FindFirstChild("TopCapsules")) then
 				old:Destroy()
@@ -82,13 +99,21 @@ do
 		end
 	end
 end
+startupClaim.predecessorCleanup=false
+startupClaim.previous=nil
+requireStartup()
+if not game:IsLoaded() then
+	local deadline=os.clock()+10
+	while not game:IsLoaded()and os.clock()<deadline do task.wait();requireStartup()end
+end
+requireStartup()
 
 local function getService(name)
 	local service = game:GetService(name)
 	return cloneRef and cloneRef(service) or service
 end
 
--- Create Variables for Roblox Services
+-- Roblox services
 local coreGui = getService("CoreGui")
 local httpService = getService("HttpService")
 local lighting = getService("Lighting")
@@ -100,38 +125,29 @@ local statsService = getService("Stats")
 local starterGui = getService("StarterGui")
 local teleportService = getService("TeleportService")
 local tweenService = getService("TweenService")
-do
-	local native=tweenService
-	local active=setmetatable({}, {__mode="k"})
-	-- One owner per animated property prevents interrupted transitions fighting.
-	tweenService={Create=function(_,object,info,goal)
-		local properties=active[object] or {};active[object]=properties
-		local cancelled={}
-		for property in pairs(goal) do
-			local old=properties[property]
-			if old and not cancelled[old] then cancelled[old]=true;old:Cancel() end
-		end
-		if info.Time>0 and info.RepeatCount==0 and not info.Reverses and (goal.Position or goal.Size) then
-			info=TweenInfo.new(math.clamp(info.Time,.12,.55),Enum.EasingStyle.Quint,Enum.EasingDirection.Out,0,false,info.DelayTime)
-		end
-		local animation=native:Create(object,info,goal)
-		for property in pairs(goal) do properties[property]=animation end
-		animation.Completed:Once(function()
-			for property in pairs(goal) do if properties[property]==animation then properties[property]=nil end end
-		end)
-		return animation
-	end}
-end
 local userInputService = getService("UserInputService")
 local textChatService = getService("TextChatService")
 local marketplaceService = getService("MarketplaceService")
 local gameSettings = UserSettings():GetService("UserGameSettings")
 
--- Variables
+-- Runtime state
 local useStudio = runService:IsStudio()
 local connections = {}
 local camera = workspace.CurrentCamera
+if not camera then
+	local deadline = os.clock() + 10
+	repeat
+		task.wait()
+		requireStartup()
+		camera = workspace.CurrentCamera
+	until camera or os.clock() >= deadline
+	if not camera then
+		warn("Altair | No current camera is available; Altair has not started.")
+		return
+	end
+end
 local getMessage = replicatedStorage:WaitForChild("DefaultChatSystemChatEvents", 1) and replicatedStorage.DefaultChatSystemChatEvents:WaitForChild("OnMessageDoneFiltering", 1)
+requireStartup()
 local legacyChatActive = getMessage ~= nil and textChatService.ChatVersion == Enum.ChatVersion.LegacyChatService
 local localPlayer = players.LocalPlayer
 
@@ -154,6 +170,7 @@ local locatedPlayers = {} -- per-player ESP toggles, independent from the global
 local espConnections = {} -- [player] = RBXScriptConnection for CharacterAdded
 local descendantAddedConn -- top-level DescendantAdded; tracked so we can disconnect on teardown
 local oldVolume = 1
+local daylightClock={baseline=lighting.ClockTime,editing=false,owned=nil}
 -- Ordinary Studio LocalScripts cannot read this executor-only setting.
 if useStudio then
 	gameSettings = nil
@@ -161,17 +178,21 @@ else
 	local readable = pcall(function() oldVolume = gameSettings.MasterVolume end)
 	if not readable then gameSettings = nil end
 end
-local baseFieldOfView = camera.FieldOfView -- captured once; Home restores to this rather than doing relative maths
+local baseFieldOfView = camera.FieldOfView -- Updated when Roblox replaces the camera.
+local fovMotionRoot
+local function fovMotionDuration(duration)
+ return fovMotionRoot and fovMotionRoot:GetAttribute("AltairReduceMotion")==true and math.min(duration,.08)or duration
+end
 
 local placeName -- resolved once at startup so the JobId copy button never yields on click
 
 -- Runtime caches
 local suppressedSounds = {}
+local spatialSoundVolumes = {} -- [Sound] = { baseline = number, applied = number }
 local soundSuppressionNotificationCooldown = 0
 local soundInstances = {}
 local trackedSounds = {} -- [Sound] = true, replaces the linear table.find scan
 local trackedText = {} -- [TextLabel|TextButton] = true
-local cachedIds = {}
 local activeToasts = {}
 local cachedText = {}
 
@@ -184,9 +205,10 @@ local blinkState = {
 local spectating
 local closeModPrompt
 
--- Configurable Core Values
+-- Configuration and character property models
 local SECURITY_PROMPT_TIMEOUT = 60 -- seconds before an unanswered prompt denies by default
-local altairValues = {
+local altairValues
+altairValues = {
 	altairVersion = "1.4",
 	altairName = "Altair",
 	releaseType = "Stable",
@@ -201,32 +223,6 @@ local altairValues = {
 	interfaceSource = "https://raw.githubusercontent.com/Kyokiiis/Altair/refs/heads/main/UI/Build.lua",
  dockGap = 12,
 
-	executors = {
-		"synapse x",
-		"script-ware",
-		"krnl",
-		"scriptware",
-		"comet",
-		"valyse",
-		"fluxus",
-		"electron",
-		"hydrogen",
-		"wave",
-		"solara",
-		"xeno",
-		"swift",
-		"delta",
-		"codex",
-		"arceus x",
-		"trigon",
-		"vegax",
-		"cryptic",
-	},
-	disconnectTypes = { { "ban", { "ban", "perm" } }, { "network", { "internet connection", "network" } } },
-	nameGeneration = {
-		adjectives = { "Cool", "Awesome", "Epic", "Ninja", "Super", "Mystic", "Swift", "Golden", "Diamond", "Silver", "Mint", "Roblox", "Amazing" },
-		nouns = { "Player", "Gamer", "Master", "Legend", "Hero", "Ninja", "Wizard", "Champion", "Warrior", "Sorcerer" },
-	},
 	administratorRoles = { "mod", "admin", "staff", "dev", "founder", "owner", "supervis", "manager", "management", "executive", "president", "chairman", "chairwoman", "chairperson", "director" },
 	transparencyProperties = {
 		UIStroke = { "Transparency" },
@@ -249,7 +245,6 @@ local altairValues = {
 	chatModeration = {
 		users = {},
 		maxHistory = 16,
-		alertCooldown = 9,
 	},
 	playerAnomaly = {
 		users = {},
@@ -386,12 +381,29 @@ local altairValues = {
 		},
 		{
 			name = "Time of Day",
+			control = "Daylight",
 			images = { 9134778004, 10137794784 },
 			color = Color3.fromRGB(102, 75, 190),
 			enabled = false,
 			rotateWhileEnabled = false,
 			callback = function(value)
-				tweenService:Create(lighting, TweenInfo.new(0.5), { ClockTime = value and 12 or 24 }):Play()
+				if type(value)=="number"then
+					if not daylightClock.editing then daylightClock.baseline=lighting.ClockTime end
+					daylightClock.editing=true;daylightClock.owned=math.clamp(value,0,24)
+					lighting.ClockTime=daylightClock.owned;return
+				end
+				local ruler=altairValues.characterRuler
+				if ruler then
+					local panel=ruler.Root:FindFirstAncestor("Character")
+					local api=(getgenv and getgenv()or _G).Altair
+					if panel and not panel.Visible and api and api.OpenPanel then api.OpenPanel("Character")end
+					ruler:SelectDaylight(true)
+				end
+			end,
+			reset = function()
+				local value=daylightClock.baseline
+				daylightClock.editing=false;daylightClock.owned=value;lighting.ClockTime=value
+				return value
 			end,
 		},
 		{
@@ -423,14 +435,14 @@ local altairValues = {
 		{
 			name = "player speed",
 			color = Color3.fromRGB(44, 153, 93),
-			values = { 0, 300 },
+			values = { 0, 500 },
 			default = 16,
 			value = 16,
 			active = false,
 			callback = function(value)
 				local character = localPlayer.Character
 				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-				if humanoid then -- was `if character`, which let a Humanoid-less character through
+				if humanoid then
 					humanoid.WalkSpeed = value
 				end
 			end,
@@ -438,14 +450,14 @@ local altairValues = {
 		{
 			name = "jump power",
 			color = Color3.fromRGB(59, 126, 184),
-			values = { 0, 350 },
+			values = { 0, 500 },
 			default = 50,
 			value = 16,
 			active = false,
 			callback = function(value)
 				local character = localPlayer.Character
 				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-				if humanoid then -- was `if character`, which let a Humanoid-less character through
+				if humanoid then
 					if humanoid.UseJumpPower then
 						humanoid.JumpPower = value
 					else
@@ -457,7 +469,7 @@ local altairValues = {
 		{
 			name = "flight speed",
 			color = Color3.fromRGB(177, 45, 45),
-			values = { 1, 25 },
+			values = { 1, 50 },
 			default = 3,
 			value = 3,
 			active = false,
@@ -466,12 +478,12 @@ local altairValues = {
 		{
 			name = "field of view",
 			color = Color3.fromRGB(198, 178, 75),
-			values = { 45, 120 },
+			values = { 1, 120 },
 			default = 70,
 			value = 16,
 			active = false,
 			callback = function(value)
-				tweenService:Create(camera, TweenInfo.new(0.6, Enum.EasingStyle.Exponential), { FieldOfView = value }):Play()
+				tweenService:Create(camera, TweenInfo.new(fovMotionDuration(0.6), Enum.EasingStyle.Exponential), { FieldOfView = value }):Play()
 			end,
 		},
 	},
@@ -490,12 +502,15 @@ local altairSettings = {
             {name="Theme Tint",settingType="Slider",current=25,id="themetint",values={0,100},description="Subtle accents at low values, full color at 100%."},
             {name="Theme Lightness",settingType="Slider",current=0,id="themelightness",values={0,100},description="Lift the theme from dark surfaces toward a light appearance."},
             {name="Custom Theme",settingType="Boolean",current=false,id="customtheme",hidden=true},
-            {name="Panel Opacity",settingType="Slider",current=90,id="panelopacity",values={65,100},description="Choose how solid the SmartBar and panels look."},
+            {name="Panel Opacity",settingType="Slider",current=90,id="panelopacity",values={0,100},description="Choose how solid Altair's surfaces look. 0% is transparent; 100% is solid."},
             {name="OLED Idle Dim",settingType="Slider",current=0,id="oledidledim",values={0,65},description="Dim only Altair after inactivity. Zero disables it; input or a notification restores brightness."},
             {name="Idle Dim Delay",settingType="Slider",current=45,id="oledidledelay",values={15,180},suffix=" s",description="How long Altair waits before idle dimming."},
             {name="Notification Duration",settingType="Slider",current=5,id="notificationduration",values={3,12},step=1,suffix=" s",description="Default time on screen. Important notifications can request their own duration."},
             {name="Reduce Motion",settingType="Boolean",current=false,id="reducemotion",description="Use brief fades and minimal movement throughout Altair."},
 			{name="OLED Appearance",settingType="Boolean",current=false,id="oledappearance",description="Use true-black panel surfaces with restrained highlights."},
+			{name="Server Region Lookup",settingType="Boolean",current=false,id="serverregionlookup",onChangedSync=true,description="Off uses a region supplied by the experience. On sends the game-server IP to ipapi.co, which also sees your connection IP.",onChanged=function(enabled)
+				if altairValues.serverRegion then altairValues.serverRegion.policyChanged(enabled) end
+			end},
 			{
 				name = "Anonymous Client",
 				description = "Randomise your username in real-time in any CoreGui parented interface, including Altair. You will still appear as your actual name to others in-game. This setting can be performance intensive.",
@@ -556,7 +571,7 @@ local altairSettings = {
 			},
 			{
 				name = "Anti Idle",
-				description = "Remove all callbacks and events linked to the LocalPlayer Idled state. This may prompt detection from Adonis or similar anti-cheats.",
+				description = "Temporarily disable active idle callbacks and restore them when turned off or Altair closes. This may prompt detection from Adonis or similar anti-cheats.",
 				settingType = "Boolean",
 				current = true,
 
@@ -692,9 +707,7 @@ local altairSettings = {
 				id = "nightandday",
 				actionIndex = 8,
 				callback = function()
-					local nightandday = altairValues.actions[8]
-					nightandday.enabled = not nightandday.enabled
-					nightandday.callback(nightandday.enabled)
+					altairValues.actions[8].callback()
 				end,
 			},
 			{
@@ -767,48 +780,10 @@ local altairSettings = {
 	},
 	{
 		name = "Detections",
-		description = "Altair detects and prevents anything malicious or possibly harmful to your wellbeing.",
+		description = "Audio protection, moderator notices and permission reviews. Player and chat signals are under Experimental.",
 		color = Color3.new(0.705882, 0, 0),
 		minimumLicense = "Free",
 		categorySettings = {
-			{
-				name = "Suspicious Player Detection",
-				description = "Detect sustained flight, hovering and fling-like physics from other players and notify you without taking action.",
-				settingType = "Boolean",
-				minimumLicense = "Free",
-				current = true,
-
-				id = "suspiciousplayerdetection",
-			},
-			{
-				name = "Movement Detection Sensitivity",
-				description = "Controls how much repeated movement evidence is required before Altair reports a potentially exploiting player.",
-				settingType = "Number",
-				minimumLicense = "Free",
-				values = { 1, 100 },
-				current = 55,
-
-				id = "movementdetectionsensitivity",
-			},
-			{
-				name = "Chat Spam Detection",
-				description = "Detect likely chat spam using message frequency, duplicate text, repeated characters, caps, emojis, punctuation and message length.",
-				settingType = "Boolean",
-				minimumLicense = "Free",
-				current = true,
-
-				id = "chatspamdetection",
-			},
-			{
-				name = "Anti-Spam Sensitivity",
-				description = "Controls how aggressively Altair classifies chat as spam. Higher values catch spam sooner; lower values require stronger evidence.",
-				settingType = "Number",
-				minimumLicense = "Free",
-				values = { 1, 100 },
-				current = 60,
-
-				id = "antispamsensitivity",
-			},
 			{
 				name = "Spatial Shield",
 				description = "Suppress loud sounds played from any audio source in-game, in real-time with Spatial Shield.",
@@ -875,6 +850,7 @@ local altairSettings = {
 				name = "Message Webhook URL",
 				description = "Discord Webhook URL",
 				settingType = "Input",
+				allowEmpty = true,
 				current = "No Webhook",
 
 				id = "logmsgurl",
@@ -891,6 +867,7 @@ local altairSettings = {
 				name = "Player Added and Removing Webhook URL",
 				description = "Discord Webhook URL",
 				settingType = "Input",
+				allowEmpty = true,
 				current = "No Webhook",
 
 				id = "logplrjoinleaveurl",
@@ -959,22 +936,48 @@ local altairSettings = {
 			},
 		},
 	},
- {name="Experimental",description="Early features: styles, HUD avoidance, capsules and Spotify. Bugs are to be expected.",color=Color3.fromRGB(157,119,231),minimumLicense="Free",categorySettings={
-  {name="Styles",settingType="Styles",current="Altair",id="interfacestyle",description="Experimental interface styles."},
+ {name="Experimental",description="Early features: player signals, chat checks, HUD avoidance, capsules and Spotify. Bugs are to be expected.",color=Color3.fromRGB(157,119,231),minimumLicense="Free",categorySettings={
+  {section="Movement Detection",sectionDescription="Local observations of unusual movement. Game abilities, vehicles, lag and knockback can produce similar signals; no action is taken against players.",name="Suspicious Player Detection",settingType="Boolean",current=true,id="suspiciousplayerdetection",onChangedSync=true,description="Watch player movement and notify when repeated evidence exceeds the selected sensitivity.",onChanged=function()
+   if not altairValues.lifecycle or not altairValues.lifecycle.alive then return end
+   if altairValues.playerAnomaly.Clear then altairValues.playerAnomaly:Clear(false)end
+  end},
+  {name="Flight Detection",settingType="Boolean",current=true,id="detectflight",description="Look for sustained hovering or controlled airborne movement, excluding ordinary jumps, falls, seats, swimming and climbing."},
+  {name="Speed Detection",settingType="Boolean",current=true,id="detectspeed",description="Look for sustained ground speed above the observed movement allowance, accounting for moving platforms and short bursts."},
+  {name="Fling Detection",settingType="Boolean",current=true,id="detectfling",description="Look for repeated extreme spinning and fling-like physics. A single collision is not enough."},
+  {name="Teleport Detection",settingType="Boolean",current=false,id="detectteleport",description="Look for repeated large position jumps. Leave off in games with frequent portals, dashes or scripted teleports."},
+  {name="Jump Detection",settingType="Boolean",current=false,id="detectjump",description="Look for repeated large upward impulses without landing. Leave off in games with double jumps or launch abilities."},
+  {name="Movement Detection Sensitivity",settingType="Slider",current=55,values={1,100},step=1,id="movementdetectionsensitivity",description="Higher values need less sustained evidence. Lower values are more conservative."},
+  {section="Chat Detection",sectionDescription="Experimental local checks for repeated messages and sustained chat floods. Only messages this client receives can be considered.",name="Chat Spam Detection",settingType="Boolean",current=true,id="chatspamdetection",onChangedSync=true,description="Combine message bursts, duplicates, repeated links and repeated-character patterns. One loud message alone does not trigger an alert.",onChanged=function()
+   if not altairValues.lifecycle or not altairValues.lifecycle.alive then return end
+   if altairValues.chatModeration.Clear then altairValues.chatModeration:Clear(false)end
+  end},
+  {name="Anti-Spam Sensitivity",settingType="Slider",current=60,values={1,100},step=1,id="antispamsensitivity",description="Higher values identify repeated spam patterns sooner. Normal short replies and isolated capitalized messages need additional evidence."},
+  {section="Detection Feedback",sectionDescription="Control notification detail and try the same observation rules on your own character. Self-test does not change your movement or send messages.",name="Detection Details",settingType="Boolean",current=true,id="detectiondetails",description="Include observed reasons and measurements in detection notifications."},
+  {name="Detection Cooldown",settingType="Slider",current=45,values={10,180},step=1,suffix=" s",id="detectioncooldown",description="Minimum time between accepted alerts for the same player and signal."},
+  {name="Detection Self Test",settingType="Boolean",current=false,persistent=false,id="detectionselftest",description="Include your own movement and received chat in the detectors for this run. Your alerts are labeled as self-tests.",onChanged=function()
+   altairValues.playerAnomaly.users[localPlayer.UserId]=nil;altairValues.chatModeration.users[localPlayer.UserId]=nil
+  end},
+  {name="Detection Status",settingType="Action",description="Show active checks, observed players and accepted alert counts.",action=function()if altairValues.showDetectionStatus then altairValues.showDetectionStatus()end end},
+  {name="Clear Detection History",settingType="Action",description="Clear accumulated movement and chat evidence without changing which checks are enabled.",action=function()
+   if altairValues.playerAnomaly.Clear then altairValues.playerAnomaly:Clear(true)end
+   if altairValues.chatModeration.Clear then altairValues.chatModeration:Clear(true)end
+   if altairValues.showDetectionStatus then altairValues.showDetectionStatus(true)end
+  end},
   {section="Game UI Avoidance",sectionDescription="Keep Altair outside game HUD elements. This experimental feature may miss fast-changing interfaces.",name="Avoid Game UI",settingType="Boolean",current=false,id="avoidgameui",description="Keep the dragged Smartbar and handle outside visible game HUD elements, sliding along their edges."},
 
 			{section="Capsules",sectionDescription="Top controls, timers and stopwatch. Bugs may occur while these features are experimental.",name="Capsules Enabled", settingType="Boolean", current=true, id="capsulesenabled"},
 			{name="Capsule Scale", settingType="Number", current=1.25, values={0.65,2}, id="capsulescale"},
             {name="Capsule Position",settingType="Choice",current="Dynamic",values={"Dynamic","Fixed","Drag Bar Only"},id="capsuleposition",description="Dynamic avoids game HUDs. Fixed stays at the top. Drag Bar Only reveals on hover."},
             {name="Capsule Reveal Duration",settingType="Slider",current=4,values={1,15},step=1,suffix=" s",id="capsulerevealtime",description="Time to reach a revealed capsule. Hovering or using its panel keeps it open."},
-			{section="Spotify",sectionDescription="Your personal playback connection and account controls. Bugs may occur with this experimental integration.",name="Spotify Connection", settingType="Boolean", current=false, id="spotifyenabled", confirmDisable=true, description="Reconnect automatically across Altair reruns. Turning this off asks before pausing updates; the saved account remains linked."},
-			{name="Spotify Client ID", settingType="Input", current="", id="spotifyclientid", description="Public Client ID from your Spotify developer app. Never enter a client secret."},
-			{name="Spotify Bridge Key", settingType="Input", current="", id="spotifybridgekey", description="Paste the local key printed by the companion. Account tokens stay in the companion."},
-			{name="Spotify Bridge Port", settingType="Number", current=43827, values={1024,65535}, id="spotifyport"},
-			{name="Spotify Setup", settingType="Action", description="Run Companion/StartSpotify.cmd once, play something in Spotify desktop, then choose Connect Spotify. Volt pairs automatically; no developer app is needed for desktop playback. Saved links survive reruns/restarts. For other devices, enter a Spotify developer Client ID with redirect http://127.0.0.1:43827/callback and approve once. Unlink asks before removing the saved connection.", action=function() if altairValues.capsules then altairValues.capsules:ShowSetup() end end},
-			{name="Connect Spotify", settingType="Action", description="Restore the saved connection, or approve Spotify once in your browser.", action=function() if altairValues.capsules then altairValues.capsules:LinkSpotify() end end},
-            {name="Spotify Status",settingType="Action",description="Check the saved account link and automatic recovery status.",action=function()if altairValues.capsules then altairValues.capsules:ShowSpotifyStatus()end end},
-			{name="Unlink Spotify", settingType="Action", description="Ask for confirmation before deleting the saved account link.", action=function() if altairValues.capsules then altairValues.capsules:UnlinkSpotify() end end},
+            {section="Spotify",sectionDescription="Windows desktop: run Companion/StartSpotify.cmd, play something in Spotify, then connect. Volt pairs automatically; no developer app is needed.",name="Connect Spotify",settingType="Action",description="Connect desktop playback or restore your saved link. Optional Web API settings are below.",action=function()if altairValues.capsules then altairValues.capsules:LinkSpotify()end end},
+            {name="Spotify Status",settingType="Action",description="Check playback, companion availability, and whether any action is needed.",action=function()if altairValues.capsules then altairValues.capsules:ShowSpotifyStatus()end end},
+            {name="Spotify Setup",settingType="Action",description="1. Run Companion/StartSpotify.cmd. 2. Open Spotify desktop and play something. 3. Choose Connect Spotify. Keep the companion running. Volt pairs automatically.",action=function()if altairValues.capsules then altairValues.capsules:ShowSetup()end end},
+            {name="Spotify Connection",settingType="Boolean",current=false,id="spotifyenabled",confirmDisable=true,description="Keep Spotify updates enabled. Pausing updates preserves your saved link; turning this back on resumes automatic recovery."},
+            {name="Unlink Spotify",settingType="Action",description="Ask before removing this computer's saved Spotify link.",action=function()if altairValues.capsules then altairValues.capsules:UnlinkSpotify()end end},
+            {section="Spotify - Advanced (optional)",sectionDescription="Skip these for Spotify desktop with Volt. Use a Client ID for Web API playback on other devices, or manual bridge settings for other executors.",name="Spotify Client ID",settingType="Input",current="",id="spotifyclientid",allowEmpty=true,description="Optional public Client ID for Web API approval. Clearing this field keeps any saved Web API account linked; it does not switch playback modes. Redirect: http://127.0.0.1:43827/callback (use your Bridge Port). Never enter a client secret."},
+            {name="Spotify Client ID Override",settingType="Boolean",current=false,id="spotifyclientidmanual",hidden=true},
+            {name="Spotify Bridge Key",settingType="Input",current="",id="spotifybridgekey",description="Manual pairing only: paste the companion's local key. Volt imports it automatically. Account tokens stay in the companion."},
+            {name="Spotify Bridge Port",settingType="Number",current=43827,values={1024,65535},id="spotifyport",description="Keep 43827 unless you changed the companion port. The Spotify redirect must use the same port."},
  }},
 }
 
@@ -1024,17 +1027,19 @@ local randomUsername, randomDisplayName = (function()
 	return username, displayName
 end)()
 
--- Initialise Altair Client Interface
+-- Interface loading and resource lifetime
 local guiParent = getHiddenUI and getHiddenUI() or (useStudio and localPlayer:WaitForChild("PlayerGui")) or coreGui
+requireStartup()
 
 function altairValues.loadUIModule(name)
+	requireStartup()
 	assert(({Build=true})[name], "Unknown Altair UI module")
 	if useStudio then
 		local container = script and script.Parent
 		local folder = (script and script:FindFirstChild("UI")) or (container and container:FindFirstChild("UI"))
 		local module = folder and folder:FindFirstChild(name)
 		assert(module and module:IsA("ModuleScript"), "Import UI/" .. name .. ".lua beside the Altair LocalScript")
-		return require(module)
+		local result=require(module);requireStartup();return result
 	end
 	local source
 	local read = optional(readfile)
@@ -1042,31 +1047,57 @@ function altairValues.loadUIModule(name)
 		local ok, contents = pcall(read, altairValues.altairFolder .. "/UI/" .. name .. ".lua")
 		if ok and type(contents)=="string" and contents:match("%S") then source=contents end
 	end
-	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=25") end
+	requireStartup()
+	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=50") end
+	requireStartup()
 	assert(type(source)=="string" and source:match("%S"), "Empty Altair UI module: "..name)
 	local compile=optional(loadstring)
 	assert(compile,"This executor does not support loadstring")
-	local chunk, compileError=compile(source,"@Altair/UI/"..name..".lua")
-	assert(chunk,"Couldn't compile "..name..": "..tostring(compileError))
-	return chunk()
+ -- Keep compilation across reruns, never evaluated module state or UI instances.
+ -- Exact bytes and environment identity matter even when the UI revision matches.
+ local cache=env.__AltairUICompiledChunks
+ if type(cache)~="table"then cache={};env.__AltairUICompiledChunks=cache end
+ local inspectEnvironment=optional(getfenv)
+ local function environmentOf(fn)
+  if not inspectEnvironment then return nil end
+  local ok,value=pcall(inspectEnvironment,fn)
+  return ok and type(value)=="table"and value or nil
+ end
+ local environment=environmentOf(altairValues.loadUIModule)
+ local entry=cache[name];local chunk
+ if type(entry)=="table"and entry.source==source and entry.compiler==compile
+  and environment~=nil and entry.environment==environment and optional(entry.chunk)
+  and environmentOf(entry.chunk)==environment then
+  chunk=entry.chunk
+ else
+  cache[name]=nil
+  local compileError;chunk,compileError=compile(source,"@Altair/UI/"..name..".lua")
+  assert(chunk,"Couldn't compile "..name..": "..tostring(compileError))
+  if environment~=nil and environmentOf(chunk)==environment then
+   entry={source=source,compiler=compile,environment=environment,chunk=chunk};cache[name]=entry
+  else entry=nil end
+ end
+ requireStartup()
+ local success,result=pcall(chunk)
+ requireStartup()
+ if not success then if cache[name]==entry then cache[name]=nil end;error(result,0)end
+ if type(result)~="function"and cache[name]==entry then cache[name]=nil end
+ return result
 end
 
 local function loadInterface()
-	local build=altairValues.loadUIModule("Build")
-	assert(type(build)=="function", "UI/Build.lua must return a UI factory function")
-	local root, bindings = build()
-	if not useStudio and not altairValues.remoteInterface and (type(bindings)~="table" or type(bindings.Capsules)~="function" or root:GetAttribute("AltairUIRevision")~=25) then
-		if typeof(root)=="Instance" then root:Destroy() end
-		altairValues.remoteInterface=true
-		root,bindings=altairValues.loadUIModule("Build")()
-	end
-	altairValues.interfaceBindings = bindings
-	if bindings.Motion then tweenService=bindings.Motion(function() return root:GetAttribute("AltairReduceMotion")==true end) end
-	assert(typeof(root) == "Instance" and root:IsA("ScreenGui"), "The UI builder must return a ScreenGui")
-	-- Catch an incompatible builder before mounting it or binding events.
-	local ok, validationError = pcall(function()
-		assert(root:GetAttribute("AltairUIRevision")==25 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: the current UI revision is missing")
+	-- One contract drives local validation and the remote fallback. Loading,
+	-- compilation, factory and contract failures all take that same route.
+	local function validate(root,bindings)
+		assert(typeof(root) == "Instance" and root:IsA("ScreenGui"), "The UI builder must return a ScreenGui")
+		assert(root.Parent==nil,"The UI builder must return an unmounted ScreenGui")
+		assert(type(bindings)=="table", "The UI builder must return a bindings table")
+		assert(bindings.StartupOwnership==1,"Update UI/Build.lua: startup root and loading ownership contract 1 is required")
+		assert(bindings.NativeUtilitiesOwnership==1,"Update UI/Build.lua: native utility ownership contract 1 is required")
+		assert(bindings.IdleColorOwnership==1,"Update UI/Build.lua: idle color ownership contract 1 is required")
+		assert(root:GetAttribute("AltairUIRevision")==50 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: matching UI revision 50 is required")
 		assert(type(bindings)=="table" and type(bindings.Capsules)=="function" and type(bindings.SoftShadows)=="function" and type(bindings.Dock)=="function" and type(bindings.DragContrast)=="function" and root:FindFirstChild("SharedPanelSurface"), "Update UI/Build.lua: current UI bindings are missing")
+		assert(type(bindings.SurfaceOpacity)=="function" and type(bindings.NavigationAccents)=="function" and type(bindings.Motion)=="function", "Update UI/Build.lua: current material/navigation bindings are missing")
 		assert(root:FindFirstChild("TopCapsules") and root:FindFirstChild("NotificationCapsules"), "Update UI/Build.lua: capsule templates are missing")
 		for _, name in ipairs({ "Character", "CustomScriptPrompt", "Disconnected", "GameDetection", "Home",
 			"ModeratorDetectionPrompt", "Notifications", "Playerlist", "ScriptSearch", "Scripts", "Settings",
@@ -1075,14 +1106,61 @@ local function loadInterface()
 		end
 		assert(root.SmartBar.Back:FindFirstChild("Time") and root.SmartBar.Back:FindFirstChild("Buttons"), "The SmartBar hierarchy is incomplete")
 		assert(root.Drag:FindFirstChild("Interact"), "The drag handle has no input button")
-	end)
-	if not ok then root:Destroy(); error(validationError, 0) end
+		assert(type(bindings.Ruler)=="function" and type(bindings.CharacterRuler)=="function","Update UI/Build.lua: the ruler controls are missing")
+		assert(type(bindings.Discovery)=="function" and root.ScriptSearch:IsA("CanvasGroup") and root.ScriptSearch:FindFirstChild("Header") and root.ScriptSearch:FindFirstChild("Browser"),"Update UI/Build.lua: the Script Search renderer is missing")
+		for _,name in ipairs({"Loading","Theme","Notifications","HomeIsolation","HomeSurface","HomeContainer",
+			"NativeUtilities","SettingsSearch","SettingsLayout","Slider","Choice","ColorPicker","Stats",
+			"Resize","Surface","SlideContent","StopSlide","SlideHeading","BounceReset","SnapGuides",
+			"ApplyIcon","RefreshIcon","DisplayScale","UIAvoidance","RayfieldBridge","Sentivel","SentivelSnapshot","MaterialAlpha","OpacityAlpha","ExperimentalSection","IdleColor","IdleBase","BindIdleColors"})do
+			assert(type(bindings[name])=="function","Update UI/Build.lua: missing "..name.." binding")
+		end
+		local motion=bindings.Motion(function() return root:GetAttribute("AltairReduceMotion")==true end)
+		assert(type(motion)=="table" and type(motion.Create)=="function", "The UI builder returned an invalid motion service")
+		return motion
+	end
+	local function candidate(remote)
+		altairValues.remoteInterface=remote
+		local root,bindings,motion
+		local attemptRoots={}
+		local function observeAttemptRoot(object)
+			observeStartupRoot(object)
+			if typeof(object)=="Instance"and startupClaim.roots[object]then attemptRoots[object]=true end
+		end
+		local ok,problem=pcall(function()
+			local build=altairValues.loadUIModule("Build")
+			requireStartup()
+			assert(type(build)=="function","UI/Build.lua must return a UI factory function")
+			root,bindings=build({IsCurrent=ownsStartup,OnRoot=observeAttemptRoot})
+			observeAttemptRoot(root);requireStartup()
+			motion=validate(root,bindings)
+			requireStartup()
+		end)
+		if not ok then
+			-- A factory can expose its root and then throw before returning it.
+			for object in pairs(attemptRoots)do
+				if startupClaim.roots[object]then pcall(object.Destroy,object)end
+			end
+			if typeof(root)=="Instance"and not attemptRoots[root]and not root.Parent then pcall(root.Destroy,root)end
+			requireStartup()
+			return nil,tostring(problem)
+		end
+		return root,bindings,motion
+	end
+	local remote=altairValues.remoteInterface==true
+	local root,bindings,motion=candidate(remote)
+	if not root and not useStudio and not remote then root,bindings,motion=candidate(true)end
+	assert(root,bindings or "The UI builder returned nothing")
+	requireStartup()
+	altairValues.interfaceBindings = bindings
+	tweenService=motion
 	return root
 end
 
 local uiResult, uiError
 for attempt = 1, 3 do
+	requireStartup()
 	local success, result = pcall(loadInterface)
+	requireStartup()
 	if success and result then
 		uiResult = result
 		break
@@ -1090,6 +1168,7 @@ for attempt = 1, 3 do
 	uiError = success and "the UI builder returned nothing" or tostring(result)
 	if attempt < 3 then
 		task.wait(attempt)
+		requireStartup()
 	end
 end
 
@@ -1100,34 +1179,68 @@ end
 
 -- One owner for runtime resources; identifiers are not used to find them again.
 altairValues.lifecycle = { alive = true, objects = {}, globals = {}, audio = {} }
+startupClaim.lifecycle=altairValues.lifecycle
+function altairValues.lifecycle:isCurrent()
+	return self.alive and ownsStartup()
+end
 function altairValues.lifecycle:own(object)
+	if not self:isCurrent()then pcall(object.Destroy,object);requireStartup();error("Altair is unloaded",0)end
 	object.Name = httpService:GenerateGUID(false)
 	self.objects[object] = true
 	object.Destroying:Once(function() self.objects[object] = nil end)
 	return object
 end
 function altairValues.lifecycle:replaceGlobal(key, value)
+	assert(self:isCurrent(),"Altair lifecycle no longer owns global replacements")
 	self.globals[key] = { before = env[key], installed = value }
 	env[key] = value
 end
 function altairValues.lifecycle:unload()
-	if not self.alive then return end
+	if not self.alive or self.unloading then return end
+	self.unloading=true
+	local inheritedCleanup=startupClaim.cleaning
+	startupClaim.cleaning=true;startupClaim.alive=false
 	if self.snapshot then pcall(self.snapshot) end
 	self.alive = false
+	local sentivel=self.sentivel;self.sentivel=nil
+	if sentivel then pcall(sentivel.Destroy,sentivel)end
+	if self.scriptLaunches then
+		for key, token in pairs(self.scriptLaunches) do
+			if env.AltairScriptRuns and env.AltairScriptRuns[key] == token then
+				env.AltairScriptRuns[key] = nil
+			end
+		end
+		table.clear(self.scriptLaunches)
+	end
+	if altairValues.cameraState then pcall(altairValues.cameraState.RestoreAll, altairValues.cameraState) end
+	if altairValues.serverHop then pcall(altairValues.serverHop.cancel, altairValues.serverHop, true) end
+	if altairValues.nativeTools then pcall(altairValues.nativeTools.Destroy, altairValues.nativeTools) end
+	if altairValues.smartBarLayout then pcall(altairValues.smartBarLayout.cancelToastPositionTween, altairValues.smartBarLayout) end
+	if self.developerCleanup then pcall(self.developerCleanup)end
+	if self.muffleCleanup then pcall(self.muffleCleanup) end
 	if self.runtimeCleanup then pcall(self.runtimeCleanup) end
- if altairValues.homeFovBinding then runService:UnbindFromRenderStep(altairValues.homeFovBinding)end
+ if altairValues.antiIdle then pcall(altairValues.antiIdle.Destroy,altairValues.antiIdle)end
+ if altairValues.homeFovBinding then pcall(runService.UnbindFromRenderStep,runService,altairValues.homeFovBinding)end
  if altairValues.rayfieldBridge then pcall(altairValues.rayfieldBridge.Destroy,altairValues.rayfieldBridge)end
  if altairValues.homeIsolation then pcall(altairValues.homeIsolation.Destroy,altairValues.homeIsolation)end
+ if altairValues.surfaceOpacity then pcall(altairValues.surfaceOpacity.Destroy,altairValues.surfaceOpacity)end
 	for _, connection in ipairs(connections) do pcall(connection.Disconnect, connection) end
 	table.clear(connections)
 	for key, replacement in pairs(self.globals) do
-		if env[key] == replacement.installed then env[key] = replacement.before end
+		pcall(function()if env[key] == replacement.installed then env[key] = replacement.before end end)
 	end
 	table.clear(self.globals)
 	for object in pairs(self.objects) do pcall(object.Destroy, object) end
 	table.clear(self.objects)
+	for root in pairs(startupClaim.roots)do pcall(root.Destroy,root)end
+	table.clear(startupClaim.roots)
 	table.clear(self.audio)
-	if self.api and env.Altair == self.api then env.Altair = nil end
+	pcall(function()if self.api and env.Altair == self.api then env.Altair = nil end end)
+	self.unloading=false
+	if not inheritedCleanup then
+		startupClaim.cleaning=false;startupClaim.cleaned=true
+		if env.__AltairStartupClaim==startupClaim then env.__AltairStartupClaim=nil end
+	end
 end
 
 -- A new place/server continues the experience; a new universe starts a new session.
@@ -1137,9 +1250,9 @@ do
 	local ok, saved = pcall(teleportService.GetTeleportSetting, teleportService, context.key)
 	local now = os.time()
 	local function stamp(value) return type(value)=="number" and value==value and value>=0 and value<=now end
-	local same = ok and type(saved)=="table" and saved.version==1 and saved.universe==game.GameId
+	local sameIdentity = ok and type(saved)=="table" and saved.version==1 and saved.universe==game.GameId
 		and saved.user==localPlayer.UserId and type(saved.job)=="string" and saved.job~=""
-		and stamp(saved.at) and (saved.job==game.JobId or now-saved.at<600)
+	local same = sameIdentity and stamp(saved.at) and (saved.job==game.JobId or now-saved.at<600)
 	if same then
 		context.resumed = true
 		context.startedAt = stamp(saved.startedAt) and saved.startedAt or now
@@ -1155,6 +1268,13 @@ do
 			randomUsername, randomDisplayName = saved.username, saved.displayName
 		end
 	end
+	-- A same-job clock rollback must not erase the public poll reservation.
+	-- Keep the general UI/session context rejected; sanitize only service health.
+	local statusContext=same or(sameIdentity and saved.job==game.JobId and type(saved.at)=="number"
+		and saved.at==saved.at and math.abs(saved.at)<math.huge and saved.at>now)
+	if statusContext and type(altairValues.interfaceBindings.SentivelSnapshot)=="function" then
+		context.sentivel=altairValues.interfaceBindings.SentivelSnapshot(saved.sentivel)
+	end
 	function context:save()
 		if not altairValues.lifecycle.alive then return end
 		if self.captureHome then self.home=self.captureHome() end
@@ -1162,6 +1282,7 @@ do
 			version=1, universe=game.GameId, user=localPlayer.UserId, job=game.JobId, at=os.time(),
 			startedAt=self.startedAt, hops=self.hops, position=self.position, home=self.home,
 			open=smartBarOpen, username=randomUsername, displayName=randomDisplayName,
+			sentivel=self.sentivel,
 		})
 		self.lastSave=os.clock()
 	end
@@ -1200,20 +1321,27 @@ do
 end
 
 local UI = altairValues.lifecycle:own(uiResult)
+fovMotionRoot = UI
 UI.Destroying:Once(function() altairValues.lifecycle:unload() end)
 espContainer = altairValues.lifecycle:own(Instance.new("Folder"))
+requireStartup()
 espContainer.Parent = guiParent
 UI.Enabled = false -- Never render the interface at its authored position.
+requireStartup()
 UI.Parent = guiParent
 altairValues.loadingPosition=altairValues.sessionMemory.position
 if not altairValues.loadingPosition and type(readfile)=="function"then
  local ok,value=pcall(function()return httpService:JSONDecode(readfile(altairValues.altairFolder.."/position.altair"))end)
  if ok and type(value)=="table"then altairValues.loadingPosition=value end
 end
-altairValues.loading=altairValues.interfaceBindings.Loading(UI,guiParent,nil,altairValues.loadingPosition)
-altairValues.lifecycle:own(altairValues.loading.Screen)
+requireStartup()
+altairValues.loading=altairValues.interfaceBindings.Loading(UI,guiParent,nil,altairValues.loadingPosition,function(screen)altairValues.lifecycle:own(screen)end)
+requireStartup()
+if not altairValues.lifecycle.objects[altairValues.loading.Screen]then altairValues.lifecycle:own(altairValues.loading.Screen)end
 altairValues.loading:Stage(.2,"Preparing interface")
 altairValues.theme=altairValues.interfaceBindings.Theme(UI)
+requireStartup()
+altairValues.theme:Attach(altairValues.loading.Screen)
 
 -- Volt/CoreGui: use the full physical viewport, not Roblox top-bar / safe-area insets.
 -- Do this immediately so every later AbsolutePosition/AbsoluteSize read uses the
@@ -1226,11 +1354,11 @@ end
 
 UI.Enabled = false
 
--- Create Variables for Interface Elements
+-- Interface references
 local characterPanel = UI.Character
 local openHome, closeHome
 local homeOpen, homeFov = false, nil
-local closeSettings, closeScriptSearch
+local closeSettings, closeScriptSearch, openSettings
 local homeChatEnabled
 local characterPanelSize = characterPanel.Size
 local customScriptPrompt = UI.CustomScriptPrompt
@@ -1252,6 +1380,7 @@ local settingsPanel = UI.Settings
 local smartBar = UI.SmartBar
 local drag = UI.Drag
 local toastsContainer = UI.Toasts
+altairValues.surfaceOpacity=altairValues.interfaceBindings.SurfaceOpacity(UI,tweenService)
 
 altairValues.cachedInGameUI = {}
 altairValues.cachedCoreUI = {}
@@ -1270,16 +1399,101 @@ if not legacyChatActive then
 	altairValues.chatSpy.enabled = false
 end
 
--- Call External Modules
-
--- httpRequest
+-- Shared UI and preference helpers
 local httpRequest = originalRequest
 
 local function track(connection)
-	if not altairValues.lifecycle.alive then connection:Disconnect(); return connection end
+	if not altairValues.lifecycle:isCurrent()then connection:Disconnect(); return connection end
 	table.insert(connections, connection)
 	return connection
 end
+
+-- Camera ownership can change while every Altair panel is closed. Keep the
+-- previous camera only for layout measurements during a temporary nil gap;
+-- camera actions below require the current live instance returned here.
+local cameraState = {
+	available = true,
+	baselines = setmetatable({ [camera] = baseFieldOfView }, { __mode = "k" }),
+	owned = setmetatable({}, { __mode = "k" }),
+	pendingRestore = setmetatable({}, { __mode = "k" }),
+}
+altairValues.cameraState = cameraState
+function cameraState:CancelClose()
+	local animation = altairValues.homeCameraTween
+	altairValues.homeCameraTween = nil
+	self.closingCamera = nil
+	if animation then animation:Cancel() end
+end
+function cameraState:Restore(target)
+	if not target or not self.owned[target] then return true end
+	if self.closingCamera == target then self:CancelClose() end
+	local ok = pcall(function() target.FieldOfView = self.baselines[target] end)
+	if ok then
+		self.owned[target] = nil
+		self.pendingRestore[target] = nil
+	else
+		self.pendingRestore[target] = true
+	end
+	return ok
+end
+function cameraState:Own(target)
+	if self.pendingRestore[target] and not self:Restore(target) then return nil end
+	if not self.owned[target] then
+		self.baselines[target] = target.FieldOfView
+		self.owned[target] = true
+	end
+	return self.baselines[target]
+end
+function cameraState:RestoreAll()
+	self:CancelClose()
+	for target in pairs(self.owned) do self:Restore(target) end
+end
+local function syncCamera()
+	local current = workspace.CurrentCamera
+	-- Cleanup may ask for the live camera after the lifecycle is marked dead;
+	-- only explicit Restore/RestoreAll calls may change FOV at that point.
+	if not altairValues.lifecycle.alive then return current end
+	if not current then
+		if cameraState.available then cameraState:Restore(camera) end
+		cameraState.available = false
+		return nil
+	end
+	if current ~= camera or not cameraState.available then
+		if current ~= camera then cameraState:Restore(camera) end
+		-- A nil gap can return the same instance. Finish any pending restore
+		-- before treating it as available or capturing a new ownership baseline.
+		if cameraState.pendingRestore[current] and not cameraState:Restore(current) then return nil end
+		camera = current
+		cameraState.available = true
+		if not cameraState.owned[current] then cameraState.baselines[current] = current.FieldOfView end
+		baseFieldOfView = cameraState.baselines[current]
+		if homeOpen then
+			homeFov = cameraState:Own(current)
+			if not homeFov then return nil end
+			altairValues.homeTargetFov = math.max(20, homeFov - 35)
+			if altairValues.homeFovTarget then
+				-- Supersede any zoom tween targeting the previous camera's baseline.
+				tweenService:Create(altairValues.homeFovTarget, TweenInfo.new(0), { Value = altairValues.homeTargetFov }):Play()
+				altairValues.homeFovTarget.Value = altairValues.homeTargetFov
+			end
+		else
+			homeFov = nil
+		end
+		if spectating then
+			local character = spectating.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				current.CameraSubject = humanoid
+				current.CameraType = Enum.CameraType.Custom
+			end
+		end
+	end
+	return current
+end
+track(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	if altairValues.lifecycle.alive then syncCamera() end
+end))
+syncCamera()
 
 local function replacePlain(haystack, needleLower, replacement)
 	if needleLower == "" then
@@ -1331,9 +1545,8 @@ local function applyActionVisual(action, object)
 	if not (action and object) then
 		return
 	end
-
 	local quickToggle = object.Parent == characterPanel.Interactions.Toggles
-	object.Icon.Image = "rbxassetid://" .. action.images[action.enabled and 1 or 2]
+	if action.control=="Daylight"then altairValues.interfaceBindings.ApplyIcon(object.Icon,"sun")else object.Icon.Image = "rbxassetid://" .. action.images[action.enabled and 1 or 2]end
 	if quickToggle then
 		object.Subtitle.Text = action.enabled and "Enabled" or "Disabled"
 	end
@@ -1343,14 +1556,53 @@ local function applyActionVisual(action, object)
 		tweenService:Create(object.Glow, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { ImageTransparency = action.enabled and 0.15 or 0.8 }):Play()
 	end
 	tweenService:Create(object, TweenInfo.new(0.4, Enum.EasingStyle.Quint), { BackgroundTransparency = action.enabled and 0.02 or (quickToggle and 0.12 or 0.1) }):Play()
-	tweenService:Create(object.UIStroke, TweenInfo.new(0.4, Enum.EasingStyle.Quint), { Transparency = action.enabled and 0.3 or (quickToggle and 0.32 or 0.91) }):Play()
+	tweenService:Create(object.UIStroke, TweenInfo.new(0.4, Enum.EasingStyle.Quint), { Transparency = action.enabled and .55 or .9 }):Play()
 	tweenService:Create(object.Icon, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ImageTransparency = action.enabled and 0 or 0.15 }):Play()
 	tweenService:Create(object.Title, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 end
 
 local function checkAltair()
-	return altairValues.lifecycle.alive and UI.Parent
+	return altairValues.lifecycle:isCurrent() and UI.Parent
 end
+
+-- Preserve ownership of callbacks changed by Anti Idle. Other scripts may
+-- intentionally disable their own callbacks; Altair must not enable those.
+function altairValues.newAntiIdleController(getCallbacks)
+ local controller={alive=true,enabled=false,owned={}}
+ local function enabled(connection)
+  local ok,value=pcall(function()return connection.Enabled end)
+  if ok and type(value)=="boolean"then return value end
+  return nil -- Unknown state cannot safely be changed and later restored.
+ end
+ function controller:Restore()
+  self.enabled=false
+  for connection in pairs(self.owned)do pcall(function()connection:Enable()end)end
+  table.clear(self.owned)
+ end
+ function controller:Set(value)
+  value=value==true
+  if not self.alive or self.enabled==value then return false end
+  self.enabled=value
+  if not value then self:Restore();return true end
+  local ok,callbacks=pcall(getCallbacks)
+  if not ok or type(callbacks)~="table"then return false end
+  for _,connection in pairs(callbacks)do
+   if enabled(connection)==true then
+    local changed=pcall(function()connection:Disable()end)
+    if changed then self.owned[connection]=true end
+   end
+  end
+  return true
+ end
+ function controller:Destroy()
+  if not self.alive then return end
+  self.alive=false;self:Restore()
+ end
+ return controller
+end
+altairValues.antiIdle=altairValues.newAntiIdleController(function()
+ return getConnectionsFor and getConnectionsFor(localPlayer.Idled)or{}
+end)
 
 local function getPing()
 	local success, ping = pcall(function()
@@ -1359,7 +1611,9 @@ local function getPing()
 	return success and math.clamp(ping, 10, 700) or 0
 end
 
-local function checkFolder()
+local function checkFolder(owns)
+	local function current()return not owns or owns()end
+	if not current()then return false end
 	if not (isfolder and makefolder) then
 		return
 	end
@@ -1375,12 +1629,21 @@ local function checkFolder()
 		customRoot,
 		scriptsRoot,
 	}) do
-		if not isfolder(path) then
+		if not current()then return false end
+		local exists=isfolder(path)
+		if not current()then return false end
+		if not exists then
 			makefolder(path)
+			if not current()then return false end
 		end
 	end
 
-	if writefile and isfile and not isfile(customRoot .. "/README.txt") then
+	local function missing(path)
+		if not current()then return false end
+		local exists=isfile(path)
+		return current()and not exists
+	end
+	if writefile and isfile and missing(customRoot .. "/README.txt") then
 		writefile(customRoot .. "/README.txt", [[Altair Custom Scripts
 
 The files in this folder are DETECTION DEFINITIONS. Each definition can use
@@ -1417,9 +1680,10 @@ Accepted aliases:
 
 If both Loadstring and LuaFile are supplied, Loadstring is used first.
 ]])
+		if not current()then return false end
 	end
 
-	if writefile and isfile and not isfile(scriptsRoot .. "/README.txt") then
+	if writefile and isfile and missing(scriptsRoot .. "/README.txt") then
 		writefile(scriptsRoot .. "/README.txt", [[Altair Scripts
 
 Place runnable .lua files in this folder.
@@ -1427,7 +1691,9 @@ Place runnable .lua files in this folder.
 Reference them from a file in Altair/Custom Scripts with:
 "LuaFile": "YourScript.lua"
 ]])
+		if not current()then return false end
 	end
+	return current()
 end
 
 local function isPanel(name)
@@ -1470,53 +1736,8 @@ local function createEsp(player)
 			return
 		end
 		task.wait()
+		if not checkAltair()or not highlight.Parent then return end
 		highlight.Adornee = character
-	end)
-end
-
-local function makeDraggable(object)
-	local dragging = false
-	local relative = nil
-
-	local offset = Vector2.zero
-	local screenGui = object:FindFirstAncestorWhichIsA("ScreenGui")
-	if screenGui and screenGui.IgnoreGuiInset then
-		offset += guiService:GetGuiInset()
-	end
-
-	object.InputBegan:Connect(function(input, processed)
-		if processed then
-			return
-		end
-
-		local inputType = input.UserInputType.Name
-		if inputType == "MouseButton1" or inputType == "Touch" then
-			relative = object.AbsolutePosition + object.AbsoluteSize * object.AnchorPoint - userInputService:GetMouseLocation()
-			dragging = true
-		end
-	end)
-
-	local inputEnded = userInputService.InputEnded:Connect(function(input)
-		if not dragging then
-			return
-		end
-
-		local inputType = input.UserInputType.Name
-		if inputType == "MouseButton1" or inputType == "Touch" then
-			dragging = false
-		end
-	end)
-
-	local renderStepped = runService.RenderStepped:Connect(function()
-		if dragging then
-			local position = userInputService:GetMouseLocation() + relative + offset
-			object.Position = UDim2.fromOffset(position.X, position.Y)
-		end
-	end)
-
-	object.Destroying:Connect(function()
-		inputEnded:Disconnect()
-		renderStepped:Disconnect()
 	end)
 end
 
@@ -1524,7 +1745,7 @@ local function actionButton(action)
 	if not action then
 		return nil
 	end
-	return characterPanel.Interactions.Toggles:FindFirstChild(action.name) or characterPanel.Interactions.Grid:FindFirstChild(action.name)
+	return characterPanel.Interactions.Toggles:FindFirstChild(action.name) or characterPanel.Interactions.Grid:FindFirstChild(action.name) or characterPanel.Interactions:FindFirstChild(action.name,true)
 end
 
 local function checkSetting(settingTarget, categoryTarget)
@@ -1606,6 +1827,132 @@ function altairValues.captureFadeState(root)
  visit(root);return snapshot
 end
 
+-- Keep authored surface hierarchy while applying the user's opacity preference.
+function altairValues.surfaceTransparency(surface,base)
+ base=tonumber(base)or UI:GetAttribute("AltairPanelTransparency")or .1
+ base=math.clamp(base,0,1)
+ if base<=0 then return 0 elseif base>=1 then return 1 end
+ local authored=surface:GetAttribute("AltairDesignFixedTransparency")
+ if type(authored)~="number"then authored=.1+(surface:GetAttribute("AltairDesignTransparencyOffset")or 0)end
+ authored=math.clamp(authored,0,1)
+ return base<.1 and authored*base/.1 or authored+(1-authored)*(base-.1)/.9
+end
+
+-- Dialog templates own their layout/material; this owner only moves and fades them.
+altairValues.dialogMotion=(function()
+ local states=setmetatable({},{__mode="k"})
+ local controller={}
+ local function stateFor(panel)
+  local state=states[panel]
+  if not state then state={version=0};states[panel]=state end
+  return state
+ end
+ local function material(panel)
+  return panel:FindFirstChild("Backdrop")or panel
+ end
+ local function refreshElementMaterials(state)
+  if not state.targets then return end
+  local transparency=UI:GetAttribute("AltairPanelTransparency")
+  if state.targetTransparency==transparency then return end
+  local registry=altairValues.surfaceOpacity
+  if not registry or not registry.Resolve then return end
+  for item,properties in pairs(state.targets)do
+   if item.Parent and properties.BackgroundTransparency~=nil then
+    local alpha=registry:Resolve(item)
+    if type(alpha)=="number"then properties.BackgroundTransparency=alpha end
+   end
+  end
+  state.targetTransparency=transparency
+ end
+ local function shifted(panel,position,pixels)
+  local parent=panel.Parent
+  local height=parent and parent.AbsoluteSize.Y or UI.AbsoluteSize.Y
+  return position+UDim2.fromScale(0,pixels/math.max(1,height))
+ end
+ function controller:IsOpen(panel)
+  return panel.Parent~=nil and panel.Visible and not panel:GetAttribute("AltairDialogClosing")
+ end
+ function controller:Owns(panel,version)
+  local state=states[panel]
+  return state~=nil and state.version==version and self:IsOpen(panel)
+ end
+ function controller:Open(panel)
+  assert(panel:IsA("CanvasGroup"),"Update UI/Build.lua: dialog groups are missing")
+  local feedback=altairValues.interfaceBindings.DialogFeedback
+  if feedback then feedback(panel)end
+  local state=stateFor(panel)
+  if state.opened and self:IsOpen(panel)then return state.version end
+  local cold=not panel.Visible
+  state.version+=1;state.opened=true;state.dialog=true
+  state.rest=panel:GetAttribute("AltairDialogPosition")or state.rest or panel.Position
+  local size=panel:GetAttribute("AltairDialogSize")or panel.Size
+  panel:SetAttribute("AltairDialogClosing",false)
+  panel.Interactable=true
+  local surface=material(panel)
+  if surface~=panel then panel.BackgroundTransparency=1 end
+  if cold then
+   panel.Size=size;panel.Position=shifted(panel,state.rest,14)
+   panel.GroupTransparency=1;surface.BackgroundTransparency=altairValues.surfaceTransparency(panel)
+  else tweenService:Create(surface,TweenInfo.new(.18),{BackgroundTransparency=altairValues.surfaceTransparency(panel)}):Play()end
+  panel.Visible=true
+  tweenService:Create(panel,TweenInfo.new(.3,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Position=state.rest,Size=size}):Play()
+  tweenService:Create(panel,TweenInfo.new(.18,Enum.EasingStyle.Sine,Enum.EasingDirection.Out),{GroupTransparency=0}):Play()
+  return state.version
+ end
+ function controller:Close(panel,onHidden)
+  if not panel.Parent then return end
+  local state=stateFor(panel);state.version+=1;state.opened=false
+  local version=state.version
+  if not panel.Visible then if onHidden then onHidden()end;return end
+  state.rest=panel:GetAttribute("AltairDialogPosition")or state.rest or panel.Position
+  panel:SetAttribute("AltairDialogClosing",true);panel.Interactable=false
+  for _,object in ipairs(panel:GetDescendants())do if object:IsA("TextBox")and object:IsFocused()then object:ReleaseFocus()end end
+  tweenService:Create(panel,TweenInfo.new(.2,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Position=shifted(panel,state.rest,10)}):Play()
+  tweenService:Create(panel,TweenInfo.new(.16,Enum.EasingStyle.Sine,Enum.EasingDirection.Out),{GroupTransparency=1}):Play()
+  task.delay(.21,function()
+   if panel.Parent and state.version==version then
+    panel.Visible=false;panel.Position=state.rest
+    panel:SetAttribute("AltairDialogClosing",false)
+    if onHidden then onHidden()end
+   end
+  end)
+ end
+ function controller:Element(object,visible)
+  local state=stateFor(object);state.elementVersion=(state.elementVersion or 0)+1
+  local version=state.elementVersion
+  if not state.targets then
+   state.targets=altairValues.captureFadeState(object)
+   local properties=altairValues.transparencyProperties[object.ClassName]
+   if properties then local saved={};for _,key in ipairs(properties)do saved[key]=object[key]end;state.targets[object]=saved end
+  end
+  refreshElementMaterials(state)
+  if visible and not object.Visible then
+   for item,properties in pairs(state.targets)do if item.Parent then for key in pairs(properties)do item[key]=1 end end end
+  end
+  object.Interactable=visible
+  if visible then object.Visible=true end
+  for item,properties in pairs(state.targets)do if item.Parent then
+   local goal={};for key,value in pairs(properties)do goal[key]=visible and value or 1 end
+   tweenService:Create(item,TweenInfo.new(.14),goal,{ResolvedTransparency=true}):Play()
+  end end
+  if not visible then task.delay(.15,function()if object.Parent and state.elementVersion==version then object.Visible=false end end)end
+ end
+ function controller:RefreshOpacity()
+  for panel,state in pairs(states)do
+   refreshElementMaterials(state)
+   if state.dialog and self:IsOpen(panel)then
+    tweenService:Create(material(panel),TweenInfo.new(.18),{BackgroundTransparency=altairValues.surfaceTransparency(panel)}):Play()
+   end
+  end
+ end
+ function controller:Accent(panel,color)
+  if typeof(color)~="Color3"then return end
+  local refresh=altairValues.interfaceBindings.DialogAccent
+  if refresh then refresh(panel,color)else panel:SetAttribute("AltairDialogAccent",color)end
+ end
+ return controller
+end)()
+
 local function blurSignature(value)
 	local owner = altairValues.lifecycle
 	if not value then
@@ -1633,483 +1980,412 @@ local function notification(Title, Description, Image, options)
 	return altairValues.notificationController:Notify(Title, Description, Image, options)
 end
 
+function altairValues.showDetectionStatus(cleared)
+ local movement=altairValues.playerAnomaly.Summary and altairValues.playerAnomaly:Summary()or{}
+ local chat=altairValues.chatModeration.Summary and altairValues.chatModeration:Summary()or{}
+ local sampling=movement.sampling or{}
+ local checks={}
+ if settingValue("Suspicious Player Detection",true)then
+  for _,name in ipairs({"Flight","Speed","Fling","Teleport","Jump"})do
+   if settingValue(name.." Detection",name~="Teleport"and name~="Jump")then checks[#checks+1]=name end
+  end
+ end
+ local lines={}
+ -- Keep timing limits first: notification bodies are height-bounded.
+ if #checks==0 then
+  lines[#lines+1]="Sampling paused; no current rechecks."
+ elseif(sampling.count or 0)==0 then
+  lines[#lines+1]=movement.checks and movement.checks.teleport and"Teleport timing unknown: no recent player rechecks yet."or"Sampling: no recent player rechecks yet."
+ elseif movement.checks and movement.checks.teleport and sampling.teleportTiming=="unavailable"then
+  lines[#lines+1]=string.format("Teleport configured but timing unavailable: all %d retained recent rechecks exceeded 1.2s.",sampling.count)
+ elseif movement.checks and movement.checks.teleport and(sampling.overTeleportLimit or 0)>0 then
+  lines[#lines+1]=string.format("Teleport timing limited: %d/%d recent rechecks exceeded 1.2s.",sampling.overTeleportLimit,sampling.count)
+ else
+  lines[#lines+1]=string.format("Sampling: %d recent rechecks, %.2f-%.2fs.",sampling.count,sampling.minimum,sampling.maximum)
+ end
+ lines[#lines+1]="Movement"..(movement.selfTest and" (self-test on)"or"")..": "..(#checks>0 and table.concat(checks,", ")or"Paused")
+ if cleared then lines[#lines+1]="Accumulated movement and chat evidence was cleared."end
+ lines[#lines+1]=string.format("Observed: %d players · %d movement samples · %d accepted movement alerts",movement.tracked or 0,movement.samples or 0,movement.alerts or 0)
+ lines[#lines+1]=string.format("Chat: %s · %d observed senders · %d accepted chat alerts",settingValue("Chat Spam Detection",true)and"On"or"Paused",chat.tracked or 0,chat.alerts or 0)
+ lines[#lines+1]="Self-test: "..(settingValue("Detection Self Test",false)and"On for this run"or"Off")
+ notification("Experimental detections",table.concat(lines,"\n"),nil,{Key="detection-status",Duration=9})
+end
+
+-- Experimental movement observations. These are client-visible signals, not
+-- proof of cheating: game abilities, replication and knockback can look alike.
 function altairValues.playerAnomaly:headshot(player)
-	return "rbxthumb://type=AvatarHeadShot&id=" .. tostring(player.UserId) .. "&w=150&h=150"
+ return "rbxthumb://type=AvatarHeadShot&id="..tostring(player.UserId).."&w=150&h=150"
 end
 
-function altairValues.playerAnomaly:notify(player, kind, detail, evidence, threshold)
-	local record = self.users[player.UserId]
-	if not record then
-		return
-	end
-
-	local now = os.clock()
-	record.lastAlerts = record.lastAlerts or {}
-	if now - (record.lastAlerts[kind] or 0) < 30 then
-		return
-	end
-	record.lastAlerts[kind] = now
-
-	local confidence = math.clamp(
-		math.floor(68 + math.max(0, evidence - threshold) * 5 + (evidence / math.max(threshold, 0.01)) * 9),
-		72,
-		99
-	)
-
-	notification(
-		"Possible Exploit Detected",
-		player.DisplayName
-			.. " (@"
-			.. player.Name
-			.. ") shows "
-			.. detail
-			.. " ("
-			.. tostring(confidence)
-			.. "% confidence).",
-		self:headshot(player)
-	)
+function altairValues.playerAnomaly:HasEnabledChecks()
+ return settingValue("Suspicious Player Detection",true)and(
+  settingValue("Flight Detection",true)or settingValue("Speed Detection",true)
+  or settingValue("Fling Detection",true)or settingValue("Teleport Detection",false)
+  or settingValue("Jump Detection",false))
 end
 
-function altairValues.playerAnomaly:samplePlayer(player, now)
-	if player == localPlayer then
-		return
-	end
+function altairValues.playerAnomaly:Clear(resetStats)
+ table.clear(self.users);self.cursor=1
+ self.revisitIntervals=nil;self.revisitIndex=1
+ if resetStats then self.samples=0;self.alerts=0;self.lastAlert=nil end
+end
 
-	local character = player.Character
-	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-	local root = character and (
-		character:FindFirstChild("HumanoidRootPart")
-		or character.PrimaryPart
-	)
+function altairValues.playerAnomaly:Summary()
+ local tracked=0;for _ in pairs(self.users)do tracked+=1 end
+ local sampling={count=0,withinTeleportLimit=0,overTeleportLimit=0,window=30,capacity=64}
+ if self:HasEnabledChecks()then
+  local now=os.clock()
+  for _,interval in ipairs(self.revisitIntervals or{})do
+   if now-interval.at>=0 and now-interval.at<=sampling.window then
+    sampling.count+=1
+    sampling.minimum=sampling.minimum and math.min(sampling.minimum,interval.dt)or interval.dt
+    sampling.maximum=sampling.maximum and math.max(sampling.maximum,interval.dt)or interval.dt
+    if interval.dt<=1.2 then sampling.withinTeleportLimit+=1 else sampling.overTeleportLimit+=1 end
+   end
+  end
+ end
+ -- Timing snapshot only: retained rechecks are not player coverage or eligibility.
+ sampling.teleportTiming=sampling.count==0 and"unknown"or sampling.withinTeleportLimit==0 and"unavailable"
+  or sampling.overTeleportLimit>0 and"limited"or"within-limit"
+ return {tracked=tracked,samples=self.samples or 0,alerts=self.alerts or 0,lastAlert=self.lastAlert,
+  sampling=sampling,
+  selfTest=settingValue("Detection Self Test",false),checks={
+   flight=settingValue("Flight Detection",true),speed=settingValue("Speed Detection",true),
+   fling=settingValue("Fling Detection",true),teleport=settingValue("Teleport Detection",false),
+   jump=settingValue("Jump Detection",false)}}
+end
 
-	if not humanoid or not root or humanoid.Health <= 0 or not root:IsA("BasePart") then
-		self.users[player.UserId] = nil
-		return
-	end
+function altairValues.playerAnomaly:notify(player,kind,detail,evidence,threshold,metrics)
+ if not checkAltair()then return false end
+ local record=self.users[player.UserId]
+ if not record or not self:HasEnabledChecks()then return false end
+ local now=os.clock();local cooldown=math.clamp(tonumber(settingValue("Detection Cooldown",45))or 45,10,300)
+ local previous=record.lastAlerts[kind]
+ if previous and now-previous<cooldown then return false end
+ -- Bound cross-player bursts as well as per-player alerts; retry rejected
+ -- signals on later samples instead of permanently latching an unseen alert.
+ if self.lastNotification and now-self.lastNotification<2 then return false end
+ local titles={flight="Flight / hover signal",speed="Unusual speed",fling="Unusual spinning physics",teleport="Repeated position jumps",jump="Repeated airborne lift"}
+ local selfTest=player==localPlayer
+ local text=(selfTest and"Your character"or player.DisplayName.." (@"..player.Name..")").." shows "..detail.."."
+ if settingValue("Detection Details",true)and metrics and metrics~=""then text..=" "..metrics end
+ text..=selfTest and" Self-test observation only."or" Observed locally."
+ local accepted=notification((selfTest and"Self-test · "or"")..(titles[kind]or"Movement signal"),text,self:headshot(player),{Key="movement-"..tostring(player.UserId).."-"..kind,Duration=7})
+ if accepted==nil or accepted==false then return false end
+ if not checkAltair()or self.users[player.UserId]~=record or not self:HasEnabledChecks()then return false end
+ record.lastAlerts[kind]=now;self.lastNotification=now;self.alerts=(self.alerts or 0)+1
+ self.lastAlert={userId=player.UserId,name=player.Name,kind=kind,time=now,evidence=evidence,threshold=threshold,selfTest=selfTest}
+ return true
+end
 
-	local record = self.users[player.UserId]
-	if not record then
-		record = {
-			lastPosition = root.Position,
-			lastSample = now,
-			airSince = nil,
-			flyEvidence = 0,
-			flingEvidence = 0,
-			flyLatched = false,
-			flingLatched = false,
-			lastAlerts = {},
-		}
-		self.users[player.UserId] = record
-		return
-	end
+function altairValues.playerAnomaly:signal(player,record,kind,value,threshold,enabled,detail,metrics)
+ local signal=record.signals[kind]
+ if not signal then signal={value=0,latched=false};record.signals[kind]=signal end
+ if not enabled then signal.value=0;signal.latched=false;return end
+ signal.value=math.clamp(value,0,20)
+ if signal.value<=threshold*.25 then signal.latched=false end
+ if signal.value>=threshold and not signal.latched and self:notify(player,kind,detail,signal.value,threshold,metrics)and type(record.signals)=="table"and record.signals[kind]==signal then signal.latched=true end
+end
 
-	local dt = math.clamp(now - (record.lastSample or now), 0.05, 1)
-	local position = root.Position
-	local delta = position - (record.lastPosition or position)
-	local velocity = root.AssemblyLinearVelocity
-	local angular = root.AssemblyAngularVelocity
-	local state = humanoid:GetState()
-
-	record.lastPosition = position
-	record.lastSample = now
-
-	local excludedState =
-		humanoid.Sit
-		or humanoid.SeatPart ~= nil
-		or state == Enum.HumanoidStateType.Seated
-		or state == Enum.HumanoidStateType.Swimming
-		or state == Enum.HumanoidStateType.Climbing
-		or state == Enum.HumanoidStateType.Dead
-
-	if excludedState then
-		record.airSince = nil
-		record.flyEvidence = math.max(0, record.flyEvidence - 2)
-		record.flingEvidence = math.max(0, record.flingEvidence - 2)
-		return
-	end
-
-	local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
-	if grounded then
-		record.airSince = nil
-	else
-		record.airSince = record.airSince or now
-	end
-
-	local airTime = record.airSince and (now - record.airSince) or 0
-	local horizontalVelocity = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
-	local verticalVelocity = velocity.Y
-	local linearSpeed = velocity.Magnitude
-	local angularSpeed = angular.Magnitude
-
-	local horizontalDelta = Vector3.new(delta.X, 0, delta.Z).Magnitude / dt
-	local verticalDelta = math.abs(delta.Y) / dt
-
-	local flyAdded = 0
-
-	if not grounded and airTime >= 2.75 then
-		if math.abs(verticalVelocity) <= 4.5 then
-			flyAdded += 0.9
-		end
-
-		if horizontalVelocity >= 14 and math.abs(verticalVelocity) <= 11 then
-			flyAdded += 0.75
-		end
-
-		if horizontalDelta >= 15 and verticalDelta <= 12 then
-			flyAdded += 0.55
-		end
-
-		if root.Anchored and airTime >= 2 then
-			flyAdded += 1.1
-		end
-
-		if humanoid.PlatformStand and math.abs(verticalVelocity) <= 7 then
-			flyAdded += 0.45
-		end
-	end
-
-	if not grounded and airTime >= 1.5 and verticalVelocity >= 70 then
-		flyAdded += 0.4
-	end
-
-	if flyAdded > 0 then
-		record.flyEvidence = math.min(20, record.flyEvidence + flyAdded)
-	else
-		record.flyEvidence = math.max(0, record.flyEvidence - 0.7)
-	end
-
-	local flingAdded = 0
-
-	if angularSpeed >= 220 then
-		flingAdded += 3.2
-	elseif angularSpeed >= 110 and linearSpeed >= 55 then
-		flingAdded += 2.2
-	elseif angularSpeed >= 65 and linearSpeed >= 95 then
-		flingAdded += 1.65
-	elseif angularSpeed >= 45 and linearSpeed >= 150 then
-		flingAdded += 1.2
-	end
-
-	if linearSpeed >= 240 and angularSpeed >= 35 then
-		flingAdded += 0.9
-	end
-
-	if flingAdded > 0 then
-		record.flingEvidence = math.min(20, record.flingEvidence + flingAdded)
-	else
-		record.flingEvidence = math.max(0, record.flingEvidence - 1.15)
-	end
-
-	local sensitivity = math.clamp(
-		tonumber(settingValue("Movement Detection Sensitivity", 55)) or 55,
-		1,
-		100
-	)
-
-	local flyThreshold = math.clamp(10.2 - ((sensitivity - 50) * 0.045), 7.5, 12.4)
-	local flingThreshold = math.clamp(6.8 - ((sensitivity - 50) * 0.03), 5.2, 8.4)
-
-	if record.flyEvidence >= flyThreshold then
-		if not record.flyLatched then
-			record.flyLatched = true
-			self:notify(
-				player,
-				"flight",
-				"sustained flight/hover-like movement",
-				record.flyEvidence,
-				flyThreshold
-			)
-		end
-	elseif record.flyEvidence <= flyThreshold * 0.28 then
-		record.flyLatched = false
-	end
-
-	if record.flingEvidence >= flingThreshold then
-		if not record.flingLatched then
-			record.flingLatched = true
-			self:notify(
-				player,
-				"fling",
-				"fling-like rotational physics",
-				record.flingEvidence,
-				flingThreshold
-			)
-		end
-	elseif record.flingEvidence <= flingThreshold * 0.22 then
-		record.flingLatched = false
-	end
+function altairValues.playerAnomaly:samplePlayer(player,now)
+ if player==localPlayer and not settingValue("Detection Self Test",false)then self.users[player.UserId]=nil;return end
+ local character=player.Character
+ local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+ local part=character and(character:FindFirstChild("HumanoidRootPart")or character.PrimaryPart)
+ if not humanoid or not part or not part:IsA("BasePart")or humanoid.Health<=0 then self.users[player.UserId]=nil;return end
+ local record=self.users[player.UserId]
+ if not record or record.character~=character or record.part~=part then
+  local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude;params.FilterDescendantsInstances={character};params.IgnoreWater=true
+  record={character=character,part=part,lastPosition=part.Position,lastVelocity=part.AssemblyLinearVelocity,lastSample=now,
+   born=now,graceUntil=now+4,signals={},lastAlerts={},teleports={},jumps={},params=params,baseWalkSpeed=humanoid.WalkSpeed,groundVelocity=Vector3.zero}
+  self.users[player.UserId]=record;return
+ end
+ local dt=now-record.lastSample
+ if dt<=0 then return end
+ local evidenceDt=math.min(dt,.75)
+ local position,velocity,angular=part.Position,part.AssemblyLinearVelocity,part.AssemblyAngularVelocity
+ local delta=position-record.lastPosition;local oldVelocity=record.lastVelocity
+ record.lastPosition=position;record.lastSample=now;record.lastVelocity=velocity
+ self.samples=(self.samples or 0)+1
+ -- Reuse 64 timing slots in the existing sampler; no player identifiers.
+ local intervals=self.revisitIntervals
+ if not intervals then intervals={};self.revisitIntervals=intervals end
+ local intervalIndex=self.revisitIndex or 1
+ local interval=intervals[intervalIndex]or{};interval.dt=dt;interval.at=now
+ intervals[intervalIndex]=interval;self.revisitIndex=intervalIndex%64+1
+ local sensitivity=math.clamp(tonumber(settingValue("Movement Detection Sensitivity",55))or 55,1,100)
+ local factor=1.45-sensitivity*.0055
+ local thresholds={flight=5.5*factor,speed=4*factor,fling=2.2*factor,teleport=1.7*factor,jump=1.7*factor}
+ local enabled={flight=settingValue("Flight Detection",true),speed=settingValue("Speed Detection",true),fling=settingValue("Fling Detection",true),teleport=settingValue("Teleport Detection",false),jump=settingValue("Jump Detection",false)}
+ local function prior(kind)local value=record.signals[kind];return value and value.value or 0 end
+ local function decay(rate)
+  for kind,threshold in pairs(thresholds)do
+   local signal=record.signals[kind]
+   if signal then
+    signal.value=enabled[kind]and math.max(0,signal.value-dt*rate)or 0
+    if signal.value<=threshold*.25 then signal.latched=false end
+   end
+  end
+ end
+ local state=humanoid:GetState()
+ local excluded=humanoid.Sit or humanoid.SeatPart~=nil or part.Anchored
+  or state==Enum.HumanoidStateType.Seated or state==Enum.HumanoidStateType.Swimming
+  or state==Enum.HumanoidStateType.Climbing or state==Enum.HumanoidStateType.Dead
+ if excluded or dt>8 or now-record.born<4 or character:FindFirstChildOfClass("ForceField")then
+  record.airSince=nil;record.groundSince=nil;record.spinSince=nil;record.groundVelocity=Vector3.zero
+  table.clear(record.teleports);table.clear(record.jumps);decay(4);return
+ end
+ if now<record.graceUntil then record.airSince=nil;record.groundSince=nil;record.spinSince=nil;decay(4);return end
+ local physics=state==Enum.HumanoidStateType.Ragdoll or state==Enum.HumanoidStateType.FallingDown or state==Enum.HumanoidStateType.GettingUp
+ local grounded=humanoid.FloorMaterial~=Enum.Material.Air
+ local groundVelocity=Vector3.zero
+ if enabled.flight or enabled.speed or enabled.jump then
+  local foot=math.clamp(tonumber(humanoid.HipHeight)or 2,0,12)+part.Size.Y*.5
+  local hit=workspace:Raycast(position,Vector3.new(0,-math.max(8,foot+3),0),record.params)
+  if hit and hit.Distance<=foot+1.6 then
+   grounded=true
+   if hit.Instance:IsA("BasePart")then groundVelocity=hit.Instance:GetVelocityAtPosition(position)end
+  end
+ end
+ local relativeVelocity=velocity-groundVelocity
+ local travel=delta/dt-(record.groundVelocity+groundVelocity)*.5
+ record.groundVelocity=groundVelocity
+ local horizontal=Vector3.new(relativeVelocity.X,0,relativeVelocity.Z).Magnitude
+ local measured=Vector3.new(travel.X,0,travel.Z).Magnitude
+ local angularSpeed=angular.Magnitude;local linearSpeed=velocity.Magnitude
+ if grounded then record.airSince=nil;record.groundSince=record.groundSince or now
+ else record.airSince=record.airSince or now;record.groundSince=nil end
+ local airTime=record.airSince and now-record.airSince or 0
+ local gravity=math.max(1,workspace.Gravity)
+ local jumpVelocity=humanoid.UseJumpPower and humanoid.JumpPower or math.sqrt(math.max(0,2*gravity*humanoid.JumpHeight))
+ local normalAirTime=2*jumpVelocity/gravity
+ local flightDelay=math.max(3,normalAirTime*2.5)
+ local acceleration=(velocity.Y-oldVelocity.Y)/dt
+ -- Ordinary jumps, low gravity, elevators, conveyors, respawns and short
+ -- knockback bursts do not accumulate a flight/speed signal by themselves.
+ local flightRate=0
+ if enabled.flight and not grounded and not physics and airTime>flightDelay then
+  local steadyHeight=math.abs(relativeVelocity.Y)<5 and math.abs(travel.Y)<8
+  local steadyRise=relativeVelocity.Y>12 and relativeVelocity.Y<math.max(120,jumpVelocity*2)and math.abs(acceleration)<gravity*.18
+  if steadyHeight then flightRate=horizontal>12 and 1.8 or 1.35 elseif steadyRise then flightRate=1.1 end
+ end
+ local expected=math.max(8,humanoid.WalkSpeed)
+ if player==localPlayer then expected=math.max(8,record.baseWalkSpeed)end
+ local speedLimit=math.max(42,expected*1.8+8)
+ local speedRate=0
+ if enabled.speed and grounded and not physics and not humanoid.PlatformStand and now-(record.groundSince or now)>.65 then
+  if measured>speedLimit and(horizontal>speedLimit*.65 or measured>speedLimit*1.5)then speedRate=measured>speedLimit*2 and 2.2 or 1.15 end
+ end
+ local extremeSpin=angularSpeed>180 or angularSpeed>90 and linearSpeed>65
+ if extremeSpin then record.spinSince=record.spinSince or now else record.spinSince=nil end
+ local spinTime=record.spinSince and now-record.spinSince or 0
+ local flingRate=enabled.fling and not physics and extremeSpin and spinTime>.65 and(angularSpeed>260 and 2.8 or 1.9)or 0
+ local function recent(events,window)
+  while events[1]and now-events[1]>window do table.remove(events,1)end
+  while #events>4 do table.remove(events,1)end
+  return #events
+ end
+ local positionCorrection=dt<=1.2 and delta.Magnitude>math.max(90,expected*dt*5)
+  and delta.Magnitude/dt>math.max(300,linearSpeed*3+80)and(not record.lastTeleport or now-record.lastTeleport>.45)
+ if positionCorrection then
+  if enabled.teleport then record.teleports[#record.teleports+1]=now end;record.lastTeleport=now
+  -- Do not interpret a teleport/replication correction as a speed or jump burst.
+  record.airSince=nil;record.groundSince=nil;record.graceUntil=now+.65;flightRate=0;speedRate=0
+ end
+ if enabled.jump and not positionCorrection and not grounded and not physics and not humanoid.PlatformStand and airTime>.55
+  and oldVelocity.Y< -6 and velocity.Y>math.max(25,jumpVelocity*.7)
+  and(not record.lastJump or now-record.lastJump>1.2)then record.jumps[#record.jumps+1]=now;record.lastJump=now end
+ local teleports=recent(record.teleports,12);local jumps=recent(record.jumps,12)
+ if not enabled.teleport then table.clear(record.teleports);teleports=0 end
+ if not enabled.jump then table.clear(record.jumps);jumps=0 end
+ self:signal(player,record,"flight",flightRate>0 and prior("flight")+flightRate*evidenceDt or math.max(0,prior("flight")-dt*1.5),thresholds.flight,enabled.flight,"sustained flight/hover-like movement",string.format("Airborne %.1fs; vertical %.0f studs/s.",airTime,relativeVelocity.Y))
+ self:signal(player,record,"speed",speedRate>0 and prior("speed")+speedRate*evidenceDt or math.max(0,prior("speed")-dt*1.8),thresholds.speed,enabled.speed,"sustained movement above the observed walking allowance",string.format("Ground-relative %.0f studs/s; allowance %.0f.",measured,speedLimit))
+ self:signal(player,record,"fling",flingRate>0 and prior("fling")+flingRate*evidenceDt or math.max(0,prior("fling")-dt*2),thresholds.fling,enabled.fling,"persistent high-spin physics",string.format("Rotation %.0f rad/s; movement %.0f studs/s.",angularSpeed,linearSpeed))
+ self:signal(player,record,"teleport",teleports,thresholds.teleport,enabled.teleport,"repeated position discontinuities",string.format("%d large corrections in 12s.",teleports))
+ self:signal(player,record,"jump",jumps,thresholds.jump,enabled.jump,"repeated upward impulses while already airborne",string.format("%d airborne lifts in 12s.",jumps))
 end
 
 function altairValues.playerAnomaly:sampleAll()
-	if not settingValue("Suspicious Player Detection", true) then
-		table.clear(self.users)
-		return
-	end
-
-	local now = os.clock()
-	for _, player in ipairs(players:GetPlayers()) do
-		local ok = pcall(self.samplePlayer, self, player, now)
-		if not ok then
-			self.users[player.UserId] = nil
-		end
-	end
+ if not self:HasEnabledChecks()then self:Clear();return end
+ local now=os.clock()
+ if self.lastTick and now-self.lastTick>1.25 then self:Clear()end
+ self.lastTick=now
+ local roster=players:GetPlayers();local count=#roster
+ if count==0 then self.cursor=1;return end
+ local index=math.clamp(self.cursor or 1,1,count);local deadline=os.clock()+.002
+ -- One existing worker samples a bounded round-robin slice. There is no
+ -- per-player task, per-frame detector or unbounded character scan.
+ for _=1,math.min(count,20)do
+  local player=roster[index]
+  local ok=pcall(self.samplePlayer,self,player,os.clock())
+  if not ok then self.users[player.UserId]=nil end
+  index=index%count+1
+  if os.clock()>=deadline then break end
+ end
+ self.cursor=index
 end
 
-function altairValues.chatModeration:emojiCount(value)
-	local count = 0
-	pcall(function()
-		for _, codepoint in utf8.codes(value) do
-			if
-				(codepoint >= 0x1F300 and codepoint <= 0x1FAFF)
-				or (codepoint >= 0x2600 and codepoint <= 0x26FF)
-				or (codepoint >= 0x2700 and codepoint <= 0x27BF)
-				or (codepoint >= 0x1F1E6 and codepoint <= 0x1F1FF)
-			then
-				count += 1
-			end
-		end
-	end)
-	return count
-end
-
-function altairValues.chatModeration:observe(player, message)
-	if not settingValue("Chat Spam Detection", true) or not player or player == localPlayer or type(message) ~= "string" then
-		return
-	end
-
-	local cleaned = message:gsub("[\r\n\t]", " "):gsub("%s+", " "):match("^%s*(.-)%s*$") or ""
-	if cleaned == "" then
-		return
-	end
-
-	local now = os.clock()
-	local id = player.UserId
-	local record = self.users[id]
-	if not record then
-		record = {
-			history = {},
-			lastAlert = 0,
-			lastSeen = "",
-			lastSeenAt = 0,
-			lastScore = 0,
-			flaggedUntil = 0,
-		}
-		self.users[id] = record
-	end
-
-	local lower = cleaned:lower()
-	if record.lastSeen == lower and now - record.lastSeenAt < 0.18 then
-		return
-	end
-	record.lastSeen = lower
-	record.lastSeenAt = now
-
-	local history = record.history
-	for index = #history, 1, -1 do
-		if now - history[index].time > 15 then
-			table.remove(history, index)
-		end
-	end
-
-	local score = 0
-	local reasons = {}
-	local function add(points, reason)
-		score += points
-		if reason and not table.find(reasons, reason) then
-			table.insert(reasons, reason)
-		end
-	end
-
-	local charCount = utf8.len(cleaned) or #cleaned
-	local letters = 0
-	local capitals = 0
-	for char in cleaned:gmatch("%a") do
-		letters += 1
-		if char:match("%u") then
-			capitals += 1
-		end
-	end
-
-	if letters >= 8 then
-		local ratio = capitals / letters
-		if ratio >= 0.95 then
-			add(18, "almost all caps")
-		elseif ratio >= 0.8 then
-			add(13, "heavy caps")
-		elseif ratio >= 0.65 then
-			add(8, "high caps")
-		end
-	end
-
-	local emojiCount = self:emojiCount(cleaned)
-	if emojiCount >= 4 and charCount > 0 then
-		local ratio = emojiCount / charCount
-		if ratio >= 0.55 then
-			add(17, "emoji-heavy")
-		elseif ratio >= 0.3 then
-			add(11, "many emojis")
-		elseif emojiCount >= 8 then
-			add(8, "many emojis")
-		end
-	end
-
-	if charCount >= 190 then
-		add(11, "very long messages")
-	elseif charCount >= 140 then
-		add(6, "long messages")
-	end
-
-	local punctuation = select(2, cleaned:gsub("[!%?%.]", ""))
-	if punctuation >= 12 then
-		add(12, "excessive punctuation")
-	elseif punctuation >= 7 then
-		add(7, "heavy punctuation")
-	end
-
-	local links = select(2, lower:gsub("https?://", ""))
-	if links >= 2 then
-		add(12, "multiple links")
-	elseif links == 1 and charCount < 45 then
-		add(5, "link repetition risk")
-	end
-
-	local mentions = select(2, cleaned:gsub("@[%w_]+", ""))
-	if mentions >= 4 then
-		add(10, "mass mentions")
-	elseif mentions >= 2 then
-		add(5, "multiple mentions")
-	end
-
-	local longestRun = 1
-	local currentRun = 1
-	local previous = ""
-	for index = 1, #cleaned do
-		local byte = cleaned:sub(index, index)
-		if byte == previous and byte ~= " " then
-			currentRun += 1
-			if currentRun > longestRun then
-				longestRun = currentRun
-			end
-		else
-			currentRun = 1
-			previous = byte
-		end
-	end
-	if longestRun >= 10 then
-		add(18, "repeated characters")
-	elseif longestRun >= 6 then
-		add(11, "repeated characters")
-	end
-
-	local wordCounts = {}
-	local maxWordRepeats = 0
-	for word in lower:gmatch("[%w']+") do
-		if #word >= 2 then
-			wordCounts[word] = (wordCounts[word] or 0) + 1
-			if wordCounts[word] > maxWordRepeats then
-				maxWordRepeats = wordCounts[word]
-			end
-		end
-	end
-	if maxWordRepeats >= 6 then
-		add(16, "repeated words")
-	elseif maxWordRepeats >= 4 then
-		add(10, "repeated words")
-	end
-
-	local fingerprint = lower:gsub("[%s%p_]", "")
-	if fingerprint == "" then
-		fingerprint = lower
-	end
-
-	local duplicates = 0
-	local sixSecondCount = 1
-	local twoSecondCount = 1
-	for _, item in ipairs(history) do
-		local age = now - item.time
-		if age <= 6 then
-			sixSecondCount += 1
-		end
-		if age <= 2 then
-			twoSecondCount += 1
-		end
-		if age <= 15 and (item.text == lower or (#fingerprint >= 4 and item.fingerprint == fingerprint)) then
-			duplicates += 1
-		end
-	end
-
-	if duplicates >= 3 then
-		add(45, "repeated messages")
-	elseif duplicates == 2 then
-		add(32, "repeated messages")
-	elseif duplicates == 1 then
-		add(18, "duplicate message")
-	end
-
-	if sixSecondCount >= 8 then
-		add(45, "rapid messages")
-	elseif sixSecondCount >= 6 then
-		add(28, "rapid messages")
-	elseif sixSecondCount >= 4 then
-		add(12, "rapid messages")
-	end
-
-	if twoSecondCount >= 4 then
-		add(22, "message burst")
-	elseif twoSecondCount >= 3 then
-		add(16, "message burst")
-	end
-
-	if charCount <= 3 and sixSecondCount >= 5 then
-		add(10, "repeated short messages")
-	end
-
-	score = math.clamp(math.floor(score + 0.5), 0, 100)
-	record.lastScore = score
-
-	table.insert(history, {
-		time = now,
-		text = lower,
-		fingerprint = fingerprint,
-	})
-	while #history > self.maxHistory do
-		table.remove(history, 1)
-	end
-
-	local sensitivity = math.clamp(tonumber(settingValue("Anti-Spam Sensitivity", 60)) or 60, 1, 100)
-	local threshold = math.clamp(92 - (sensitivity * 0.55), 35, 85)
-
-	if score < threshold then
-		return
-	end
-
-	record.flaggedUntil = math.max(record.flaggedUntil, now + math.clamp(5 + score * 0.12, 8, 20))
-
-	if now - record.lastAlert < self.alertCooldown then
-		return
-	end
-	record.lastAlert = now
-
-	local reasonText
-	if #reasons == 0 then
-		reasonText = "message pattern"
-	else
-		local shown = {}
-		for index = 1, math.min(3, #reasons) do
-			table.insert(shown, reasons[index])
-		end
-		reasonText = table.concat(shown, ", ")
-	end
-
-	notification(
-		"Chat Spam Detected",
-		player.DisplayName .. " (@" .. player.Name .. ") scored " .. tostring(score) .. "/100 for likely spam: " .. reasonText .. ".",
-		4384400106
-	)
-end
-
--- Rainbow Mode
+-- Passive chat observations: bounded pattern metadata, never message transcripts.
 do
+ local maxBytes,maxCharacters,historyWindow=4096,512,18
+ local function emoji(code)
+  return(code>=0x1F300 and code<=0x1FAFF)or(code>=0x2600 and code<=0x27BF)or(code>=0x1F1E6 and code<=0x1F1FF)
+ end
+ local function patternKey(value)
+  local a,b=5381,2166136261
+  for index=1,#value do local byte=string.byte(value,index);a=(a*33+byte)%4294967296;b=(b*65599+byte)%4294967296 end
+  return tostring(a)..":"..tostring(b)..":"..tostring(#value)
+ end
+ local function messageShape(value)
+  if type(value)~="string"or #value==0 or #value>maxBytes then return nil end
+  local chars={};local count,letters,capitals,emojis,symbols,longest,run,previous=0,0,0,0,0,0,0,nil
+  local ok=pcall(function()
+   for _,original in utf8.codes(value)do
+    count+=1;if count>maxCharacters then return end
+    local code=original
+    if code>=0xFF01 and code<=0xFF5E then code-=0xFEE0 end
+    local invisible=(code>=0x200B and code<=0x200F)or(code>=0x202A and code<=0x202E)or(code>=0x2060 and code<=0x206F)or code==0xFEFF
+    if invisible or code<32 and code~=9 and code~=10 and code~=13 then continue end
+    local space=code==9 or code==10 or code==13 or code==32 or code==0xA0 or(code>=0x2000 and code<=0x200A)or code==0x2028 or code==0x2029 or code==0x202F or code==0x205F or code==0x3000
+    if space then code=32 end
+    local upper=(code>=65 and code<=90)or(code>=0xC0 and code<=0xD6)or(code>=0xD8 and code<=0xDE)or(code>=0x391 and code<=0x3AB and code~=0x3A2)or(code>=0x400 and code<=0x42F)
+    local lower=(code>=97 and code<=122)or(code>=0xDF and code<=0xF6)or(code>=0xF8 and code<=0xFF)or(code>=0x3B1 and code<=0x3CB)or(code>=0x430 and code<=0x45F)
+    if upper or lower then letters+=1;if upper then capitals+=1 end end
+    if emoji(code)then emojis+=1 end
+    if(code>=33 and code<=47)or(code>=58 and code<=64)or(code>=91 and code<=96)or(code>=123 and code<=126)or(code>=0x2010 and code<=0x205E)or(code>=0x3001 and code<=0x303F)then symbols+=1 end
+    if upper then code+=(code>=0x400 and code<=0x40F)and 80 or 32 end
+    if code==previous and code~=32 then run+=1 else run=1;previous=code end
+    longest=math.max(longest,run);chars[#chars+1]=utf8.char(code)
+   end
+  end)
+  if not ok or count>maxCharacters then return nil end
+  local cleaned=table.concat(chars):gsub(" +"," "):match("^ *(.-) *$")or""
+  if cleaned==""then return nil end
+  local fingerprint=cleaned:gsub("[%s%p_]","")
+  if #fingerprint==0 then fingerprint=cleaned end
+  local links={};local linkCount=0
+  for token in cleaned:gmatch("%S+")do
+   if token:match("^https?://")or token:match("^www%.")then
+    linkCount+=1
+    if #links<4 then links[#links+1]=token:gsub("^https?://",""):gsub("[%.%,%!%?%;%:]+$","")end
+   end
+  end
+  table.sort(links)
+  local words,totalWords,maxWord={},0,0
+  for word in cleaned:gmatch("[%w']+")do if #word>=2 then totalWords+=1;words[word]=(words[word]or 0)+1;maxWord=math.max(maxWord,words[word])end end
+  return {key=patternKey(cleaned),rawKey=patternKey(value),fingerprint=patternKey(fingerprint),fingerprintLength=#fingerprint,
+   characters=count,letters=letters,capitals=capitals,emojis=emojis,symbols=symbols,longest=longest,
+   links=linkCount,linkKey=#links>0 and patternKey(table.concat(links,"|"))or nil,words=totalWords,maxWord=maxWord}
+ end
+ function altairValues.chatModeration:emojiCount(value)
+  local shape=messageShape(value);return shape and shape.emojis or 0
+ end
+ function altairValues.chatModeration:Clear(resetStats)
+  -- Sender evidence and delivery deduplication never cross a toggle boundary.
+  -- Aggregate run counters reset only through an explicit Clear History action.
+  table.clear(self.users)
+  if resetStats==true then self.observed=0;self.alertCount=0;self.lastAlertAt=nil end
+ end
+ function altairValues.chatModeration:Summary()
+  local count,flagged=0,0;local now=os.clock()
+  for _,record in pairs(self.users)do count+=1;if(record.flaggedUntil or 0)>now then flagged+=1 end end
+  return {tracked=count,flagged=flagged,observed=self.observed or 0,alerts=self.alertCount or 0,lastAlertAt=self.lastAlertAt}
+ end
+ function altairValues.chatModeration:observe(player,message,event)
+  if not checkAltair()then return false end
+  if not settingValue("Chat Spam Detection",true)then
+   if next(self.users)then self:Clear(false)end
+   return false
+  end
+  if not player or type(player.UserId)~="number"or(player==localPlayer and not settingValue("Detection Self Test",false))then return false end
+  local shape=messageShape(message);if not shape then return false end
+  local now=os.clock();local record=self.users[player.UserId]
+  if not record then record={history={},deliveries={},deliveryIds={},lastAlert=-math.huge,evidence=0,hits={},lastScore=0,flaggedUntil=0};self.users[player.UserId]=record end
+  local source=type(event)=="table"and(event.source=="legacy"or event.source=="modern")and event.source or"unknown"
+  local deliveryId=type(event)=="table"and type(event.id)=="string"and #event.id>0 and #event.id<=128 and event.id or nil
+  for id,seen in pairs(record.deliveryIds)do if now-seen>20 then record.deliveryIds[id]=nil end end
+  if deliveryId and record.deliveryIds[deliveryId]then return false end
+  if deliveryId then
+   local size=0;local oldest,oldestAt
+   for id,seen in pairs(record.deliveryIds)do size+=1;if not oldestAt or seen<oldestAt then oldest,oldestAt=id,seen end end
+   if size>=24 then record.deliveryIds[oldest]=nil end
+   record.deliveryIds[deliveryId]=now
+  end
+  local paired=false
+  for index=#record.deliveries,1,-1 do
+   local item=record.deliveries[index]
+   if now-item.time>.15 then table.remove(record.deliveries,index)
+   elseif not paired and source~="unknown"and item.source~="unknown"and item.source~=source and not item.paired and item.key==shape.rawKey then item.paired=true;paired=true end
+  end
+  if paired then return false end
+  record.deliveries[#record.deliveries+1]={time=now,source=source,key=shape.rawKey,paired=false}
+  while #record.deliveries>12 do table.remove(record.deliveries,1)end
+  self.observed=(self.observed or 0)+1
+  local elapsed=record.lastMessage and now-record.lastMessage or historyWindow
+  record.lastMessage=now
+  record.evidence=math.max(0,record.evidence-elapsed*6)
+  if elapsed>=8 then record.latched=false;table.clear(record.hits)end
+  local history=record.history
+  for index=#history,1,-1 do if now-history[index].time>historyWindow then table.remove(history,index)end end
+  for index=#record.hits,1,-1 do if now-record.hits[index]>8 then table.remove(record.hits,index)end end
+  local score,contextScore=0,0;local reasons,seenReasons={},{}
+  local function add(points,reason,contextual)
+   score+=points;if contextual then contextScore+=points end
+   if reason and not seenReasons[reason]then seenReasons[reason]=true;reasons[#reasons+1]=reason end
+  end
+  if shape.letters>=12 and shape.capitals/shape.letters>=.85 then add(12,"repeated capitals")end
+  if shape.longest>=14 then add(20,"character flooding")elseif shape.longest>=8 then add(12,"repeated characters")end
+  if shape.characters>=18 and shape.symbols/math.max(1,shape.characters)>=.55 then add(18,"symbol flooding")end
+  if shape.emojis>=8 and shape.emojis/math.max(1,shape.characters)>=.4 then add(16,"emoji flooding")end
+  if shape.maxWord>=6 and shape.maxWord/math.max(1,shape.words)>=.45 then add(15,"repeated words")end
+  if shape.links>=3 then add(14,"multiple links")end
+  -- Long messages alone are ordinary conversation; only combine with repetition.
+  score=math.min(score,32)
+  local duplicates,repeatLinks,countSix,countTwo=0,0,1,1
+  for _,item in ipairs(history)do
+   local age=now-item.time
+   if age<=6 then countSix+=1 end;if age<=2 then countTwo+=1 end
+   if item.key==shape.key or(shape.fingerprintLength>=4 and item.fingerprint==shape.fingerprint)then duplicates+=1 end
+   if shape.linkKey and item.linkKey==shape.linkKey then repeatLinks+=1 end
+  end
+  if duplicates>=3 then add(45,"repeated messages",true)elseif duplicates==2 then add(32,"repeated messages",true)elseif duplicates==1 then add(16,"duplicate messages",true)end
+  if repeatLinks>=2 then add(28,"repeated links",true)elseif repeatLinks==1 then add(12,"repeated links",true)end
+  if countSix>=7 then add(38,"rapid messages",true)elseif countSix>=5 then add(21,"rapid messages",true)elseif countSix>=4 then add(10,"rapid messages",true)end
+  if countTwo>=4 then add(26,"message bursts",true)elseif countTwo>=3 then add(14,"message bursts",true)end
+  if shape.characters<=3 and countSix>=5 then add(8,"short-message flooding",true)end
+  score=math.clamp(math.floor(score+.5),0,100);record.lastScore=score
+  history[#history+1]={time=now,key=shape.key,fingerprint=shape.fingerprint,linkKey=shape.linkKey}
+  while #history>math.clamp(self.maxHistory or 16,8,24)do table.remove(history,1)end
+  local sensitivity=math.clamp(tonumber(settingValue("Anti-Spam Sensitivity",60))or 60,1,100)
+  local threshold=math.clamp(98-sensitivity*.5,45,90)
+  record.evidence=math.min(100,record.evidence+score*.34)
+  if contextScore>=14 and score>=threshold*.6 then
+   record.hits[#record.hits+1]=now
+   while #record.hits>12 do table.remove(record.hits,1)end
+  end
+  if record.evidence<threshold*.24 then record.latched=false end
+  local sustained=#history>=3 and #record.hits>=2 and contextScore>=14 and score>=threshold*.8 and record.evidence>=threshold*.62
+  if not sustained then return false end
+  record.flaggedUntil=math.max(record.flaggedUntil,now+math.clamp(6+score*.1,10,16))
+  local cooldown=math.clamp(tonumber(settingValue("Detection Cooldown",45))or 45,10,300)
+  if record.latched or now-record.lastAlert<cooldown then return false end
+  local identity=tostring(player.DisplayName).." (@"..tostring(player.Name)..")"
+  local detail=identity.." is showing a sustained pattern of possible chat spam."
+  if settingValue("Detection Details",true)then
+   local shown={};for index=1,math.min(3,#reasons)do shown[#shown+1]=reasons[index]end
+   detail..=" Evidence "..tostring(score).."/100 · "..table.concat(shown,", ").."."
+  end
+  if player==localPlayer then detail..=" Self-test observation."end
+  local accepted=notification("Possible Chat Spam",detail,4384400106,{Key="chat-pattern-"..tostring(player.UserId),Duration=6})
+  if not accepted or not checkAltair()or self.users[player.UserId]~=record then return false end
+  record.lastAlert=now;record.latched=true;self.lastAlertAt=now;self.alertCount=(self.alertCount or 0)+1
+  return true
+ end
+end
+
+-- Theme animation and Smartbar feedback
+do
+	local function colorOutput(object,property,color)return altairValues.interfaceBindings.IdleColor(UI,object,property,color)end
 	local bar, hue, enabled = UI.SmartBar, 0, false
 	local dragVisual = drag:FindFirstChild("Drag")
 	local dragColor = dragVisual and (dragVisual:IsA("ImageLabel") or dragVisual:IsA("ImageButton"))
@@ -2122,14 +2398,14 @@ do
 	altairValues.rainbowPlayerRows = altairValues.rainbowPlayerRows or setmetatable({}, { __mode = "k" })
 
 	local playerlistBaseFillSequence = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(54, 31, 111)),
-		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(31, 51, 91)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(28, 34, 51)),
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(35, 35, 37)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(30, 30, 32)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(26, 26, 28)),
 	})
 	local playerlistBaseStrokeSequence = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(123, 71, 255)),
-		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(31, 51, 91)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(140, 171, 255)),
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(160, 176, 200)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(127, 144, 170)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(160, 176, 200)),
 	})
 
 	local function ensurePlayerlistGradient(root, name)
@@ -2152,7 +2428,7 @@ do
 			return nil
 		end
 
-		stroke.Color = Color3.new(1, 1, 1)
+		stroke.Color = colorOutput(stroke,"Color",Color3.new(1, 1, 1))
 
 		local gradient = stroke:FindFirstChildOfClass("UIGradient")
 		if not gradient then
@@ -2168,15 +2444,14 @@ do
 		if not root or not root:IsA("GuiObject") then
 			return
 		end
-
 		if root:IsA("Frame")
 			or root:IsA("TextLabel")
 			or root:IsA("TextButton")
 			or root:IsA("TextBox")
 		then
-			root.BackgroundColor3 = Color3.new(1, 1, 1)
+			root.BackgroundColor3 = colorOutput(root,"BackgroundColor3",Color3.new(1, 1, 1))
 		elseif root:IsA("ImageLabel") or root:IsA("ImageButton") then
-			root.ImageColor3 = Color3.new(1, 1, 1)
+			root.ImageColor3 = colorOutput(root,"ImageColor3",Color3.new(1, 1, 1))
 		end
 
 		local gradient = ensurePlayerlistGradient(root, "AltairPlayerlistBackgroundGradient")
@@ -2186,6 +2461,7 @@ do
 
 		local stroke = root:FindFirstChildOfClass("UIStroke")
 		if stroke then
+			stroke.Thickness,stroke.Transparency=.6,.9
 			local strokeGradient = ensurePlayerlistStrokeGradient(stroke)
 			if strokeGradient then
 				strokeGradient.Color = playerlistBaseStrokeSequence
@@ -2239,7 +2515,7 @@ do
 					or row:IsA("TextButton")
 					or row:IsA("TextBox")
 				then
-					row.BackgroundColor3 = Color3.new(1, 1, 1)
+					row.BackgroundColor3 = colorOutput(row,"BackgroundColor3",Color3.new(1, 1, 1))
 				end
 				if state.gradient then
 					state.gradient.Color = fillSequence
@@ -2250,9 +2526,9 @@ do
 				local statusDot = state.statusDot
 				if statusDot and statusDot.Parent then
 					if statusDot:IsA("Frame") then
-						statusDot.BackgroundColor3 = dotColor
+						statusDot.BackgroundColor3 = colorOutput(statusDot,"BackgroundColor3",dotColor)
 					elseif statusDot:IsA("ImageLabel") or statusDot:IsA("ImageButton") then
-						statusDot.ImageColor3 = dotColor
+						statusDot.ImageColor3 = colorOutput(statusDot,"ImageColor3",dotColor)
 					end
 				end
 			end
@@ -2261,7 +2537,7 @@ do
 		local profile = interactions:FindFirstChild("SelectedPlayer")
 		if profile then
 			if profile:IsA("Frame") then
-				profile.BackgroundColor3 = Color3.new(1, 1, 1)
+				profile.BackgroundColor3 = colorOutput(profile,"BackgroundColor3",Color3.new(1, 1, 1))
 			end
 
 			local profileGradient = ensurePlayerlistGradient(profile, "AltairPlayerlistBackgroundGradient")
@@ -2296,9 +2572,9 @@ do
 				local statusDot = state.statusDot
 				if statusDot and statusDot.Parent then
 					if statusDot:IsA("Frame") then
-						statusDot.BackgroundColor3 = Color3.fromRGB(49, 214, 110)
+						statusDot.BackgroundColor3 = colorOutput(statusDot,"BackgroundColor3",Color3.fromRGB(49, 214, 110))
 					elseif statusDot:IsA("ImageLabel") or statusDot:IsA("ImageButton") then
-						statusDot.ImageColor3 = Color3.fromRGB(49, 214, 110)
+						statusDot.ImageColor3 = colorOutput(statusDot,"ImageColor3",Color3.fromRGB(49, 214, 110))
 					end
 				end
 			end
@@ -2363,7 +2639,7 @@ do
 			if not object:IsDescendantOf(UI) then
 				borderColors[object] = nil
 			else
-				object[original[1]] = rainbow and color or object:GetAttribute("AltairBaseColor") or original[2]
+				object[original[1]] = colorOutput(object,original[1],rainbow and color or object:GetAttribute("AltairBaseColor") or original[2])
 				if object:IsA("UIStroke") then
 					local gradient = object:FindFirstChildOfClass("UIGradient")
 					if gradient then
@@ -2376,63 +2652,17 @@ do
 			end
 		end
 
-		local sliderGradientColor = rainbow and ColorSequence.new(
-			Color3.fromHSV((hue + 0.12) % 1, 0.8, 1),
-			Color3.fromHSV(hue, 0.8, 1)
-		) or nil
-		local sliderSolidColor = rainbow and Color3.fromHSV(hue, 0.8, 1) or nil
-
-		for _, slider in ipairs(altairValues.sliders) do
-			local sliderObject = slider.object
-			local progress = sliderObject and sliderObject:FindFirstChild("Progress")
-			if progress then
-				local gradient = progress:FindFirstChildOfClass("UIGradient")
-				local progressKey = "AltairSliderBackgroundColor3"
-				if progress:GetAttribute(progressKey) == nil then
-					progress:SetAttribute(progressKey, progress.BackgroundColor3)
-				end
-				progress.BackgroundColor3 = rainbow
-					and (gradient and Color3.new(1, 1, 1) or color)
-					or progress:GetAttribute(progressKey)
-
-				if gradient then
-					local gradientKey = "AltairSliderColor"
-					if gradient:GetAttribute(gradientKey) == nil then
-						gradient:SetAttribute(gradientKey, gradient.Color)
-					end
-					gradient.Color = rainbow and sliderGradientColor or gradient:GetAttribute(gradientKey)
-				end
-
-				local knob = progress:FindFirstChild("Knob")
-				if knob then
-					local knobKey = "AltairSliderBackgroundColor3"
-					if knob:GetAttribute(knobKey) == nil then
-						knob:SetAttribute(knobKey, knob.BackgroundColor3)
-					end
-					knob.BackgroundColor3 = rainbow and sliderSolidColor or knob:GetAttribute(knobKey)
-
-					local glow = knob:FindFirstChild("Glow")
-					if glow then
-						local glowKey = "AltairSliderImageColor3"
-						if glow:GetAttribute(glowKey) == nil then
-							glow:SetAttribute(glowKey, glow.ImageColor3)
-						end
-						glow.ImageColor3 = rainbow and sliderSolidColor or glow:GetAttribute(glowKey)
-					end
-				end
-			end
-		end
 
 		local smartBarColor = blinkState.color or persistentColor or (rainbow and color or (bar.UIStroke:GetAttribute("AltairTheme_Color")or Color3.fromRGB(160,166,180)))
-		bar.Shadow.ImageColor3 = smartBarColor
-		bar.CircleGradient.ImageColor3 = smartBarColor
-		bar.UIStroke.Color = smartBarColor
-		bar.Back.UIStroke.Color = smartBarColor
+		bar.Shadow.ImageColor3 = colorOutput(bar.Shadow,"ImageColor3",smartBarColor)
+		bar.CircleGradient.ImageColor3 = colorOutput(bar.CircleGradient,"ImageColor3",smartBarColor)
+		bar.UIStroke.Color = colorOutput(bar.UIStroke,"Color",smartBarColor)
+		bar.Back.UIStroke.Color = colorOutput(bar.Back.UIStroke,"Color",smartBarColor)
 		if dragVisual and dragColor then
 			if dragVisual:IsA("ImageLabel") or dragVisual:IsA("ImageButton") then
-				dragVisual.ImageColor3 = blinkState.color or rainbow and color or dragColor
+				dragVisual.ImageColor3 = colorOutput(dragVisual,"ImageColor3",blinkState.color or rainbow and color or dragColor)
 			else
-				dragVisual.BackgroundColor3 = blinkState.color or rainbow and color or dragColor
+				dragVisual.BackgroundColor3 = colorOutput(dragVisual,"BackgroundColor3",blinkState.color or rainbow and color or dragColor)
 			end
 		end
 
@@ -2441,15 +2671,15 @@ do
 				local title = toast:FindFirstChild("Title")
 				if title then
 					if toastColors[title] == nil then
-						toastColors[title] = title.TextColor3
+						toastColors[title] = altairValues.interfaceBindings.IdleBase(UI,title,"TextColor3",title.TextColor3)
 					end
-					title.TextColor3 = color
+					title.TextColor3 = colorOutput(title,"TextColor3",color)
 				end
 			end
 		else
 			for title, original in pairs(toastColors) do
 				if title.Parent then
-					title.TextColor3 = original
+					title.TextColor3 = colorOutput(title,"TextColor3",original)
 				end
 			end
 		end
@@ -2459,9 +2689,10 @@ do
 	end))
 end
 
-local function BlinkSmartBar(blinkCount, color)
+local function BlinkSmartBar(blinkCount, color, onPulse)
 	table.insert(blinkState.queue, {
 		count = math.max(1, math.floor(tonumber(blinkCount) or 1)),
+        onPulse = onPulse,
 		color = typeof(color) == "Color3" and color or nil,
 	})
 
@@ -2470,6 +2701,11 @@ local function BlinkSmartBar(blinkCount, color)
 
 	task.spawn(function()
 		local activeBar, activeSaved
+		local function returnTransparency(object,state)
+			local layout=altairValues.smartBarLayout
+			if object==drag:FindFirstChild("Drag")and layout and layout.dragVisualTransparency~=nil then return layout.dragVisualTransparency end
+			return state[2]
+		end
 
 		local function capture(bar)
 			local saved = {}
@@ -2504,7 +2740,9 @@ local function BlinkSmartBar(blinkCount, color)
 
 			for object, state in pairs(saved) do
 				if object.Parent then
-					object[state[1]] = state[2]
+					if object==drag:FindFirstChild("Drag")then
+						tweenService:Create(object,TweenInfo.new(.14,Enum.EasingStyle.Sine,Enum.EasingDirection.Out),{[state[1]]=returnTransparency(object,state)}):Play()
+					else object[state[1]] = state[2]end
 
 					object[state[3]] = blinkState.persistentColor or state[4]
 				end
@@ -2528,6 +2766,7 @@ local function BlinkSmartBar(blinkCount, color)
 
 					UI:SetAttribute("AltairThemePulse",true)
 					for _ = 1, request.count do
+                        if type(request.onPulse)=="function"then pcall(request.onPulse)end
 						blinkState.color = request.color
 
 						for object, state in pairs(activeSaved) do
@@ -2552,7 +2791,7 @@ local function BlinkSmartBar(blinkCount, color)
 
 						for object, state in pairs(activeSaved) do
 							if object.Parent then
-								local transparency = state[2]
+								local transparency = returnTransparency(object,state)
 
 								local restoreColor = blinkState.persistentColor
 								if not restoreColor then
@@ -2597,8 +2836,8 @@ local function Toast(content, color, font, skipBlink)
 	content = tostring(content or "")
 	local length = utf8.len(content) or #content
 	local lifetime = math.clamp(4 + length / 22, 7, 16)
-	local reducedMotion = false
-	pcall(function() reducedMotion = guiService.ReducedMotionEnabled end)
+	local reducedMotion = UI:GetAttribute("AltairReduceMotion")==true
+	pcall(function() reducedMotion = reducedMotion or guiService.ReducedMotionEnabled==true end)
 	for _, existing in ipairs(activeToasts) do
 		if existing.Parent and not existing:GetAttribute("AltairExiting")
 			and existing:GetAttribute("AltairContent") == content
@@ -2704,6 +2943,7 @@ altairValues.customScriptFileStem = function(title)
 end
 
 altairValues.scanCustomScripts = function()
+	if not checkAltair()then return nil,"Altair is unloaded"end
 	altairValues.customScripts = {}
 	altairValues.detectedScript = nil
 
@@ -2712,17 +2952,21 @@ altairValues.scanCustomScripts = function()
 	end
 
 	local folder = altairValues.altairFolder .. "/" .. altairValues.customScriptsFolder
-	if not isfolder(folder) then
+	local folderExists=isfolder(folder)
+	if not checkAltair()then return nil,"Altair is unloaded"end
+	if not folderExists then
 		if not makefolder then
 			return nil, "custom scripts folder unavailable"
 		end
 		local ok = pcall(makefolder, folder)
+		if not checkAltair()then return nil,"Altair is unloaded"end
 		if not ok then
 			return nil, "could not create custom scripts folder"
 		end
 	end
 
 	local ok, files = pcall(listfiles, folder)
+	if not checkAltair()then return nil,"Altair is unloaded"end
 	if not ok or type(files) ~= "table" then
 		local detail = "Could not list Altair/Custom Scripts. Rename any emoji or non-ASCII filenames in that folder, then use Reprompt."
 		warn("Altair | " .. detail .. " " .. tostring(files))
@@ -2733,12 +2977,15 @@ altairValues.scanCustomScripts = function()
 	table.sort(files)
 
 	for _, file in ipairs(files) do
+		if not checkAltair()then return nil,"Altair is unloaded"end
 		local lower = string.lower(tostring(file))
 		if lower:sub(-5) == ".json" or lower:sub(-7) == ".altair" then
 			local readOk, raw = pcall(readfile, file)
+			if not checkAltair()then return nil,"Altair is unloaded"end
 
 			if readOk and type(raw) == "string" and raw ~= "" then
 				local decodeOk, data = pcall(httpService.JSONDecode, httpService, raw)
+				if not checkAltair()then return nil,"Altair is unloaded"end
 
 				if decodeOk and type(data) == "table" then
 					local title = data.ScriptTitle or data.Title or data.Name
@@ -2764,6 +3011,7 @@ altairValues.scanCustomScripts = function()
 									marketplaceService,
 									math.floor(numericId)
 								)
+								if not checkAltair()then return nil,"Altair is unloaded"end
 								if infoOk and info and type(info.Name) == "string" and info.Name ~= "" then
 									readableName = info.Name
 								end
@@ -2773,18 +3021,26 @@ altairValues.scanCustomScripts = function()
 						readableName = altairValues.customScriptFileStem(readableName)
 
 						local target = folder .. "/" .. readableName .. extension
-						if isfile and isfile(target) then
+						local targetExists=isfile and isfile(target)
+						if not checkAltair()then return nil,"Altair is unloaded"end
+						if targetExists then
 							local base = folder .. "/" .. readableName
 							local suffix = 2
-							while isfile(base .. " (" .. tostring(suffix) .. ")" .. extension) do
+							while true do
+								if not checkAltair()then return nil,"Altair is unloaded"end
+								local exists=isfile(base .. " (" .. tostring(suffix) .. ")" .. extension)
+								if not checkAltair()then return nil,"Altair is unloaded"end
+								if not exists then break end
 								suffix += 1
 							end
 							target = base .. " (" .. tostring(suffix) .. ")" .. extension
 						end
 
 						local writeOk = pcall(writefile, target, raw)
+						if not checkAltair()then return nil,"Altair is unloaded"end
 						if writeOk then
 							pcall(delfile, file)
+							if not checkAltair()then return nil,"Altair is unloaded"end
 							definitionFile = target
 						end
 					end
@@ -2840,46 +3096,10 @@ altairValues.scanCustomScripts = function()
 end
 
 altairValues.closeGameDetection = function()
-	altairValues.promptArtworkGeneration=(altairValues.promptArtworkGeneration or 0)+1
-	if not gameDetectionPrompt.Visible then
-		altairValues.detectionPromptOpen = false
-		return
-	end
-
-	altairValues.detectionPromptOpen = false
-
-	local scale = gameDetectionPrompt:FindFirstChild("AltairDetectionScale")
-	if scale then
-		tweenService:Create(
-			scale,
-			TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
-			{ Scale = 0.94 }
-		):Play()
-	end
-
-	for _, object in ipairs({gameDetectionPrompt,table.unpack(gameDetectionPrompt:GetDescendants())}) do
-		local warning = gameDetectionPrompt:FindFirstChild("Warning", true)
-		if not (warning and object:IsDescendantOf(warning)) then
-			local properties = altairValues.transparencyProperties[object.ClassName]
-			if properties then
-				for _, property in ipairs(properties) do
-					pcall(function()
-						tweenService:Create(
-							object,
-							TweenInfo.new(0.28, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
-							{ [property] = 1 }
-						):Play()
-					end)
-				end
-			end
-		end
-	end
-
-	task.delay(0.3, function()
-		if not altairValues.detectionPromptOpen then
-			gameDetectionPrompt.Visible = false
-		end
-	end)
+ altairValues.promptArtworkGeneration=(altairValues.promptArtworkGeneration or 0)+1
+ altairValues.detectionLoadVersion=(altairValues.detectionLoadVersion or 0)+1
+ altairValues.detectionPromptOpen=false
+ altairValues.dialogMotion:Close(gameDetectionPrompt)
 end
 
 env.AltairScriptRuns=type(env.AltairScriptRuns)=="table" and env.AltairScriptRuns or {}
@@ -2898,6 +3118,7 @@ function altairValues.markScriptRunning(info)
 end
 function altairValues.scriptAlreadyRunning(info)
 	local status=env.AltairScriptRuns[altairValues.scriptRunKey(info)]
+	if type(status)=="table" and status.state=="loading" then return type(status.owner)=="table" and status.owner.alive==true end
 	local live=altairValues.knownScriptHandle(info) or (type(status)=="table" and status.handle)
 	if type(live)=="table" then return live.unloaded~=true and live.alive~=false and not (live.window and live.window.unloaded) end
 	return status==true or status=="loading"
@@ -2906,7 +3127,8 @@ altairValues.showGameDetection = function(scriptInfo)
 	if type(scriptInfo) ~= "table" then return false end
 	if altairValues.scriptAlreadyRunning(scriptInfo) then
 		altairValues.closeGameDetection()
-		local loading=env.AltairScriptRuns[altairValues.scriptRunKey(scriptInfo)]=="loading"
+		local status=env.AltairScriptRuns[altairValues.scriptRunKey(scriptInfo)]
+		local loading=status=="loading" or (type(status)=="table" and status.state=="loading")
 		notification(loading and "Script is starting" or "Script already running",tostring(scriptInfo.ScriptTitle or "Game script")..(loading and " is already starting. Its launch prompt was skipped." or " was already run. Its launch prompt was skipped."),nil,{Key="script-already-running",Duration=5})
 		return false
 	end
@@ -2921,8 +3143,11 @@ altairValues.showGameDetection = function(scriptInfo)
 	local thumbnail = gameDetectionPrompt:FindFirstChild("Thumbnail",true)
 	local warning = gameDetectionPrompt:FindFirstChild("Warning")
 
-	local currentPlaceId = game.PlaceId
-	local ok, info = pcall(marketplaceService.GetProductInfo, marketplaceService, currentPlaceId)
+ altairValues.detectionLoadVersion=(altairValues.detectionLoadVersion or 0)+1
+ local loadVersion=altairValues.detectionLoadVersion
+	local currentPlaceId=game.PlaceId
+	local ok,info=pcall(marketplaceService.GetProductInfo,marketplaceService,currentPlaceId)
+ if not checkAltair()or loadVersion~=altairValues.detectionLoadVersion then return false end
 	local gameTitle = ok and info and info.Name or ("Place " .. tostring(currentPlaceId))
 
 	placeName = gameTitle
@@ -2935,62 +3160,8 @@ altairValues.showGameDetection = function(scriptInfo)
 		thumbnail.Image = "rbxthumb://type=GameThumbnail&id=" .. tostring(game.PlaceId) .. "&w=768&h=432"
 	end
 
-	local scale = gameDetectionPrompt:FindFirstChild("AltairDetectionScale")
-	if not scale then
-		scale = Instance.new("UIScale")
-		scale.Name = "AltairDetectionScale"
-		scale.Scale = 1
-		scale.Parent = gameDetectionPrompt
-	end
-
-	for _, object in ipairs(gameDetectionPrompt:GetDescendants()) do
-		if not (warning and object:IsDescendantOf(warning)) then
-			local properties = altairValues.transparencyProperties[object.ClassName]
-			if properties then
-				for _, property in ipairs(properties) do
-					pcall(function()
-						local attribute = "AltairDetection_" .. property
-						if object:GetAttribute(attribute) == nil then
-							object:SetAttribute(attribute, object[property])
-						end
-						object[property] = 1
-					end)
-				end
-			end
-		end
-	end
-
-	scale.Scale = 0.92
-	gameDetectionPrompt.BackgroundTransparency=1
-	gameDetectionPrompt.Visible = true
-	tweenService:Create(gameDetectionPrompt,TweenInfo.new(.22),{BackgroundTransparency=UI:GetAttribute("AltairPanelTransparency")or .1}):Play()
-	altairValues.detectionPromptOpen = true
-
-	tweenService:Create(
-		scale,
-		TweenInfo.new(0.55, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-		{ Scale = 1 }
-	):Play()
-
-	for _, object in ipairs(gameDetectionPrompt:GetDescendants()) do
-		if not (warning and object:IsDescendantOf(warning)) then
-			local properties = altairValues.transparencyProperties[object.ClassName]
-			if properties then
-				for _, property in ipairs(properties) do
-					pcall(function()
-						local target = object:GetAttribute("AltairDetection_" .. property)
-						if target ~= nil then
-							tweenService:Create(
-								object,
-								TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-								{ [property] = target }
-							):Play()
-						end
-					end)
-				end
-			end
-		end
-	end
+ altairValues.detectionPromptOpen=true
+ altairValues.dialogMotion:Open(gameDetectionPrompt)
 
 	altairValues.promptArtworkGeneration=(altairValues.promptArtworkGeneration or 0)+1
 	local generation=altairValues.promptArtworkGeneration
@@ -3037,30 +3208,40 @@ altairValues.showGameDetection = function(scriptInfo)
 end
 
 altairValues.runDetectedScript = function()
+	if not checkAltair() then return false end
 	local scriptInfo = altairValues.detectedScript
 	if type(scriptInfo) ~= "table" then
 		Toast("No custom script was detected for this experience.")
 		return false
 	end
+	scriptInfo=table.clone(scriptInfo)
 	if altairValues.scriptAlreadyRunning(scriptInfo) then altairValues.showGameDetection(scriptInfo);return false end
 
-	altairValues.closeGameDetection()
-
-	local currentGameName
-	do
-		local infoOk, info = pcall(
-			marketplaceService.GetProductInfo,
-			marketplaceService,
-			game.PlaceId
-		)
-		currentGameName = infoOk and info and info.Name or "this experience"
-	end
-	Toast("Loading in " .. tostring(currentGameName) .. "...")
-
+	-- Reserve before metadata, disk, or HTTP work can yield. Each launch owns
+	-- its own token, so a late completion cannot clear or mark a newer launch.
 	local runKey=altairValues.scriptRunKey(scriptInfo)
-	env.AltairScriptRuns[runKey]="loading"
+	local token={state="loading",owner=altairValues.lifecycle}
+	local launches=altairValues.lifecycle.scriptLaunches
+	if not launches then launches={};altairValues.lifecycle.scriptLaunches=launches end
+	launches[runKey]=token
+	env.AltairScriptRuns[runKey]=token
+	local function ownsLaunch()
+		return checkAltair() and env.AltairScriptRuns[runKey]==token
+	end
+	local function releaseLaunch()
+		if env.AltairScriptRuns[runKey]==token then env.AltairScriptRuns[runKey]=nil end
+		if launches[runKey]==token then launches[runKey]=nil end
+	end
 	task.spawn(function()
+		local currentGameName
 		local function launch()
+		if not ownsLaunch() then return end
+		altairValues.closeGameDetection()
+		local infoOk, info = pcall(marketplaceService.GetProductInfo,marketplaceService,game.PlaceId)
+		if not ownsLaunch() then return end
+		currentGameName = infoOk and info and info.Name or "this experience"
+		Toast("Loading in " .. tostring(currentGameName) .. "...")
+		if not ownsLaunch() then return end
 		if type(scriptInfo.Loadstring) == "string" and scriptInfo.Loadstring ~= "" then
 			local url = scriptInfo.Loadstring
 
@@ -3075,13 +3256,17 @@ altairValues.runDetectedScript = function()
 			end
 
 			local ok, err = pcall(function()
-				local chunk = assert(loadstring(game:HttpGet(url)))
+				local source = game:HttpGet(url)
+				if not ownsLaunch() then return end
+				local chunk = assert(loadstring(source))
+				if not ownsLaunch() then return end
 				altairValues.activity:record("Script started", tostring(scriptInfo.ScriptTitle or currentGameName) .. " · Custom script")
+				if not ownsLaunch() then return end
 				local result=chunk()
-				if result~=false then altairValues.markScriptRunning(scriptInfo) end
+				if result~=false and ownsLaunch() then altairValues.markScriptRunning(scriptInfo) end
 			end)
 
-			if not ok then
+			if not ok and ownsLaunch() then
 				altairValues.activity:record("Script failed", tostring(scriptInfo.ScriptTitle or currentGameName) .. " · Load or runtime error")
 				warn("Altair | Remote custom script failed: " .. tostring(err))
 				Toast("The remote custom script failed to load.", Color3.fromRGB(255, 90, 90))
@@ -3112,6 +3297,7 @@ altairValues.runDetectedScript = function()
 
 				if isfile and not isfile(path) and listfiles then
 					local ok, files = pcall(listfiles, scriptsRoot)
+					if not ownsLaunch() then return end
 					if ok and type(files) == "table" then
 						local wanted = string.lower(requestedName)
 						for _, candidate in ipairs(files) do
@@ -3125,7 +3311,9 @@ altairValues.runDetectedScript = function()
 				end
 			end
 
-			if not isfile or not isfile(path) then
+			local exists=isfile and isfile(path)
+			if not ownsLaunch() then return end
+			if not exists then
 				Toast(
 					"Custom script file not found: " .. tostring(scriptFile),
 					Color3.fromRGB(255, 90, 90)
@@ -3134,6 +3322,7 @@ altairValues.runDetectedScript = function()
 			end
 
 			local ok, result = pcall(readfile, path)
+			if not ownsLaunch() then return end
 			if ok and type(result) == "string" and result ~= "" then
 				source = result
 			else
@@ -3142,6 +3331,7 @@ altairValues.runDetectedScript = function()
 			end
 		end
 
+		if not ownsLaunch() then return end
 		if type(source) ~= "string" or source == "" then
 			Toast("This custom script has no runnable source.", Color3.fromRGB(255, 90, 90))
 			return
@@ -3153,6 +3343,7 @@ altairValues.runDetectedScript = function()
 		end
 
 		local compileOk, chunk = pcall(loadstring, source)
+		if not ownsLaunch() then return end
 		if not compileOk or type(chunk) ~= "function" then
 			altairValues.activity:record("Script failed", tostring(scriptInfo.ScriptTitle or currentGameName) .. " · Compile error")
 			Toast("The custom script couldn't be compiled.", Color3.fromRGB(255, 90, 90))
@@ -3160,131 +3351,50 @@ altairValues.runDetectedScript = function()
 		end
 
 		altairValues.activity:record("Script started", tostring(scriptInfo.ScriptTitle or currentGameName) .. " · Custom script")
+		if not ownsLaunch() then return end
 		local runOk, runError = pcall(chunk)
-		if runOk and runError~=false then altairValues.markScriptRunning(scriptInfo) end
-		if not runOk then
+		if runOk and runError~=false and ownsLaunch() then altairValues.markScriptRunning(scriptInfo) end
+		if not runOk and ownsLaunch() then
 			altairValues.activity:record("Script failed", tostring(scriptInfo.ScriptTitle or currentGameName) .. " · Runtime error")
 			warn("Altair | Custom script failed: " .. tostring(runError))
 			Toast("The custom script returned an error.", Color3.fromRGB(255, 90, 90))
 		end
 		end
 		local launched,problem=pcall(launch)
-		if env.AltairScriptRuns[runKey]=="loading" then env.AltairScriptRuns[runKey]=nil end
-		if not launched then warn("Altair | Custom script launch failed: "..tostring(problem));notification("Script failed","The script could not start. You can try it again.",nil) end
+		local reportProblem=ownsLaunch()
+		releaseLaunch()
+		if not launched and reportProblem then warn("Altair | Custom script launch failed: "..tostring(problem));notification("Script failed","The script could not start. You can try it again.",nil) end
 	end)
 
 	return true
 end
 
 altairValues.closeCustomScriptPrompt = function()
-	if not customScriptPrompt.Visible then
-		altairValues.customScriptPromptOpen = false
-		return
-	end
-
-	altairValues.customScriptPromptOpen = false
-
-	local scale = customScriptPrompt:FindFirstChild("AltairCustomScriptScale")
-	if scale then
-		tweenService:Create(
-			scale,
-			TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
-			{ Scale = 0.95 }
-		):Play()
-	end
-
-	for _, object in ipairs({ customScriptPrompt, table.unpack(customScriptPrompt:GetDescendants()) }) do
-		local properties = altairValues.transparencyProperties[object.ClassName]
-		if properties then
-			for _, property in ipairs(properties) do
-				pcall(function()
-					tweenService:Create(
-						object,
-						TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In),
-						{ [property] = 1 }
-					):Play()
-				end)
-			end
-		end
-	end
-
-	task.delay(0.26, function()
-		if not altairValues.customScriptPromptOpen then
-			customScriptPrompt.Visible = false
-		end
-	end)
+	if not checkAltair()then return false end
+ altairValues.customScriptPromptOpen=false
+ altairValues.dialogMotion:Close(customScriptPrompt)
 end
 
 altairValues.openCustomScriptPrompt = function()
-	local idBox = customScriptPrompt:FindFirstChild("IDTextBox", true)
-	local descBox = customScriptPrompt:FindFirstChild("DescTextBox", true)
-	local scriptBox = customScriptPrompt:FindFirstChild("ScriptTextBox", true)
-
-	if not (idBox and descBox and scriptBox) then
-		Toast("Custom Scripts UI is missing one or more text boxes.", Color3.fromRGB(255, 90, 90))
-		return false
-	end
-
-	idBox.Text = tostring(placeId)
-	descBox.Text = ""
-	scriptBox.Text = ""
-
-	local scale = customScriptPrompt:FindFirstChild("AltairCustomScriptScale")
-	if not scale then
-		scale = Instance.new("UIScale")
-		scale.Name = "AltairCustomScriptScale"
-		scale.Scale = 1
-		scale.Parent = customScriptPrompt
-	end
-
-	scale.Scale = 0.94
-
-	for _, object in ipairs({ customScriptPrompt, table.unpack(customScriptPrompt:GetDescendants()) }) do
-		local properties = altairValues.transparencyProperties[object.ClassName]
-		if properties then
-			for _, property in ipairs(properties) do
-				pcall(function()
-					local attribute = "AltairCustomScript_" .. property
-					if object:GetAttribute(attribute) == nil then
-						object:SetAttribute(attribute, object[property])
-					end
-					object[property] = 1
-				end)
-			end
-		end
-	end
-
-	customScriptPrompt.Visible = true
-	altairValues.customScriptPromptOpen = true
-
-	tweenService:Create(
-		scale,
-		TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-		{ Scale = 1 }
-	):Play()
-
-	for _, object in ipairs({ customScriptPrompt, table.unpack(customScriptPrompt:GetDescendants()) }) do
-		local properties = altairValues.transparencyProperties[object.ClassName]
-		if properties then
-			for _, property in ipairs(properties) do
-				pcall(function()
-					local target = object:GetAttribute("AltairCustomScript_" .. property)
-					if target ~= nil then
-						tweenService:Create(
-							object,
-							TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-							{ [property] = target }
-						):Play()
-					end
-				end)
-			end
-		end
-	end
-
-	return true
+ if not checkAltair()then return false,"Altair is unloaded"end
+ local idBox=customScriptPrompt:FindFirstChild("IDTextBox",true)
+ local descBox=customScriptPrompt:FindFirstChild("DescTextBox",true)
+ local scriptBox=customScriptPrompt:FindFirstChild("ScriptTextBox",true)
+ if not(idBox and descBox and scriptBox)then
+  Toast("Custom Scripts UI is missing one or more text boxes.",Color3.fromRGB(255,90,90))
+  return false
+ end
+ if not customScriptPrompt.Visible then
+  idBox.Text=tostring(placeId);descBox.Text="";scriptBox.Text=""
+ end
+ altairValues.customScriptPromptOpen=true
+ altairValues.dialogMotion:Open(customScriptPrompt)
+ if not checkAltair()then return false,"Altair is unloaded"end
+ return true
 end
 
 altairValues.saveCustomScriptPrompt = function()
+	if not checkAltair()then return false,"Altair is unloaded"end
 	local idBox = customScriptPrompt:FindFirstChild("IDTextBox", true)
 	local descBox = customScriptPrompt:FindFirstChild("DescTextBox", true)
 	local scriptBox = customScriptPrompt:FindFirstChild("ScriptTextBox", true)
@@ -3338,10 +3448,12 @@ altairValues.saveCustomScriptPrompt = function()
 			marketplaceService,
 			targetPlaceId
 		)
+		if not checkAltair()then return false,"Altair is unloaded"end
 		targetGameName = infoOk and info and info.Name or "this experience"
 	end
 
 	altairValues.scanCustomScripts()
+	if not checkAltair()then return false,"Altair is unloaded"end
 
 	local existing
 	for _, entry in ipairs(altairValues.customScripts) do
@@ -3363,10 +3475,12 @@ altairValues.saveCustomScriptPrompt = function()
 
 	if existing and type(existing.DefinitionFile) == "string" then
 		local readOk, raw = pcall(readfile, existing.DefinitionFile)
+		if not checkAltair()then return false,"Altair is unloaded"end
 		local decodeOk, definition = false, nil
 
 		if readOk and type(raw) == "string" and raw ~= "" then
 			decodeOk, definition = pcall(httpService.JSONDecode, httpService, raw)
+			if not checkAltair()then return false,"Altair is unloaded"end
 		end
 
 		if not decodeOk or type(definition) ~= "table" then
@@ -3406,12 +3520,14 @@ altairValues.saveCustomScriptPrompt = function()
 		end
 
 		local encodedOk, encoded = pcall(httpService.JSONEncode, httpService, definition)
+		if not checkAltair()then return false,"Altair is unloaded"end
 		if not encodedOk then
 			Toast("Couldn't rebuild the existing custom script.", Color3.fromRGB(255, 90, 90))
 			return false
 		end
 
 		local writeOk, writeError = pcall(writefile, existing.DefinitionFile, encoded)
+		if not checkAltair()then return false,"Altair is unloaded"end
 		if not writeOk then
 			warn("Altair | Couldn't update custom script: " .. tostring(writeError))
 			Toast("Couldn't update the existing custom script.", Color3.fromRGB(255, 90, 90))
@@ -3419,7 +3535,9 @@ altairValues.saveCustomScriptPrompt = function()
 		end
 
 		altairValues.scanCustomScripts()
+		if not checkAltair()then return false,"Altair is unloaded"end
 		altairValues.closeCustomScriptPrompt()
+		if not checkAltair()then return false,"Altair is unloaded"end
 
 		if alreadySupported then
 			Toast(
@@ -3451,8 +3569,11 @@ altairValues.saveCustomScriptPrompt = function()
 	end
 
 	local folder = altairValues.altairFolder .. "/" .. altairValues.customScriptsFolder
-	if not isfolder(folder) then
+	local folderExists=isfolder(folder)
+	if not checkAltair()then return false,"Altair is unloaded"end
+	if not folderExists then
 		local ok = pcall(makefolder, folder)
+		if not checkAltair()then return false,"Altair is unloaded"end
 		if not ok then
 			Toast("Couldn't create the Custom Scripts folder.", Color3.fromRGB(255, 90, 90))
 			return false
@@ -3460,6 +3581,7 @@ altairValues.saveCustomScriptPrompt = function()
 	end
 
 	local encodedOk, encoded = pcall(httpService.JSONEncode, httpService, definition)
+	if not checkAltair()then return false,"Altair is unloaded"end
 	if not encodedOk then
 		Toast("Couldn't build the custom script definition.", Color3.fromRGB(255, 90, 90))
 		return false
@@ -3469,16 +3591,23 @@ altairValues.saveCustomScriptPrompt = function()
 
 	local filePath = folder .. "/" .. safeTitle .. ".altair"
 
-	if isfile and isfile(filePath) then
+	local pathExists=isfile and isfile(filePath)
+	if not checkAltair()then return false,"Altair is unloaded"end
+	if pathExists then
 		local base = folder .. "/" .. safeTitle
 		local suffix = 2
-		while isfile(base .. " (" .. tostring(suffix) .. ").altair") do
+		while true do
+			if not checkAltair()then return false,"Altair is unloaded"end
+			local exists=isfile(base .. " (" .. tostring(suffix) .. ").altair")
+			if not checkAltair()then return false,"Altair is unloaded"end
+			if not exists then break end
 			suffix += 1
 		end
 		filePath = base .. " (" .. tostring(suffix) .. ").altair"
 	end
 
 	local writeOk, writeError = pcall(writefile, filePath, encoded)
+	if not checkAltair()then return false,"Altair is unloaded"end
 
 	if not writeOk then
 		warn("Altair | Couldn't save custom script: " .. tostring(writeError))
@@ -3487,7 +3616,9 @@ altairValues.saveCustomScriptPrompt = function()
 	end
 
 	altairValues.scanCustomScripts()
+	if not checkAltair()then return false,"Altair is unloaded"end
 	altairValues.closeCustomScriptPrompt()
+	if not checkAltair()then return false,"Altair is unloaded"end
 	Toast("Imported custom script for " .. tostring(title) .. ".", Color3.fromRGB(80, 220, 145))
 	return true
 end
@@ -3508,87 +3639,133 @@ local function checkLastVersion()
 	end
 end
 
-local function removeReverbs(timing)
+-- Unfocused audio owns its sweep/watchers independently from Spatial Shield.
+local removeReverbs, createReverb
+do
+local muffleAudio = { active = false, focused = true, generation = 0, tweens = {}, applied = {} }
+altairValues.muffleAudio = muffleAudio
+local function cancelMuffleTween(reverb)
+	local tween = muffleAudio.tweens[reverb]
+	muffleAudio.tweens[reverb] = nil
+	if tween then tween:Cancel() end
+end
+local function destroyMuffleEffect(sound, reverb)
+	if altairValues.lifecycle.audio[sound] == reverb then altairValues.lifecycle.audio[sound] = nil end
+	cancelMuffleTween(reverb)
+	muffleAudio.applied[reverb] = nil
+	reverb:Destroy()
+end
+removeReverbs = function(timing)
 	timing = timing or 0.65
+	muffleAudio.active = false
+	muffleAudio.generation += 1
+	local generation = muffleAudio.generation
+	for _, key in ipairs({ "added", "removing" }) do
+		if muffleAudio[key] then muffleAudio[key]:Disconnect(); muffleAudio[key] = nil end
+	end
 	for sound, reverb in pairs(altairValues.lifecycle.audio) do
-		altairValues.lifecycle.audio[sound] = nil
-		if reverb.Parent then
-			tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { HighGain = 0, LowGain = 0, MidGain = 0 }):Play()
-			task.delay(timing + 0.03, function() if reverb.Parent then reverb:Destroy() end end)
+		cancelMuffleTween(reverb)
+		if not altairValues.lifecycle.alive or timing <= 0 or not reverb.Parent then
+			destroyMuffleEffect(sound, reverb)
+		else
+			local tween = tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { HighGain = 0, LowGain = 0, MidGain = 0 })
+			muffleAudio.tweens[reverb] = tween
+			tween:Play()
+			-- Keep ownership during fade-out so a focus reversal reuses this effect.
+			task.delay(timing + 0.03, function()
+				if generation == muffleAudio.generation and not muffleAudio.active
+					and altairValues.lifecycle.audio[sound] == reverb then
+					destroyMuffleEffect(sound, reverb)
+				end
+			end)
 		end
 	end
 end
-
-local function createReverb(timing)
-	if not altairValues.lifecycle.alive then return end
-	for _, sound in ipairs(soundInstances) do
-		if sound.Parent and not altairValues.lifecycle.audio[sound] then
-			local reverb = altairValues.lifecycle:own(Instance.new("EqualizerSoundEffect"))
-			altairValues.lifecycle.audio[sound] = reverb
-			reverb.Destroying:Once(function()
-				if altairValues.lifecycle.audio[sound] == reverb then altairValues.lifecycle.audio[sound] = nil end
-			end)
-			reverb.HighGain, reverb.LowGain, reverb.MidGain = 0, 0, 0
-			reverb.Parent = sound
-			if timing then
-				tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), { HighGain = -20, LowGain = 5, MidGain = -20 }):Play()
-			end
-		end
+local function applyMuffle(sound, timing, generation)
+	if not muffleAudio.active or muffleAudio.focused or generation ~= muffleAudio.generation
+		or not checkAltair() or not settingValue("Muffle audio while unfocused")
+		or not sound:IsA("Sound") or not sound:IsDescendantOf(game) then return end
+	local reverb = altairValues.lifecycle.audio[sound]
+	if reverb and reverb.Parent ~= sound then destroyMuffleEffect(sound, reverb); reverb = nil end
+	if not reverb then
+		reverb = altairValues.lifecycle:own(Instance.new("EqualizerSoundEffect"))
+		altairValues.lifecycle.audio[sound] = reverb
+		reverb.Destroying:Once(function()
+			if altairValues.lifecycle.audio[sound] == reverb then altairValues.lifecycle.audio[sound] = nil end
+			cancelMuffleTween(reverb)
+			muffleAudio.applied[reverb] = nil
+		end)
+		reverb.HighGain, reverb.LowGain, reverb.MidGain = 0, 0, 0
+		reverb.Parent = sound
 	end
+	if muffleAudio.applied[reverb] == generation then return end
+	muffleAudio.applied[reverb] = generation
+	cancelMuffleTween(reverb)
+	local target = { HighGain = -20, LowGain = 5, MidGain = -20 }
+	if timing and timing > 0 then
+		local tween = tweenService:Create(reverb, TweenInfo.new(timing, Enum.EasingStyle.Exponential), target)
+		muffleAudio.tweens[reverb] = tween
+		tween:Play()
+	else
+		for key, value in pairs(target) do reverb[key] = value end
+	end
+end
+createReverb = function(timing)
+	if not checkAltair() or muffleAudio.focused or not settingValue("Muffle audio while unfocused") then return end
+	muffleAudio.active = true
+	muffleAudio.generation += 1
+	muffleAudio.timing = timing
+	local generation = muffleAudio.generation
+	if not muffleAudio.added then
+		muffleAudio.added = game.DescendantAdded:Connect(function(sound)
+			applyMuffle(sound, muffleAudio.timing, muffleAudio.generation)
+		end)
+		muffleAudio.removing = game.DescendantRemoving:Connect(function(sound)
+			local reverb = altairValues.lifecycle.audio[sound]
+			if reverb then destroyMuffleEffect(sound, reverb) end
+		end)
+	end
+	for sound, reverb in pairs(altairValues.lifecycle.audio) do
+		if sound:IsDescendantOf(game) then applyMuffle(sound, timing, generation)
+		else destroyMuffleEffect(sound, reverb) end
+	end
+	task.spawn(function()
+		local descendants = game:GetDescendants()
+		for index, sound in ipairs(descendants) do
+			if not muffleAudio.active or generation ~= muffleAudio.generation or not checkAltair() then break end
+			applyMuffle(sound, timing, generation)
+			if index % 400 == 0 then task.wait() end
+		end
+	end)
+end
+do
+	local setting = checkSetting("Muffle audio while unfocused")
+	local previousChanged = setting and setting.onChanged
+	local handler = function(...)
+		if not checkAltair() then return end
+		if not muffleAudio.focused and settingValue("Muffle audio while unfocused") then createReverb(0.2)
+		else removeReverbs(0.2) end
+		if type(previousChanged) == "function" then previousChanged(...) end
+	end
+	if setting then setting.onChanged = handler end
+	altairValues.lifecycle.muffleCleanup = function()
+		removeReverbs(0)
+		if setting and setting.onChanged == handler then setting.onChanged = previousChanged end
+	end
+end
 end
 
 altairValues.currentCreator = creatorType == Enum.CreatorType.Group and "group" or creatorId
 altairValues.currentGroup = creatorType == Enum.CreatorType.Group and creatorId or nil
 
-local function updateSliderPadding()
-	for _, v in pairs(altairValues.sliders) do
-		-- Viewport changes can land before sortActions() has built the slider objects
-		if v.object then
-			v.padding = {
-				v.object.Track.AbsolutePosition.X,
-				v.object.Track.AbsolutePosition.X + v.object.Track.AbsoluteSize.X,
-			}
-		end
-	end
-end
-
-local function updateSlider(data, setValue, forceValue, pointerX)
-	if not data.object or not data.padding then
-		return
-	end
-
-	local inverse_interpolation
-
-	if setValue then
-		setValue = math.clamp(setValue, data.values[1], data.values[2])
-		inverse_interpolation = (setValue - data.values[1]) / (data.values[2] - data.values[1])
-	else
-		-- Measure the track during the drag, including while the panel is moving.
-		data.padding = { data.object.Track.AbsolutePosition.X, data.object.Track.AbsolutePosition.X + data.object.Track.AbsoluteSize.X }
-		pointerX = pointerX or userInputService:GetMouseLocation().X
-		local posX = math.clamp(pointerX, data.padding[1], data.padding[2])
-		local span = data.padding[2] - data.padding[1]
-		inverse_interpolation = span > 0 and (posX - data.padding[1]) / span or 0
-	end
-
-	-- Progress and Track are siblings; keep the fill eight pixels high and inside the track.
-	local track = data.object.Track
-	local progressSize = UDim2.new(track.Size.X.Scale * inverse_interpolation, track.Size.X.Offset * inverse_interpolation, track.Size.Y.Scale, track.Size.Y.Offset)
-	tweenService:Create(data.object.Progress, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { Size = progressSize }):Play()
-
-	local precision = data.default % 1 ~= 0 and 10 or 1
-	local value = math.floor((data.values[1] + (data.values[2] - data.values[1]) * inverse_interpolation) * precision + 0.5) / precision
-	data.object.Information.Text = data.name:gsub("^%l", string.upper)
-	if not data.object.Value:IsFocused() then
-		data.object.Value.Text = tostring(value)
-	end
-	data.value = value
-
-	-- Parenthesised: this used to read (callback and not setValue) or forceValue, so a forced
-	-- update on a slider without a callback called nil.
-	if data.callback and (not setValue or forceValue) then
-		data.callback(value)
-	end
+-- Property models retain their existing names; CharacterRuler owns the visuals.
+local function updateSlider(model, value, applyCallback)
+ local ruler=altairValues.characterRuler
+ if not ruler or type(value)~="number"or value~=value or math.abs(value)==math.huge then return end
+ value=math.clamp(math.round(value*10)/10,model.values[1],model.values[2])
+ model.value=value
+ ruler:Set(model,value,true)
+ if model.callback and applyCallback then model.callback(value)end
 end
 
 local function resetSliders()
@@ -3597,6 +3774,7 @@ local function resetSliders()
 	end
 end
 
+-- Character actions and the shared property ruler
 local function sortActions()
 	characterPanel.Interactions.Toggles.Template.Visible = false
 	characterPanel.Interactions.Grid.Template.Visible = false
@@ -3608,7 +3786,7 @@ local function sortActions()
 			end
 		end
 	end
-	characterPanel.Interactions.Reset.Position = UDim2.new(1, -25, 0, 10)
+	characterPanel.Interactions.Reset.Position = UDim2.fromOffset(274, 89)
 	characterPanel.Interactions.Reset.Visible = true
 	local closeButton = characterPanel:FindFirstChild("Close")
 	if closeButton then closeButton:Destroy() end
@@ -3664,6 +3842,7 @@ local function sortActions()
 		end)
 
 		newAction.Interact.MouseButton1Click:Connect(function()
+			if action.control=="Daylight"then action.callback();return end
 			local success = pcall(function()
 				action.enabled = not action.enabled
 				action.callback(action.enabled)
@@ -3705,71 +3884,48 @@ local function sortActions()
 		altairValues.sliders[2].name = "jump height"
 		altairValues.sliders[2].default = 7.2
 		altairValues.sliders[2].value = 7.2
-		altairValues.sliders[2].values = { 0, 120 }
+		altairValues.sliders[2].values = { 0, 200 }
 	end
 
-	for index, slider in ipairs(altairValues.sliders) do
-		local newSlider = characterPanel.Interactions.Sliders.Template:Clone()
-		newSlider.Name = slider.name .. " Slider"
-		newSlider:SetAttribute("RuntimeEntry", true)
-		newSlider.Parent = characterPanel.Interactions.Sliders
-		newSlider.LayoutOrder = index
-		-- Keep the template's neutral progress base, gradient, knob and glow colors.
-		newSlider.Information.Text = slider.name
-		newSlider.Visible = true
-
-		slider.object = newSlider
-
-		slider.padding = {
-			newSlider.Track.AbsolutePosition.X,
-			newSlider.Track.AbsolutePosition.X + newSlider.Track.AbsoluteSize.X,
-		}
-
-		newSlider.MouseEnter:Connect(function()
-			if debounce or slider.active then
-				return
-			end
-			tweenService:Create(newSlider, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { BackgroundTransparency = 1 }):Play()
-			tweenService:Create(newSlider.UIStroke, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { Transparency = 1 }):Play()
-			tweenService:Create(newSlider.Information, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { TextTransparency = 0 }):Play()
-		end)
-
-		newSlider.MouseLeave:Connect(function()
-			if debounce or slider.active then
-				return
-			end
-			tweenService:Create(newSlider, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { BackgroundTransparency = 1 }):Play()
-			tweenService:Create(newSlider.UIStroke, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { Transparency = 1 }):Play()
-			tweenService:Create(newSlider.Information, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { TextTransparency = 0 }):Play()
-		end)
-
-		newSlider.Interact.InputBegan:Connect(function(input)
-			if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
-			if debounce or not checkAltair() then
-				return
-			end
-
-			slider.active = true
-			updateSlider(slider, nil, nil, input.Position.X)
-
-			tweenService:Create(slider.object, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { BackgroundTransparency = 1 }):Play()
-			tweenService:Create(slider.object.UIStroke, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { Transparency = 1 }):Play()
-			tweenService:Create(slider.object.Information, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { TextTransparency = 0.05 }):Play()
-		end)
-
-		newSlider.Value.FocusLost:Connect(function()
-			local value = tonumber(newSlider.Value.Text)
-			if value and value == value and value > -math.huge and value < math.huge then
-				local success = pcall(updateSlider, slider, value, true)
-				if not success then
-					notification("Property Error", "Unable to update " .. slider.name .. ".", 4370336704)
-				end
-			end
-			newSlider.Value.Text = tostring(slider.value)
-		end)
-
-		updateSlider(slider, slider.default)
-	end
+ if altairValues.characterRuler then altairValues.characterRuler:Destroy();altairValues.characterRuler=nil end
+ for _,model in ipairs(altairValues.sliders)do model.active=false;model.value=model.default end
+ altairValues.characterRuler=altairValues.interfaceBindings.CharacterRuler(UI,altairValues.sliders,function(model,value)
+  local ok,problem=pcall(updateSlider,model,value,true)
+  if not ok then notification("Property Error","Unable to update "..model.name..".",4370336704);warn(problem)end
+ end,function()return checkAltair()and characterPanel.Visible and not characterPanel:GetAttribute("AltairClosing")and not debounce end,function(size)
+  characterPanelSize=size
+  if characterPanel.Visible and not characterPanel:GetAttribute("AltairClosing")and altairValues.smartBarLayout then
+   game:GetService("TweenService"):Create(characterPanel,TweenInfo.new(.24,Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{Position=altairValues.smartBarLayout:getPanelPosition(characterPanel,size)}):Play()
+  end
+ end)
+ altairValues.characterRuler:AttachDaylight({GetValue=function()return lighting.ClockTime end,OnChanged=function(value)altairValues.actions[8].callback(value)end,OnReset=function()
+  local value=altairValues.actions[8].reset();Toast("Time of day reset",Color3.fromRGB(238,183,86));return value
+ end})
+ if not altairValues.daylightClockConnection then
+  altairValues.daylightClockConnection=track(lighting:GetPropertyChangedSignal("ClockTime"):Connect(function()
+   local value=lighting.ClockTime
+   if daylightClock.owned and math.abs(((value-daylightClock.owned+12)%24)-12)<.001 then return end
+   daylightClock.baseline=value;daylightClock.owned=nil
+   local ruler=altairValues.characterRuler
+   if ruler and ruler.Daylight and ruler.DaylightMode and not ruler.Daylight:IsDragging()then ruler.Daylight:Set(value,true)end
+  end))
+ end
+ characterPanelSize=characterPanel.Size
+ local function bindJump(humanoid)
+  if altairValues.jumpModeConnection then altairValues.jumpModeConnection:Disconnect()end
+  local function refreshJump()
+   if not checkAltair()or not humanoid.Parent then return end
+   local model=altairValues.sliders[2];local power=humanoid.UseJumpPower
+   model.name=power and "jump power"or"jump height";model.default=power and 50 or 7.2;model.values={0,power and 500 or 200}
+   model.value=math.clamp(power and humanoid.JumpPower or humanoid.JumpHeight,model.values[1],model.values[2])
+   if altairValues.characterRuler then altairValues.characterRuler:Cancel();altairValues.characterRuler:Refresh(false)end
+  end
+  refreshJump();altairValues.jumpModeConnection=track(humanoid:GetPropertyChangedSignal("UseJumpPower"):Connect(refreshJump))
+ end
+ if startingHumanoid then bindJump(startingHumanoid)end
+ if not altairValues.jumpCharacterConnection then altairValues.jumpCharacterConnection=track(localPlayer.CharacterAdded:Connect(function(character)
+  task.spawn(function()local humanoid=character:WaitForChild("Humanoid",5);if humanoid and character==localPlayer.Character and checkAltair()then bindJump(humanoid)end end)
+ end))end
 end
 
 local function getAdaptiveHighPingThreshold()
@@ -3844,6 +4000,7 @@ altairValues.smartBarLayout = (function()
 
  altairValues.uiAvoidance=altairValues.interfaceBindings.UIAvoidance(UI,function()return settingValue("Avoid Game UI",false)end)
  local dockView=altairValues.interfaceBindings.Dock(UI)
+ altairValues.navigationAccents=altairValues.interfaceBindings.NavigationAccents({Root=UI,IsBarOpen=function()return smartBarOpen end,IsHomeOpen=function()return homeOpen end})
  altairValues.dragContrast=altairValues.interfaceBindings.DragContrast(UI)
 	local back = smartBar.Back
 	local time = back.Time
@@ -3860,7 +4017,9 @@ altairValues.smartBarLayout = (function()
 	local function moveCenter(object, target)
 		-- Preserve the rendered ScreenGui origin so the held group follows the pointer.
 		local delta = target - centerOf(object)
-		object.Position += UDim2.fromOffset(delta.X, delta.Y)
+		local position=object.Position
+		local viewport=UI.AbsoluteSize
+		object.Position=UDim2.new(position.X.Scale+(position.X.Offset+delta.X)/math.max(1,viewport.X),0,position.Y.Scale+(position.Y.Offset+delta.Y)/math.max(1,viewport.Y),0)
 	end
 
 	local function mirrorX(position)
@@ -3892,14 +4051,16 @@ altairValues.smartBarLayout = (function()
 	end
 
 	local function panelSize(panel)
-		return panel.Name == "Settings" and UDim2.fromOffset(740,430)
+		return panel.Name == "Settings" and (altairValues.settingsLayout and altairValues.settingsLayout:GetRestSize()or UDim2.fromOffset(740,430))
             or panel.Name == "Character" and characterPanelSize
 			or (panel.Name == "Playerlist" and (altairValues.playerlistUI.panelSize or playerlistPanel.Size))
 			or UDim2.fromOffset(581, 246)
 	end
+ function controller:getPanelSize(panel)return panelSize(panel)end
 
  function controller:isVertical()return self.dock=="left"or self.dock=="right"end
- function controller:getBarSize()return self:isVertical()and UDim2.fromOffset(60,300)or UDim2.fromOffset(300,60)end
+ function controller:getBarSize()return dockView:BarSize()end
+ function controller:getButtonSize(closed)return dockView:ButtonSize(closed)end
  function controller:getDragSize(length,thickness)return self:isVertical()and UDim2.fromOffset(thickness,length)or UDim2.fromOffset(length,thickness)end
  function controller:getDock()
   if self:isVertical()then return self.dock end
@@ -3926,7 +4087,7 @@ altairValues.smartBarLayout = (function()
 		if self.activePanel and self.activePanel.Parent and self.activePanel.Visible then
 			return self.activePanel
 		end
-		for _, name in ipairs({ "Character", "Scripts", "Playerlist", "Settings" }) do
+		for _, name in ipairs({ "Character", "Scripts", "Playerlist", "Settings", "ScriptSearch" }) do
 			local panel = UI:FindFirstChild(name)
 			if panel and panel.Visible then
 				return panel
@@ -3941,9 +4102,10 @@ altairValues.smartBarLayout = (function()
 		local dock = self:getDock()
 		local viewport = screenSize()
 		local barPos, barSize = smartBar.AbsolutePosition, smartBar.AbsoluteSize
+		local origin=UI.AbsolutePosition
 		local factor=panel:GetAttribute("AltairSurfaceScale") or UI:GetAttribute("AltairDisplayScale") or 1
 		local width, height = size.X.Offset*factor, size.Y.Offset*factor
-		local gap, margin = self:getGap(), 8
+		local gap, margin = self:getGap(), 12
 		local x = barPos.X + barSize.X * 0.5 - width * 0.5
 		local y = dock == "top"
 			and barPos.Y + barSize.Y + gap
@@ -3953,14 +4115,15 @@ altairValues.smartBarLayout = (function()
    y=barPos.Y+barSize.Y*.5-height*.5
   end
 
-		x = math.clamp(x, margin, math.max(margin, viewport.X - width - margin))
-		y = math.clamp(y, margin, math.max(margin, viewport.Y - height - margin))
+		x = math.clamp(x, origin.X+margin, math.max(origin.X+margin, origin.X+viewport.X-width-margin))
+		y = math.clamp(y, origin.Y+margin, math.max(origin.Y+margin, origin.Y+viewport.Y-height-margin))
 
 		local anchor = panel.AnchorPoint
 		local currentAnchor = panel.AbsolutePosition + panel.AbsoluteSize * anchor
 		local targetAnchor = Vector2.new(x + width * anchor.X, y + height * anchor.Y)
 		local delta = targetAnchor - currentAnchor
-		return panel.Position + UDim2.fromOffset(delta.X, delta.Y)
+		local position=panel.Position
+		return UDim2.new(position.X.Scale+(position.X.Offset+delta.X)/math.max(1,viewport.X),0,position.Y.Scale+(position.Y.Offset+delta.Y)/math.max(1,viewport.Y),0)
 	end
 
  function controller:syncContents(animate)
@@ -3976,7 +4139,9 @@ altairValues.smartBarLayout = (function()
 
 	local function positionAtRenderedCenter(object, target)
 		local delta = target - centerOf(object)
-		return object.Position + UDim2.fromOffset(delta.X, delta.Y)
+		local position=object.Position
+		local viewport=UI.AbsoluteSize
+		return UDim2.new(position.X.Scale+(position.X.Offset+delta.X)/math.max(1,viewport.X),0,position.Y.Scale+(position.Y.Offset+delta.Y)/math.max(1,viewport.Y),0)
 	end
 
 	local function positionPath()
@@ -4030,7 +4195,7 @@ altairValues.smartBarLayout = (function()
   local hw,hh=size.X.Offset*factor/2,size.Y.Offset*factor/2
   local x=math.clamp(target.X-originX,hw+8,math.max(hw+8,viewport.X-hw-8))
   local y=math.clamp(target.Y-screenOriginY(),hh+8,math.max(hh+8,viewport.Y-hh-8))
-  smartBar.Position=UDim2.fromOffset(x+(smartBar.AnchorPoint.X-.5)*size.X.Offset,y+(smartBar.AnchorPoint.Y-.5)*size.Y.Offset)
+  smartBar.Position=UDim2.fromScale((x+(smartBar.AnchorPoint.X-.5)*size.X.Offset)/viewport.X,(y+(smartBar.AnchorPoint.Y-.5)*size.Y.Offset)/viewport.Y)
 
 		altairValues.smartBarPositionInitialized = true
 		return true
@@ -4043,12 +4208,13 @@ altairValues.smartBarLayout = (function()
 		smartBar.Size = self:getBarSize()
 		if not self:restoreSavedPosition() then
 			local viewport = screenSize()
-			smartBar.Position = UDim2.fromOffset(viewport.X * 0.5, math.max(38, viewport.Y - 38))
+   local bottom=38
+			smartBar.Position=UDim2.fromScale(.5,math.max(bottom,viewport.Y-bottom)/math.max(1,viewport.Y))
 			altairValues.smartBarPositionInitialized = true
 		end
   self:syncContents(false)
   drag.Size=self:getDragSize(150,20)
-  if dragVisual then dragVisual.Size=self:getDragSize(100,4)end
+  if dragVisual then dragVisual.Size=self:getDragSize(100,3)end
 		-- Let Roblox resolve absolute geometry while both moving objects are invisible.
 		UI.Enabled = true
 		runService.RenderStepped:Wait()
@@ -4111,7 +4277,7 @@ altairValues.smartBarLayout = (function()
   if self:isVertical()then
    local line=dragVisual or drag;local halfLine=line.AbsoluteSize.X/2
    local edge=dock=="left"and barPos.X+barSize.X or barPos.X
-   for _,name in ipairs({"Character","Scripts","Playerlist","Settings"})do
+   for _,name in ipairs({"Character","Scripts","Playerlist","Settings","ScriptSearch"})do
     local panel=UI:FindFirstChild(name)
     if panel and panel.Visible then edge=dock=="left"and math.max(edge,panel.AbsolutePosition.X+panel.AbsoluteSize.X)or math.min(edge,panel.AbsolutePosition.X)end
    end
@@ -4127,7 +4293,7 @@ altairValues.smartBarLayout = (function()
 		local targetX = barPos.X + barSize.X * 0.5
 		local edge = dock == "bottom" and barPos.Y or (barPos.Y + barSize.Y)
 
-		for _, name in ipairs({ "Character", "Scripts", "Playerlist", "Settings" }) do
+		for _, name in ipairs({ "Character", "Scripts", "Playerlist", "Settings", "ScriptSearch" }) do
 			local panel = UI:FindFirstChild(name)
 			if panel and panel.Visible then
 				if dock == "bottom" then
@@ -4169,8 +4335,15 @@ altairValues.smartBarLayout = (function()
         drag.Position=positionAtRenderedCenter(drag,current:Lerp(target,alpha))
 	end
 
+	function controller:cancelToastPositionTween()
+		local animation = self.toastPositionTween
+		self.toastPositionTween = nil
+		if animation then animation:Cancel() end
+	end
+
 	function controller:syncToasts(dragCenter)
-		if not (toastsContainer and toastsContainer.Parent and drag.Parent) then
+		if not checkAltair() or not (toastsContainer and toastsContainer.Parent and drag.Parent) then
+			self:cancelToastPositionTween()
 			return
 		end
 
@@ -4181,36 +4354,37 @@ altairValues.smartBarLayout = (function()
 		local toastPos, toastSize = toastsContainer.AbsolutePosition, toastsContainer.AbsoluteSize
 		local dragSize = drag.AbsoluteSize
 		dragCenter = dragCenter or centerOf(drag)
+  local capsules=altairValues.capsules
+  local reserved=capsules and capsules.GetDockObstacle and capsules:GetDockObstacle()
   if self:isVertical()then
    self.toastCapsuleTarget=nil
-   local target=Vector2.new(originX+(viewport.X-toastSize.X)/2,bottomEdge-toastSize.Y-20)
+   local targetLeft=originX+(viewport.X-toastSize.X)/2
+   local targetTop=bottomEdge-toastSize.Y-20
+   -- Side-docked toasts keep their bottom-centre anchor, but must share the
+   -- same docked-capsule clearance policy as horizontally docked toasts.
+   if reserved and targetLeft < reserved[3]+gap and targetLeft+toastSize.X > reserved[1]-gap
+    and targetTop < reserved[4]+gap and targetTop+toastSize.Y > reserved[2]-gap then
+    local clearAbove=reserved[2]-gap-toastSize.Y
+    local clearBelow=reserved[4]+gap
+    if clearAbove>=topEdge then targetTop=clearAbove
+    elseif clearBelow+toastSize.Y<=bottomEdge then targetTop=clearBelow
+    else targetTop=math.min(clearBelow,bottomEdge-toastSize.Y)end
+   end
+   local target=Vector2.new(targetLeft,targetTop)
    if not self.toastSidebarTarget or(self.toastSidebarTarget-target).Magnitude>.5 then
+    self:cancelToastPositionTween()
     self.toastSidebarTarget=target
-    tweenService:Create(toastsContainer,TweenInfo.new(.2,Enum.EasingStyle.Sine),{Position=toastsContainer.Position+UDim2.fromOffset(target.X-toastPos.X,target.Y-toastPos.Y)}):Play()
+    local animation=tweenService:Create(toastsContainer,TweenInfo.new(.2,Enum.EasingStyle.Sine),{Position=toastsContainer.Position+UDim2.fromOffset(target.X-toastPos.X,target.Y-toastPos.Y)})
+    self.toastPositionTween=animation
+    animation.Completed:Once(function()if self.toastPositionTween==animation then self.toastPositionTween=nil end end)
+    animation:Play()
    end
    local layout=toastsContainer:FindFirstChildOfClass("UIListLayout");if layout then layout.VerticalAlignment=Enum.VerticalAlignment.Bottom end
    for _,toast in ipairs(toastsContainer:GetChildren())do local title=toast:FindFirstChild("Title");if title and title:IsA("TextLabel")then title.TextXAlignment=Enum.TextXAlignment.Center end end
    return
   end
+  self:cancelToastPositionTween()
   self.toastSidebarTarget=nil
-  local capsules=altairValues.capsules
-  local reserved=capsules and capsules.GetDockObstacle and capsules:GetDockObstacle()
-  if reserved then
-   local above=reserved[2]-gap-toastSize.Y
-   local below=reserved[4]+gap
-   local useAbove=dragCenter.Y>screenOriginY()+viewport.Y/2
-   if useAbove and above<topEdge then useAbove=false
-   elseif not useAbove and below+toastSize.Y>bottomEdge and above>=topEdge then useAbove=true end
-   local left=math.clamp((reserved[1]+reserved[3]-toastSize.X)/2,originX+margin,math.max(originX+margin,originX+viewport.X-toastSize.X-margin))
-   local top=math.clamp(useAbove and above or below,topEdge,math.max(topEdge,bottomEdge-toastSize.Y))
-   local target=Vector2.new(left,top)
-   if not self.toastCapsuleTarget or(self.toastCapsuleTarget-target).Magnitude>.5 then
-    self.toastCapsuleTarget=target
-    tweenService:Create(toastsContainer,TweenInfo.new(.18,Enum.EasingStyle.Sine),{Position=toastsContainer.Position+UDim2.fromOffset(left-toastPos.X,top-toastPos.Y)}):Play()
-   end
-   return
-  end
-  self.toastCapsuleTarget=nil
 
 		local above = dragCenter.Y - dragSize.Y * 0.5 - gap - toastSize.Y
 		local below = dragCenter.Y + dragSize.Y * 0.5 + gap
@@ -4247,6 +4421,16 @@ altairValues.smartBarLayout = (function()
 			originX + margin, math.max(originX + margin, originX + viewport.X - toastSize.X - margin))
 		local targetTop = math.clamp(bottomDock and above or below,
 			topEdge, math.max(topEdge, bottomEdge - toastSize.Y))
+        -- Capsules reserve clearance only; the Smartbar remains the toast anchor.
+        if reserved and targetLeft < reserved[3]+gap and targetLeft+toastSize.X > reserved[1]-gap
+            and targetTop < reserved[4]+gap and targetTop+toastSize.Y > reserved[2]-gap then
+            local clearAbove=reserved[2]-gap-toastSize.Y
+            local clearBelow=reserved[4]+gap
+            if bottomDock and clearAbove>=topEdge then targetTop=clearAbove
+            elseif not bottomDock and clearBelow+toastSize.Y<=bottomEdge then targetTop=clearBelow
+            elseif clearAbove>=topEdge then targetTop=clearAbove
+            else targetTop=math.min(clearBelow,bottomEdge-toastSize.Y) end
+        end
 		toastsContainer.Position += UDim2.fromOffset(targetLeft - toastPos.X, targetTop - toastPos.Y)
 	end
 
@@ -4354,12 +4538,42 @@ altairValues.smartBarLayout = (function()
    end
    return best
   end
-  local x=not self:isVertical()and axis(point.X,viewport.X,origin.X,self.snapX,half.X,delta.X)or nil
-  local y=axis(point.Y,viewport.Y,origin.Y,self.snapY,half.Y,delta.Y)
+  local barPoint=point+delta
+  local x=axis(barPoint.X,viewport.X,origin.X,self.snapX,half.X,0)
+  local y=axis(barPoint.Y,viewport.Y,origin.Y,self.snapY,half.Y,0)
   self.snapX,self.snapY=x,y
-  local target=Vector2.new(x or point.X,y or point.Y)
-  if self.snapGuides:Update(target,x,y,settingValue("Snap Visual Effects",true))and os.clock()-(self.snapBlinkAt or 0)>.3 then self.snapBlinkAt=os.clock();BlinkSmartBar(1)end
-  return target
+  local target=Vector2.new(x or barPoint.X,y or barPoint.Y)
+  return target-delta
+ end
+ function controller:publishSnapping(point,offset)
+  if not checkAltair()or not self.dragging or not self.snapGuides then return end
+  local guides=self.snapGuides
+  local delta=typeof(offset)=="Vector2"and offset or Vector2.new(0,offset)
+  -- Only publish accepted axes, after collision resolution has rejected any
+  -- displaced coordinate. Ordinary smoothing lag is not a snap rejection.
+  if guides:Update(point+delta,self.snapX,self.snapY,settingValue("Snap Visual Effects",true))and os.clock()-(self.snapBlinkAt or 0)>.3 then
+   self.snapBlinkAt=os.clock()
+   local session=self.dragSession
+   BlinkSmartBar(1,nil,function()
+    if checkAltair()and self.dragging and self.dragSession==session and self.snapGuides==guides then guides:Pulse()end
+   end)
+  end
+ end
+ -- A fast release can precede the dock morph. Its endpoint is based on the
+ -- authored dock footprint; rendered bounds only constrain the journey there.
+ function controller:releaseDockTarget(point)
+  local viewport,origin=screenSize(),UI.AbsolutePosition
+  local factor=UI:GetAttribute("AltairDisplayScale")or 1
+  local dimensions=self:getBarSize();local half=Vector2.new(dimensions.X.Offset,dimensions.Y.Offset)*factor*.5
+  local edge=factor;local offset
+  if self:isVertical()then offset=Vector2.new((self.dock=="left"and -1 or 1)*(half.X+self:getGap()+edge),0)
+  else offset=Vector2.new(0,(self.dragSide<0 and -1 or 1)*(half.Y+self:getGap()+edge))end
+  local lineHalf=self:isVertical()and Vector2.new(edge,50*factor)or Vector2.new(50*factor,edge)
+  local lower=Vector2.new(math.min(-lineHalf.X,offset.X-half.X),math.min(-lineHalf.Y,offset.Y-half.Y))
+  local upper=Vector2.new(math.max(lineHalf.X,offset.X+half.X),math.max(lineHalf.Y,offset.Y+half.Y))
+  local minimum=origin+Vector2.new(8,8)-lower;local maximum=origin+viewport-Vector2.new(8,8)-upper
+  local anchor=Vector2.new(math.clamp(point.X,minimum.X,math.max(minimum.X,maximum.X)),math.clamp(point.Y,minimum.Y,math.max(minimum.Y,maximum.Y)))
+  return anchor+offset,anchor
  end
 	function controller:moveSmartBar(dragCenter, dt, barOffset)
 		altairValues.smartBarPositionInitialized = true
@@ -4385,7 +4599,8 @@ altairValues.smartBarLayout = (function()
 		if not dragVisual or not dragVisual:IsA("GuiObject") then
 			return
 		end
-		local goal = { Size = self:getDragSize(width,4) }
+		self.dragVisualTransparency=transparency
+		local goal = { Size = self:getDragSize(width,3) }
 		if dragVisual:IsA("ImageLabel") or dragVisual:IsA("ImageButton") then
 			goal.ImageTransparency = transparency
 		else
@@ -4396,6 +4611,7 @@ altairValues.smartBarLayout = (function()
 	end
 
 	function controller:bind(toggleSmartBar)
+		track(UI.Destroying:Connect(function()self:cancelToastPositionTween()end))
 		local barCenter, dragCenter = centerOf(smartBar), centerOf(drag)
 		smartBar.AnchorPoint = Vector2.new(0.5, 0.5)
 		drag.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -4455,8 +4671,10 @@ altairValues.smartBarLayout = (function()
 			if inputType ~= Enum.UserInputType.MouseButton1 and inputType ~= Enum.UserInputType.Touch then
 				return
 			end
+			if self.dragging then return end
 
 			self:cancelDragPositionTween()
+			self.releaseMotion=nil
 			self.dragging = true
 			self.dragMoved = false
    self.dragSession=(self.dragSession or 0)+1;self.mainDragTarget=nil;self.lastDragTarget=nil
@@ -4506,10 +4724,15 @@ altairValues.smartBarLayout = (function()
 			self:sync(1 / 60, true)
 			if self.dragMoved and self.mainDragTarget then
     local session=self.dragSession
-    tweenService:Create(smartBar,TweenInfo.new(.22,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Position=positionAtRenderedCenter(smartBar,self.mainDragTarget)}):Play()
-    self:tweenDragCenter(self.lastDragTarget,TweenInfo.new(.22,Enum.EasingStyle.Quint,Enum.EasingDirection.Out))
-    task.delay(.24,function()if UI.Parent and not self.dragging and self.dragSession==session then self:savePosition()end end)
-   elseif self.dragMoved then self:savePosition()end
+    if dockView.morphActive and not settingValue("Avoid Game UI",false)then
+     self.mainDragTarget,self.lastDragTarget=self:releaseDockTarget((self.lastPointer or pointerPosition())+self.grabOffset)
+     self.releaseMotion={target=self.mainDragTarget,session=session}
+    else
+     tweenService:Create(smartBar,TweenInfo.new(.22,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Position=positionAtRenderedCenter(smartBar,self.mainDragTarget)}):Play()
+     self:tweenDragCenter(self.lastDragTarget,TweenInfo.new(.22,Enum.EasingStyle.Quint,Enum.EasingDirection.Out))
+     task.delay(.24,function()if UI.Parent and not self.dragging and self.dragSession==session then self:savePosition()end end)
+    end
+   elseif self.dragMoved and not self.openedForDrag then self:savePosition()end
 
 			if not self.dragMoved and not self.openedForDrag and toggleSmartBar then
 				toggleSmartBar()
@@ -4518,7 +4741,7 @@ altairValues.smartBarLayout = (function()
 
 		track(userInputService.InputEnded:Connect(function(input)
 			local inputType = input.UserInputType
-			if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
+			if self.touchInput and input==self.touchInput or not self.touchInput and inputType==Enum.UserInputType.MouseButton1 then
 				finish(input)
 			end
 		end))
@@ -4542,18 +4765,26 @@ altairValues.smartBarLayout = (function()
 				if self.dragMoved and os.clock()>=(self.dragReadyAt or 0)then
      self:cancelDragPositionTween()
 					local dragCenter, barOffset = self:clampDragTarget(pointer + self.grabOffset, dt)
-     if not settingValue("Avoid Game UI",false)then dragCenter=self:applySnapping(dragCenter,barOffset)elseif self.snapGuides then self.snapGuides:Clear()end
+     dragCenter=self:applySnapping(dragCenter,barOffset)
      local rendered=centerOf(drag)
      local nextCenter=rendered:Lerp(dragCenter,1-1e-60^math.min(dt,.1))
      if settingValue("Avoid Game UI",false)then
       local offset=typeof(barOffset)=="Vector2"and barOffset or Vector2.new(0,barOffset)
       local actual=centerOf(smartBar)-rendered
-      local half=smartBar.AbsoluteSize*.5
+      local dimensions=self:getBarSize();local factor=UI:GetAttribute("AltairDisplayScale")or 1
+      -- The finite dock morph can grow after a quick release. Reserve both
+      -- its current dimensions and authored endpoint in the existing sweep.
+      local currentSize=smartBar.AbsoluteSize
+      local half=Vector2.new(math.max(currentSize.X,dimensions.X.Offset*factor),math.max(currentSize.Y,dimensions.Y.Offset*factor))*.5
       local handle=(dragVisual or drag).AbsoluteSize*.5
       local extents={math.min(-handle.X,offset.X-half.X,actual.X-half.X),math.min(-handle.Y,offset.Y-half.Y,actual.Y-half.Y),math.max(handle.X,offset.X+half.X,actual.X+half.X),math.max(handle.Y,offset.Y+half.Y,actual.Y+half.Y)}
+      local proposed=nextCenter
       nextCenter=altairValues.uiAvoidance:Resolve(rendered,nextCenter,extents)
       dragCenter=nextCenter -- Both rendered surfaces follow the collision-constrained position.
+      if self.snapX and math.abs(nextCenter.X-proposed.X)>1.5 then self.snapX=nil end
+      if self.snapY and math.abs(nextCenter.Y-proposed.Y)>1.5 then self.snapY=nil end
      end
+     self:publishSnapping(dragCenter,barOffset)
      moveCenter(drag,nextCenter)
 					self:moveSmartBar(dragCenter, dt, barOffset)
 					self:syncContents(true)
@@ -4561,6 +4792,17 @@ altairValues.smartBarLayout = (function()
 					self:syncToasts(dragCenter)
 				end
             else
+             local release=self.releaseMotion
+             if release then
+              if release.session~=self.dragSession then self.releaseMotion=nil
+              else
+               local target=clampCenter(smartBar,release.target,8)
+               moveCenter(smartBar,centerOf(smartBar):Lerp(target,1-1e-24^math.min(dt,.1)))
+               if not dockView.morphActive and(centerOf(smartBar)-release.target).Magnitude<.15 then
+                moveCenter(smartBar,release.target);self.releaseMotion=nil;self:savePosition()
+               end
+              end
+             end
              -- Visual following stays at display refresh; only housekeeping is throttled.
              self:syncDrag(dt)
              self.idleAccumulator+=dt
@@ -4596,6 +4838,7 @@ altairValues.smartBarLayout = (function()
 	function controller:panelSize(panel)
 		return panelSize(panel)
 	end
+
 
 	return controller
 end)()
@@ -4818,7 +5061,7 @@ altairValues.setPanelPointerVisible = function(panel, button, visible, duration)
 	if pointer:IsA("ImageLabel") or pointer:IsA("ImageButton") then
 		goal.ImageTransparency = visible and 0 or 1
 	elseif pointer:IsA("Frame") or pointer:IsA("ScrollingFrame") then
-		goal.BackgroundTransparency = visible and(UI:GetAttribute("AltairPanelTransparency")or .1)or 1
+		goal.BackgroundTransparency = visible and altairValues.surfaceTransparency(panel)or 1
 	else
 		pcall(function()
 			goal.BackgroundTransparency = visible and 0 or 1
@@ -4873,6 +5116,8 @@ function altairValues.fadePanelText(panel,visible)
  if panel.Name=="Playerlist"and panel.Interactions:GetAttribute("AltairFadeGroup")then return end
 	for _,text in ipairs(panel:GetDescendants()) do
 		if text:IsA("TextLabel") or text:IsA("TextButton") or text:IsA("TextBox") then
+			if altairValues.characterRuler and text:IsDescendantOf(altairValues.characterRuler.Root)then continue end
+			if text:FindFirstAncestor("RulerContent")then continue end
 			if visible and panel.Name=="Playerlist" and text.Parent==panel and text.Name=="Subtitle" then
 				altairValues.panelTextOpacity[text]=nil;continue -- Its dedicated entrance starts with the header.
 			end
@@ -4906,40 +5151,85 @@ function altairValues.panelBehindBar(panel,closing)
 end
 -- One visual shell is retained while the existing panel content changes.
 altairValues.sharedPanel=(function()
- local controller={generation=0};local shell=UI.SharedPanelSurface
+ local controller={generation=0,fadingDecks=setmetatable({},{__mode="k"})};local shell=UI.SharedPanelSurface
  local names={"Character","Scripts","Playerlist","Settings"}
  local primary={};for _,name in ipairs(names)do primary[#primary+1]=UI:FindFirstChild(name)end
+ -- Save authored child coordinates before any entrance can shift them. Sampling
+ -- a moving child during the next switch would make that offset its new rest.
+ for _,panel in ipairs(primary)do for _,object in ipairs(panel:GetChildren())do
+  if object:IsA("GuiObject")then
+   object:SetAttribute("AltairDeckRest",object.Position)
+   if object.Name=="Interactions"or object.Name=="SettingLists"then object:SetAttribute("AltairContentRestPosition",object.Position)end
+   if object.Name=="Icon"or object.Name=="Title"or object.Name=="Subtitle"or object.Name=="HeaderIcon"or object.Name=="ContentTitle"or object.Name=="ContentSubtitle"then object:SetAttribute("AltairHeadingRest",object.Position)end
+  end
+ end end
  UI.Destroying:Connect(function()
   controller.generation+=1;controller.pending=false
   controller:stopDeck(nil);controller.deckProgress=nil
   if controller.materialTween then controller.materialTween:Cancel()end
   for _,panel in ipairs(primary)do panel:SetAttribute("AltairClosing",true);panel:SetAttribute("AltairMotionVersion",(panel:GetAttribute("AltairMotionVersion") or 0)+1)end
  end)
- function controller:stopDeck(keep)
+ local function point(value,viewport)
+  return Vector2.new(value.X.Scale*viewport.X+value.X.Offset,value.Y.Scale*viewport.Y+value.Y.Offset)
+ end
+ local function fractional(value,viewport)
+  return UDim2.fromScale(value.X/math.max(1,viewport.X),value.Y/math.max(1,viewport.Y))
+ end
+ function controller:stopDeck(keep,fading)
+  if self.deckConnection then self.deckConnection:Disconnect();self.deckConnection=nil end
   if self.deckTween then self.deckTween:Cancel();self.deckTween=nil end
+  self.deckCarry=nil;self.deckStride=nil
   local records=self.deckRecords;self.deckRecords=nil
   if records then for _,record in ipairs(records)do
    local panel=record.panel
    if panel.Parent then
     panel:SetAttribute("AltairDeckSource",nil);panel:SetAttribute("AltairDeckActive",nil)
-    for _,item in ipairs(record.objects)do if item.object.Parent then item.object.Position=item.rest end end
-    if panel~=keep then panel.Visible=false;panel:SetAttribute("AltairSharedSwitch",false)end
+    if fading then
+     -- Cancellation must retain the last clipped frame until its content fades.
+     -- A new prepare() revokes this record, so interrupted reopening owns it.
+     self.fadingDecks[panel]=record;panel:SetAttribute("AltairSharedSwitch",false)
+     if panel~=keep then
+      panel:SetAttribute("AltairClosing",true)
+      panel:SetAttribute("AltairMotionVersion",(panel:GetAttribute("AltairMotionVersion")or 0)+1)
+      wipeTransparency(panel,1,false,true,.06)
+     end
+     task.delay(.08,function()
+      if self.fadingDecks[panel]~=record then return end
+      self.fadingDecks[panel]=nil
+      if panel.Parent and panel:GetAttribute("AltairClosing")and not panel:GetAttribute("AltairDeckActive")then
+       for _,item in ipairs(record.objects)do if item.object.Parent then item.object.Position=item.rest end end
+       if panel~=keep then panel.Visible=false end
+      end
+     end)
+    else
+     for _,item in ipairs(record.objects)do if item.object.Parent then item.object.Position=item.rest end end
+     if panel~=keep then panel.Visible=false;panel:SetAttribute("AltairSharedSwitch",false)end
+    end
    end
   end end
  end
  function controller:scrollDeck(target,size)
-  local source=self.source;local from=self.deckStart or self.sourceIndex or self.targetIndex
-  local to=self.targetIndex;local lo,hi=math.floor(math.min(from,to)),math.ceil(math.max(from,to))
+  local from=self.deckStart or self.sourceIndex or self.targetIndex
+  local to=self.targetIndex;local duration=.26+.045*math.abs(to-from)
+  local reduced=UI:GetAttribute("AltairReduceMotion")==true
+  if reduced then from=to end -- Keep the target clip stationary; its normal entrance still fades.
+  local lo,hi=math.floor(math.min(from,to)),math.ceil(math.max(from,to))
   local records={};local factor=UI:GetAttribute("AltairDisplayScale")or 1
-  local stride=math.max(size.X.Offset,shell.Size.X.Offset);self.deckRecords=records
-  self.deckDuration=.26+.045*math.abs(to-from)
+  local viewport=UI.AbsoluteSize;local shellStart=point(shell.Position,viewport);local shellStartSize=point(shell.Size,viewport)
+  local stride=math.max(size.X.Offset,shellStartSize.X);local carry=not reduced and self.deckCarry or nil;self.deckCarry=nil
+  self.deckStride=stride;self.deckRecords=records
+  self.deckDuration=duration -- Retain the original sampler lifetime instead of racing the reduced shell.
   local native=game:GetService("TweenService")
   for index,name in ipairs(names)do if index<lo or index>hi then
    local hidden=UI[name];hidden.Visible=false;hidden:SetAttribute("AltairDeckSource",nil);hidden:SetAttribute("AltairDeckActive",nil);hidden:SetAttribute("AltairSharedSwitch",false)
   end end
   for index=math.max(1,lo),math.min(#names,hi)do
    local panel=UI[names[index]];altairValues.panelBehindBar(panel,false)
-   local record={panel=panel,index=index,objects={}};records[#records+1]=record
+   local previous=carry and carry[panel]
+   local anchor=Vector2.new(panel.AnchorPoint.X,panel.AnchorPoint.Y)
+   local record={panel=panel,index=index,objects={},previous=previous}
+   if previous then record.parentCorrection=previous.position-shellStart-shellStartSize*factor*anchor end
+   records[#records+1]=record
    panel:SetAttribute("AltairSharedSwitch",true);panel:SetAttribute("AltairDeckActive",true);panel:SetAttribute("AltairDeckSource",panel~=target)
    panel.ClipsDescendants=true;panel.Visible=true;panel.BackgroundTransparency=1
    native:Create(panel,TweenInfo.new(0),{Position=panel.Position,Size=panel.Size,BackgroundTransparency=1}):Play()
@@ -4947,8 +5237,13 @@ altairValues.sharedPanel=(function()
    shell.ZIndex=math.min(shell.ZIndex,panel.ZIndex-1)
    for _,object in ipairs(panel:GetChildren())do
     if object:IsA("GuiObject")and object.Name~="Shadow"and object.Name~="Pointer"and object.Name~="AltairMorphIcon"then
-     local rest=object:GetAttribute("AltairDeckRest")or object:GetAttribute("AltairContentRestPosition")or object:GetAttribute("AltairHeadingRest")or object.Position
-     object:SetAttribute("AltairDeckRest",rest);record.objects[#record.objects+1]={object=object,rest=rest}
+     if altairValues.interfaceBindings.StopSlide then altairValues.interfaceBindings.StopSlide(object)end
+     local rest=object:GetAttribute("AltairContentRestPosition")or object:GetAttribute("AltairHeadingRest")or object:GetAttribute("AltairDeckRest")or object.Position
+     local item={object=object,rest=rest}
+     if previous and previous.objects[object]then
+      item.correction=previous.objects[object]-point(rest,previous.size)-Vector2.new((index-from)*stride,0)
+     end
+     object:SetAttribute("AltairDeckRest",rest);record.objects[#record.objects+1]=item
      if object:IsA("CanvasGroup")then native:Create(object,TweenInfo.new(0),{GroupTransparency=0}):Play()end
      if object:IsA("TextLabel")or object:IsA("TextButton")or object:IsA("TextBox")then object.TextTransparency=object.Name:find("Subtitle")and .2 or 0 end
      if object:IsA("ImageLabel")or object:IsA("ImageButton")then object.ImageTransparency=0 end
@@ -4959,17 +5254,27 @@ altairValues.sharedPanel=(function()
   local function draw(value)
    local bounded=math.clamp(value,0,1)+(value<0 and value*.15 or value>1 and(value-1)*.15 or 0)
    local index=from+(to-from)*bounded;self.deckProgress=index
+   local dimensions=UI.AbsoluteSize;local shellPosition=point(shell.Position,dimensions);local shellSize=point(shell.Size,dimensions)
    for _,record in ipairs(records)do local panel=record.panel
-    panel.Size=shell.Size
-    panel.Position=UDim2.fromOffset(shell.Position.X.Offset+shell.Size.X.Offset*factor*panel.AnchorPoint.X,shell.Position.Y.Offset+shell.Size.Y.Offset*factor*panel.AnchorPoint.Y)
-    for _,item in ipairs(record.objects)do if item.object.Parent then item.object.Position=item.rest+UDim2.fromOffset((record.index-index)*stride,0)end end
+    local logical=record.previous and record.previous.size:Lerp(shellSize,bounded)or shellSize
+    local anchor=Vector2.new(panel.AnchorPoint.X,panel.AnchorPoint.Y)
+    local position=shellPosition+shellSize*factor*anchor
+    if record.parentCorrection then position+=record.parentCorrection*(1-bounded)end
+    panel.Size=fractional(logical,dimensions);panel.Position=fractional(position,dimensions)
+    for _,item in ipairs(record.objects)do if item.object.Parent then
+     local position=point(item.rest,logical)+Vector2.new((record.index-index)*stride,0)
+     if item.correction then position+=item.correction*(1-bounded)end
+     item.object.Position=fractional(position,logical)
+    end end
    end
   end
   draw(0)
-  local connection=progress.Changed:Connect(draw)
+  -- Sample the shell and deck together. A separate Changed callback could leave
+  -- the clipped content one native tween step behind its shell on interruption.
+  local connection=runService.RenderStepped:Connect(function()draw(progress.Value)end);self.deckConnection=connection
   local animation=native:Create(progress,TweenInfo.new(self.deckDuration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Value=1});self.deckTween=animation
   animation.Completed:Once(function(state)
-   connection:Disconnect();progress:Destroy()
+   connection:Disconnect();if self.deckConnection==connection then self.deckConnection=nil end;progress:Destroy()
    if state==Enum.PlaybackState.Completed and generation==self.generation then
     draw(1);self.deckTween=nil;self.deckProgress=nil;self:stopDeck(target)
    end
@@ -4977,18 +5282,42 @@ altairValues.sharedPanel=(function()
  end
  function controller:cancel(panel)
   if self.target~=panel and not(self.pending and self.source==panel)then return end
-  self.pending=false;self.generation+=1;self:stopDeck(panel);self.deckProgress=nil;shell.Visible=false;panel:SetAttribute("AltairSharedSwitch",false)
-  panel.BackgroundTransparency=UI:GetAttribute("AltairPanelTransparency") or .1
+  self.pending=false;self.generation+=1;self:stopDeck(panel,self.deckRecords~=nil);self.deckProgress=nil;shell.Visible=false;panel:SetAttribute("AltairSharedSwitch",false)
+  panel.BackgroundTransparency=altairValues.surfaceTransparency(panel)
   self.target=nil
  end
  function controller:prepare(name)
   local target=UI:FindFirstChild(name);local source
+  if self.materialTween then self.materialTween:Cancel();self.materialTween=nil end
+  local resuming=target and self.fadingDecks[target]
+  if target then self.fadingDecks[target]=nil;target:SetAttribute("AltairResumingDeck",nil)end
   if self.target and self.target.Name~=name and self.target.Visible and not self.target:GetAttribute("AltairClosing")then source=self.target end
   if not source then for _,other in ipairs(names)do local candidate=UI:FindFirstChild(other);if other~=name and candidate and candidate.Visible and not candidate:GetAttribute("AltairClosing")then source=candidate;break end end end
   self.freshEntry=source==nil
-  if not source then self.generation+=1;self:stopDeck(nil);self.deckProgress=nil;self.deckStart=nil;self.target=nil;shell.Visible=false;return false end
+  if not source then
+   if resuming and target.Visible and target:GetAttribute("AltairClosing")then
+    target:SetAttribute("AltairResumingDeck",true)
+    for _,item in ipairs(resuming.objects)do if item.object.Parent then
+     tweenService:Create(item.object,TweenInfo.new(.18,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Position=item.rest}):Play()
+    end end
+   end
+   self.generation+=1;self:stopDeck(nil);self.deckProgress=nil;self.deckStart=nil;self.target=nil;shell.Visible=false;return false
+  end
   self.deckStart=self.deckProgress
-  self:stopDeck(source)
+  -- Preserve the rendered clip rectangles and child transforms before stopDeck
+  -- restores their authored layout. Retargeting must not change a visible frame.
+  local carry
+  if self.deckRecords then
+   carry={};local viewport=UI.AbsoluteSize
+   for _,record in ipairs(self.deckRecords)do local panel=record.panel
+    if panel.Parent then
+     local previous={position=point(panel.Position,viewport),size=point(panel.Size,viewport),objects={}}
+     for _,item in ipairs(record.objects)do if item.object.Parent then previous.objects[item.object]=point(item.object.Position,previous.size)end end
+     carry[panel]=previous
+    end
+   end
+  end
+  self:stopDeck(source);self.deckCarry=carry
   self.generation+=1;local generation=self.generation;self.pending=true;self.source=source
   local factor=UI:GetAttribute("AltairDisplayScale") or 1
   if not shell.Visible then
@@ -5027,9 +5356,10 @@ altairValues.sharedPanel=(function()
   if self.target~=panel or not panel:GetAttribute("AltairSharedSwitch") then return end
   local generation=self.generation;local factor=UI:GetAttribute("AltairDisplayScale") or 1
   local goal=altairValues.smartBarLayout:getPanelPosition(panel,size)
-  local position=UDim2.fromOffset(goal.X.Scale*UI.AbsoluteSize.X+goal.X.Offset-size.X.Offset*factor*panel.AnchorPoint.X,goal.Y.Scale*UI.AbsoluteSize.Y+goal.Y.Offset-size.Y.Offset*factor*panel.AnchorPoint.Y)
+  local viewport=UI.AbsoluteSize
+  local position=fractional(point(goal,viewport)-Vector2.new(size.X.Offset*factor*panel.AnchorPoint.X,size.Y.Offset*factor*panel.AnchorPoint.Y),viewport)
   tweenService:Create(shell,TweenInfo.new(.31,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Size=size,Position=position,BackgroundColor3=panel.BackgroundColor3}):Play()
-  shell.BackgroundTransparency=UI:GetAttribute("AltairPanelTransparency") or .1
+  shell.BackgroundTransparency=altairValues.surfaceTransparency(panel)
   local targetGradient=panel:FindFirstChildOfClass("UIGradient")
   if targetGradient then
    shell.Material.Enabled=true
@@ -5047,7 +5377,7 @@ altairValues.sharedPanel=(function()
   self:scrollDeck(panel,size)
   task.delay(math.max(.42,(self.deckDuration or .34)+.04),function()
    if generation~=self.generation or not panel.Parent or panel:GetAttribute("AltairClosing") then return end
-   panel:SetAttribute("AltairSharedSwitch",false);panel.BackgroundTransparency=UI:GetAttribute("AltairPanelTransparency") or .1
+   panel:SetAttribute("AltairSharedSwitch",false);panel.BackgroundTransparency=altairValues.surfaceTransparency(panel)
    if stroke then stroke.Transparency=panel:GetAttribute("AltairSharedStroke") or .65 end
    shell.Visible=false;self.target=nil
   end)
@@ -5059,7 +5389,7 @@ altairValues.panelCornerMemory=setmetatable({}, {__mode="k"})
 function altairValues.openPanelCorners(panel,button,interrupted)
  local corner=panel:FindFirstChildOfClass("UICorner");local origin=button:FindFirstChildOfClass("UICorner")
  if not corner then return end
- local rest=altairValues.panelCornerMemory[panel] or corner.CornerRadius;altairValues.panelCornerMemory[panel]=rest
+ local rest=altairValues.panelCornerMemory[panel]or corner:GetAttribute("AltairStyleBase_CornerRadius")or corner.CornerRadius;altairValues.panelCornerMemory[panel]=rest
  if not interrupted and origin then corner.CornerRadius=origin.CornerRadius end
  tweenService:Create(corner,TweenInfo.new(.38),{CornerRadius=rest}):Play()
 end
@@ -5067,7 +5397,7 @@ function altairValues.morphPanelToIcon(panel,button,size,position,version)
  altairValues.panelBehindBar(panel,true)
  local corner=panel:FindFirstChildOfClass("UICorner");local origin=button:FindFirstChildOfClass("UICorner")
  if corner and origin then
-  altairValues.panelCornerMemory[panel]=altairValues.panelCornerMemory[panel] or corner.CornerRadius
+  altairValues.panelCornerMemory[panel]=altairValues.panelCornerMemory[panel]or corner:GetAttribute("AltairStyleBase_CornerRadius")or corner.CornerRadius
   tweenService:Create(corner,TweenInfo.new(.38),{CornerRadius=origin.CornerRadius}):Play()
  end
  local glyph=panel:FindFirstChild("AltairMorphIcon")
@@ -5088,6 +5418,7 @@ function altairValues.morphPanelToIcon(panel,button,size,position,version)
 end
 
 local function closePanel(panelName, openingOther)
+ if not checkAltair()then return end
  local closing=UI:FindFirstChild(panelName);if closing then altairValues.sharedPanel:cancel(closing) end
 	local button = smartBar.Back.Buttons:FindFirstChild(panelName)
 	local panel = UI:FindFirstChild(panelName)
@@ -5098,9 +5429,11 @@ local function closePanel(panelName, openingOther)
 	if not (panel and button) then
 		return
 	end
+	if smartBarOpen and panel.Visible then altairValues.smartBarLayout:cancelDragPositionTween()end
 
 	debounce = true
 	panel:SetAttribute("AltairClosing",true)
+	if panel.Name=="Character"and altairValues.characterRuler then altairValues.characterRuler:Cancel()end
 	altairValues.setPanelPointerVisible(panel, button, false, .18)
     altairValues.panelBehindBar(panel,true)
 	local motionVersion=(panel:GetAttribute("AltairMotionVersion") or 0)+1
@@ -5142,22 +5475,6 @@ local function closePanel(panelName, openingOther)
 				tweenService:Create(divider, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
 			end
 
-			for _, data in ipairs(altairValues.sliders) do
-				local slider = data.object
-				if slider then
-					data.active = false
-					slider.Value:ReleaseFocus()
-					tweenService:Create(slider, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-					tweenService:Create(slider.Progress, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-					tweenService:Create(slider.Track, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-					tweenService:Create(slider.Progress.Knob, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-					tweenService:Create(slider.Progress.Knob.Center, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-					tweenService:Create(slider.Progress.Knob.Glow, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
-					tweenService:Create(slider.UIStroke, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
-					tweenService:Create(slider.Information, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-					tweenService:Create(slider.Value, TweenInfo.new(0.15, Enum.EasingStyle.Quint), { BackgroundTransparency = 1, TextTransparency = 1 }):Play()
-				end
-			end
 
 			for _, action in ipairs(altairValues.actions) do
 				local actionObject = actionButton(action)
@@ -5204,7 +5521,7 @@ local function closePanel(panelName, openingOther)
 		tweenService:Create(panel.Title, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
 		tweenService:Create(panel.UIStroke, TweenInfo.new(0.2, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
 		task.wait(0.08)
-		if panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
+		if not checkAltair()or panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
 
 		altairValues.morphPanelToIcon(panel,button,buttonSize,buttonPosition,motionVersion)
 	end
@@ -5221,7 +5538,7 @@ local function closePanel(panelName, openingOther)
 	end
 
 	task.wait(0.5)
-	if panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
+	if not checkAltair()or panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
 	panel.Size = panelSize
 	panel.Visible = false
 	local glyph=panel:FindFirstChild("AltairMorphIcon");if glyph then glyph.Visible=false end
@@ -5235,15 +5552,33 @@ local function closePanel(panelName, openingOther)
 	debounce = false
 end
 
-local function openPanel(panelName)
+function altairValues.nextPanelRequest(name)
+ if not checkAltair()then return end
+ if name~="Settings"and altairValues.resetSettingsFeedback then altairValues.resetSettingsFeedback()end
+ altairValues.panelRequestVersion=(altairValues.panelRequestVersion or 0)+1
+ altairValues.panelRequestedName=name
+ return altairValues.panelRequestVersion
+end
+function altairValues.ownsPanelRequest(version)
+ return checkAltair()and version==altairValues.panelRequestVersion
+end
+
+local function openPanel(panelName,requestVersion)
+ if not smartBarOpen or(panelName~="Settings"and not isPanel(panelName))then return end
+ requestVersion=type(requestVersion)=="number"and requestVersion or altairValues.nextPanelRequest(panelName)
+ if not altairValues.ownsPanelRequest(requestVersion)then return end
+ if panelName=="Settings"then return openSettings(requestVersion)end
+ if scriptSearch.Visible and closeScriptSearch then
+  if panelName=="Scripts"then closeScriptSearch(false)else closeScriptSearch(false,function()if altairValues.ownsPanelRequest(requestVersion)then openPanel(panelName,requestVersion)end end)end
+  return
+ end
  local shared=altairValues.sharedPanel:prepare(panelName);if shared=="cancelled" then return end
  local opening=UI:FindFirstChild(panelName);if opening then altairValues.panelBehindBar(opening,false) end
 	if homeOpen then closeHome() end
 	if settingsPanel.Visible and not settingsPanel:GetAttribute("AltairClosing")and not settingsPanel:GetAttribute("AltairDeckSource")then closeSettings() end
-	local resuming=UI:FindFirstChild(panelName)
-	if debounce and not altairValues.sharedPanel.freshEntry and not(resuming and resuming:GetAttribute("AltairClosing"))then
-		return
-	end
+	if not altairValues.ownsPanelRequest(requestVersion)then return end
+	-- Navigation is owned by requestVersion. A global interaction debounce must
+	-- not leave a prepared destination visible without completing its entrance.
 	local button = smartBar.Back.Buttons:FindFirstChild(panelName)
 	local panel = UI:FindFirstChild(panelName)
 
@@ -5253,11 +5588,14 @@ local function openPanel(panelName)
 	if not (panel and button) then
 		return
 	end
+	altairValues.smartBarLayout:cancelDragPositionTween()
 	local glyph=panel:FindFirstChild("AltairMorphIcon");if glyph then glyph.Visible=false end
 	local interrupted=panel.Visible and panel:GetAttribute("AltairClosing")
+	local continuing=interrupted and not shared
 	local resumeSize=interrupted and panel.Size
 	local resumePosition=interrupted and panel.Position
 	local resumeAlpha=interrupted and panel.BackgroundTransparency
+	local resumeStroke=continuing and panel.UIStroke.Transparency
 
 	debounce = true
 
@@ -5269,6 +5607,7 @@ local function openPanel(panelName)
 			end
 		end
 	end
+	if not altairValues.ownsPanelRequest(requestVersion)then return end
 	if not smartBarOpen then debounce=false;return end
 	local motionVersion=(panel:GetAttribute("AltairMotionVersion") or 0)+1
 	panel:SetAttribute("AltairMotionVersion",motionVersion)
@@ -5281,7 +5620,7 @@ local function openPanel(panelName)
 	-- collapse the shell exactly like Character/Scripts before the opening tween.
 	if panel.Name == "Playerlist" and altairValues.playerlistUI.reset then
 		altairValues.playerlistUI.rowsOpening = true
-		altairValues.playerlistUI:reset(true)
+		if not continuing then altairValues.playerlistUI:reset(true)end
 	end
 
 	local buttonSize, buttonPosition = getPanelButtonGeometry(panel, button)
@@ -5289,17 +5628,25 @@ local function openPanel(panelName)
 	panel.Position = resumePosition or buttonPosition or panel.Position
 
     local content=panel:FindFirstChild("Interactions")
-    if content and content:GetAttribute("AltairContentRestPosition")then content.Position=content:GetAttribute("AltairContentRestPosition")end
-	wipeTransparency(panel, 1, true)
-	if resumeAlpha then panel.BackgroundTransparency=resumeAlpha end
+    if content and not panel:GetAttribute("AltairResumingDeck")and content:GetAttribute("AltairContentRestPosition")then content.Position=content:GetAttribute("AltairContentRestPosition")end
+	if panel.Name=="Scripts"and altairValues.nativeCatalog then altairValues.nativeCatalog:Reset()end
+	if continuing then
+		panel:SetAttribute("AltairClosing",false)
+		if tweenService.Freeze then
+			for object,properties in pairs(altairValues.captureFadeState(panel))do if object.Parent then tweenService:Freeze(object,properties)end end
+			if panel:IsA("CanvasGroup")then tweenService:Freeze(panel,{GroupTransparency=panel.GroupTransparency})end
+		end
+	else wipeTransparency(panel, 1, true)end
 
 	altairValues.interfaceBindings.Surface(panel)
+	if resumeAlpha then panel.BackgroundTransparency=resumeAlpha end
+	if resumeStroke then panel.UIStroke.Transparency=resumeStroke end
  panel.Visible = true
-    if panel:IsA("CanvasGroup") then panel.GroupTransparency=1;tweenService:Create(panel,TweenInfo.new(.18),{GroupTransparency=0}):Play() end
+    if panel:IsA("CanvasGroup") then if not continuing then panel.GroupTransparency=1 end;tweenService:Create(panel,TweenInfo.new(.18),{GroupTransparency=0}):Play() end
 	panel:SetAttribute("AltairClosing",false)
 	altairValues.openPanelCorners(panel,button,interrupted)
 	task.delay(.12,function()
-		if panel.Parent and panel.Visible and panel:GetAttribute("AltairMotionVersion")==motionVersion and not panel:GetAttribute("AltairClosing") then altairValues.fadePanelText(panel,true) end
+		if altairValues.ownsPanelRequest(requestVersion)and panel.Parent and panel.Visible and panel:GetAttribute("AltairMotionVersion")==motionVersion and not panel:GetAttribute("AltairClosing") then altairValues.fadePanelText(panel,true) end
 	end)
 	altairValues.smartBarLayout.activePanel = panel
 	altairValues.bindPanelPointer(panel, button)
@@ -5307,59 +5654,46 @@ local function openPanel(panelName)
 
 	updateBackpackLayout(panel)
 
-	tweenService:Create(panel, TweenInfo.new(0.1, Enum.EasingStyle.Quint), { BackgroundTransparency = UI:GetAttribute("AltairPanelTransparency") or .1 }):Play()
-	tweenService:Create(panel, TweenInfo.new(0.8, Enum.EasingStyle.Exponential), { Size = panelSize }):Play()
-	tweenService:Create(panel, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {
-		Position = altairValues.smartBarLayout:getPanelPosition(panel, panelSize),
-	}):Play()
+	tweenService:Create(panel, TweenInfo.new(0.1, Enum.EasingStyle.Quint), { BackgroundTransparency = altairValues.surfaceTransparency(panel) }):Play()
+	if not shared then
+		tweenService:Create(panel, TweenInfo.new(.38, Enum.EasingStyle.Quint), {
+			Size=panelSize,Position=altairValues.smartBarLayout:getPanelPosition(panel,panelSize),
+		}):Play()
+	end
 
 	altairValues.sharedPanel:animate(panel,panelSize)
 	task.wait(0.12)
 
-	if panel:GetAttribute("AltairMotionVersion")~=motionVersion or panel:GetAttribute("AltairClosing") then return end
+	if not altairValues.ownsPanelRequest(requestVersion)or panel:GetAttribute("AltairMotionVersion")~=motionVersion or panel:GetAttribute("AltairClosing") then return end
     if panel:GetAttribute("AltairSharedSwitch")and not panel:GetAttribute("AltairDeckActive")then altairValues.interfaceBindings.SlideHeading(panel,panel:GetAttribute("AltairSlideDirection")or 1)end
 	altairValues.setPanelPointerVisible(panel, button, true, 0.45)
 	tweenService:Create(panel.Icon, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
 	task.wait(0.025)
-	if panel:GetAttribute("AltairMotionVersion")~=motionVersion or panel:GetAttribute("AltairClosing") then return end
+	if not altairValues.ownsPanelRequest(requestVersion)or panel:GetAttribute("AltairMotionVersion")~=motionVersion or panel:GetAttribute("AltairClosing") then return end
 	tweenService:Create(panel.Title, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 	tweenService:Create(panel.UIStroke, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { Transparency = 0.95 }):Play()
 	task.wait(0.025)
-	if panel:GetAttribute("AltairMotionVersion")~=motionVersion or panel:GetAttribute("AltairClosing") then return end
+	if not altairValues.ownsPanelRequest(requestVersion)or panel:GetAttribute("AltairMotionVersion")~=motionVersion or panel:GetAttribute("AltairClosing") then return end
 
 	-- Animate interactive elements
 	if panel.Name == "Character" then -- Character Panel Animation
-		tweenService:Create(characterPanel.UIStroke, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { Transparency = 0.7 }):Play()
+		tweenService:Create(characterPanel.UIStroke, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { Transparency = .86 }):Play()
+		if altairValues.characterRuler then altairValues.characterRuler:Refresh(false)end
 		tweenService:Create(characterPanel.Subtitle, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 		tweenService:Create(characterPanel.Interactions.PropertiesTitle, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 		tweenService:Create(characterPanel.Interactions.ActionsTitle, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-		tweenService:Create(characterPanel.Interactions.HeaderDivider, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.7 }):Play()
-		tweenService:Create(characterPanel.Interactions.ActionsDivider, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.35 }):Play()
-		tweenService:Create(characterPanel.Interactions.PropertiesDivider, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.35 }):Play()
+		tweenService:Create(characterPanel.Interactions.HeaderDivider, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = .9 }):Play()
+		tweenService:Create(characterPanel.Interactions.ActionsDivider, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = .9 }):Play()
+		tweenService:Create(characterPanel.Interactions.PropertiesDivider, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = .9 }):Play()
 
-		for _, data in ipairs(altairValues.sliders) do
-			local slider = data.object
-			if slider then
-				slider.Progress.Size = UDim2.new(0, 0, slider.Track.Size.Y.Scale, slider.Track.Size.Y.Offset)
-				updateSlider(data, data.value)
-				tweenService:Create(slider.Track, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-				tweenService:Create(slider.Progress, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-				tweenService:Create(slider.Progress.Knob, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-				tweenService:Create(slider.Progress.Knob.Center, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-				tweenService:Create(slider.Progress.Knob.Glow, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { ImageTransparency = 0.42 }):Play()
-				tweenService:Create(slider.Information, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-				tweenService:Create(slider.Value, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0, TextTransparency = 0 }):Play()
-			end
-		end
-		updateSliderPadding()
 
 		for _, action in ipairs(altairValues.actions) do
 			local actionObject = actionButton(action)
 			if actionObject then
 				local quickToggle = actionObject.Parent == characterPanel.Interactions.Toggles
-				actionObject.Icon.Image = "rbxassetid://" .. action.images[action.enabled and 1 or 2]
+				if action.control=="Daylight"then altairValues.interfaceBindings.ApplyIcon(actionObject.Icon,"sun")else actionObject.Icon.Image = "rbxassetid://" .. action.images[action.enabled and 1 or 2]end
 				tweenService:Create(actionObject, TweenInfo.new(0.6, Enum.EasingStyle.Quint), { BackgroundTransparency = action.enabled and 0.02 or (quickToggle and 0.12 or 0.1) }):Play()
-				tweenService:Create(actionObject.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Quint), { Transparency = action.enabled and 0.3 or (quickToggle and 0.32 or 0.91) }):Play()
+				tweenService:Create(actionObject.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Quint), { Transparency = action.enabled and .55 or .9 }):Play()
 				tweenService:Create(actionObject.Icon, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { ImageTransparency = action.enabled and 0 or 0.15 }):Play()
 				tweenService:Create(actionObject.Title, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0.5 }):Play()
 				if quickToggle then
@@ -5380,7 +5714,7 @@ local function openPanel(panelName)
 	elseif panel.Name == "Scripts" then -- Scripts Panel Animation
 		for _, scriptButton in ipairs(scriptsPanel.Interactions.Selection:GetChildren()) do
 			if scriptButton.ClassName == "Frame" then
-				tweenService:Create(scriptButton, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
+					tweenService:Create(scriptButton, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
 				if scriptButton:FindFirstChild("Icon") then
 					tweenService:Create(scriptButton.Icon, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
 				end
@@ -5388,7 +5722,7 @@ local function openPanel(panelName)
 				if scriptButton:FindFirstChild("Subtitle") then
 					tweenService:Create(scriptButton.Subtitle, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { TextTransparency = 0.3 }):Play()
 				end
-				tweenService:Create(scriptButton.UIStroke, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { Transparency = 0.2 }):Play()
+					tweenService:Create(scriptButton.UIStroke, TweenInfo.new(0.45, Enum.EasingStyle.Quint), { Transparency = .2 }):Play()
 			end
 		end
     elseif panel.Name=="Playerlist"then
@@ -5410,11 +5744,24 @@ local function openPanel(panelName)
      else tweenService:Create(content,TweenInfo.new(.28),{GroupTransparency=0}):Play()end
     end
 	task.wait(0.22)
-	if panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
+	if not altairValues.ownsPanelRequest(requestVersion)or panel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
 	debounce = false
 end
 
 altairValues.smartBarLayout.onDragBegin = function(self)
+ altairValues.nextPanelRequest(nil)
+ if scriptSearch.Visible and closeScriptSearch then
+  local session=self.dragSession
+  self.activePanel=nil
+  -- Finish the button return before the dock moves underneath its source card.
+  self.dragReadyAt=math.max(self.dragReadyAt or 0,os.clock()+.5)
+  closeScriptSearch(false,function()
+   if not UI.Parent then return end
+   closePanel("Scripts",true)
+   if self.dragSession==session then self.dragReadyAt=0 end
+  end)
+  return
+ end
  if settingsPanel.Visible and not settingsPanel:GetAttribute("AltairClosing")then self.activePanel=nil;task.spawn(closeSettings)end
 	for _, panelName in ipairs({ "Character", "Scripts", "Playerlist" }) do
 		local panel = UI:FindFirstChild(panelName)
@@ -5427,11 +5774,14 @@ altairValues.smartBarLayout.onDragBegin = function(self)
 end
 
 local function rejoin()
+	if not checkAltair()then return false end
 	altairValues.activity:record("Rejoin requested", "Current server")
+	if not checkAltair()then return false end
 	notification("Rejoining Session", "We're queueing a rejoin to this session, give us a moment.", 4400696294)
-
-	if #players:GetPlayers() <= 1 then
-		task.wait()
+	local solo=#players:GetPlayers()<=1
+	if solo then task.wait()end
+	if not checkAltair()then return false end
+	if solo then
 		teleportService:Teleport(placeId, localPlayer)
 	else
 		teleportService:TeleportToPlaceInstance(placeId, jobId, localPlayer)
@@ -5483,13 +5833,14 @@ altairValues.serverHop = (function()
 		local received = false
 		-- Follow the available pages with a bounded retry budget; no background scans.
 		for page = 1, 20 do
-			if generation and (generation~=self.generation or not self.busy) then return {},false end
+			if not checkAltair() or generation and (generation~=self.generation or not self.busy) then return {},false end
 			local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Desc&excludeFullGames=true&limit=100"
 			if cursor then url ..= "&cursor=" .. httpService:UrlEncode(cursor) end
 			local response
 			for retry = 1, 3 do
-				if generation and (generation~=self.generation or not self.busy) then return {},false end
+				if not checkAltair() or generation and (generation~=self.generation or not self.busy) then return {},false end
 				local ok, data = pcall(function() return httpService:JSONDecode(game:HttpGetAsync(url)) end)
+				if not checkAltair() or generation and (generation~=self.generation or not self.busy) then return {},false end
 				if ok and type(data) == "table" and type(data.data) == "table" then
 					response = data
 					break
@@ -5501,6 +5852,7 @@ altairValues.serverHop = (function()
 				local ok, data = pcall(function()
 					return httpService:JSONDecode(game:HttpGetAsync("https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Desc&limit=100"))
 				end)
+				if not checkAltair() or generation and (generation~=self.generation or not self.busy) then return {},false end
 				if ok and type(data) == "table" and type(data.data) == "table" then response = data end
 			end
 			if not response then break end
@@ -5558,9 +5910,10 @@ altairValues.serverHop = (function()
 			..(server.ping and ", "..tostring(math.floor(server.ping)).." ms reported ping" or "")..")."
 		notification("Teleporting", message, 4335479121)
 		task.wait(1)
-		if generation~=self.generation or not self.busy or self.attempt~=attempt then return end
+		if generation~=self.generation or not self.busy or self.attempt~=attempt or not checkAltair() then return end
 		self.lastTeleportAt=os.clock()
 		local ok = pcall(teleportService.TeleportToPlaceInstance, teleportService, placeId, server.id, localPlayer)
+		if generation~=self.generation or not self.busy or self.attempt~=attempt or not checkAltair() then return end
 		if not ok and self.generation==generation and self.waiting and self.attempt == attempt then
 			self.waiting = false
 			task.defer(function() self:tryNext(generation) end)
@@ -5568,14 +5921,14 @@ altairValues.serverHop = (function()
 		end
 		-- Do not start a second teleport merely because departure is taking time.
 		task.delay(30, function()
-			if self.generation == generation and self.attempt == attempt and self.waiting then
+			if checkAltair() and self.generation == generation and self.attempt == attempt and self.waiting then
 				self:finish("Server hop timed out","Roblox didn't finish the transfer. You can retry; Altair has stopped this attempt.")
 			end
 		end)
 	end
 
 	track(teleportService.TeleportInitFailed:Connect(function(player, _, _, failedPlace, options)
-		if player ~= localPlayer or failedPlace ~= placeId or not controller.waiting then return end
+		if not checkAltair() or player ~= localPlayer or failedPlace ~= placeId or not controller.waiting then return end
 		local failedId
 		if options then pcall(function() failedId = options.ServerInstanceId end) end
 		if failedId and failedId ~= "" and failedId ~= controller.target then return end
@@ -5585,6 +5938,7 @@ altairValues.serverHop = (function()
 	end))
 
 	function controller:start()
+		if not checkAltair() then return end
 		if self.busy then self:cancel();return end
 		self.busy = true
 		self.generation += 1
@@ -5592,7 +5946,7 @@ altairValues.serverHop = (function()
 		self.attempt = 0
 		notification("Finding a server", "Finding populated joinable servers. Select Serverhop again to cancel.", 4335479121)
 		local ok, candidates, received = pcall(function() return self:collect(generation) end)
-		if generation~=self.generation or not self.busy then return end
+		if generation~=self.generation or not self.busy or not checkAltair() then return end
 		if not ok or not received or #candidates == 0 then
 			self.busy = false
 			notification("No suitable server", (not ok or not received)
@@ -5615,34 +5969,34 @@ altairValues.classifyDisconnect=function(reason)
 	return "unknown"
 end
 
--- Always provide a dismiss path; never replace Roblox's own error controls.
+-- Preserve Roblox's own error controls; this recovery card is always dismissible.
 do
- local dismiss=Instance.new("TextButton")
- dismiss.Name="Dismiss";dismiss.Text="Close";dismiss.Font=Enum.Font.GothamMedium;dismiss.TextSize=12
- dismiss.TextColor3=Color3.new(1,1,1);dismiss.BackgroundTransparency=1
- dismiss.Size=UDim2.fromOffset(48,24);dismiss.Position=UDim2.new(1,-54,0,4)
- dismiss.ZIndex=disconnectedPrompt.Action.ZIndex+1;dismiss.Parent=disconnectedPrompt
+ local dismiss=disconnectedPrompt:FindFirstChild("Dismiss")
+ assert(dismiss and dismiss:IsA("GuiButton"),"Update UI/Build.lua: recovery dismiss control is missing")
  track(dismiss.Activated:Connect(function()
   altairValues.serverHop:cancel(true)
-  wipeTransparency(disconnectedPrompt,1,true,true,.16)
-  task.delay(.18,function()if disconnectedPrompt.Parent then disconnectedPrompt.Visible=false end end)
+  altairValues.dialogMotion:Close(disconnectedPrompt)
  end))
 end
 
 local function serverhop()
+	if not checkAltair()then return false end
 	if not altairValues.serverHop.busy then altairValues.activity:record("Server hop requested", "Searching for a server") end
 	altairValues.serverHop:start()
 end
 
 local function leaveExperience()
+	if not checkAltair()then return false end
 	if pcall(function()
 		game:Shutdown()
 	end) then
 		return
 	end
+	if not checkAltair()then return false end
 	if pcall(teleportService.Teleport, teleportService, 0, localPlayer) then
 		return
 	end
+	if not checkAltair()then return false end
 	notification("Unable to leave", "Altair couldn't close the experience from here, you'll need to leave manually.", 4370317928)
 end
 
@@ -5695,6 +6049,7 @@ moderatorDetectionPrompt.Leave.Leave.MouseButton1Click:Connect(function()
 end)
 
 moderatorDetectionPrompt.Serverhop.MouseEnter:Connect(function()
+ if not altairValues.dialogMotion:IsOpen(moderatorDetectionPrompt)or not moderatorDetectionPrompt.Serverhop.Interactable then return end
 	tweenService:Create(moderatorDetectionPrompt.ServersAvailableFade, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.5 }):Play()
 end)
 
@@ -5718,82 +6073,29 @@ moderatorDetectionPrompt.Close.MouseButton1Click:Connect(function()
 	end
 end)
 
-local function promptModerator(player, role)
-	if moderatorDetectionPrompt.Visible then
-		return
-	end
-
-	moderatorDetectionPrompt.Size = UDim2.new(0, 283, 0, 175)
-	moderatorDetectionPrompt.UIGradient.Offset = Vector2.new(0, 1)
-	wipeTransparency(moderatorDetectionPrompt, 1, true)
-
-	moderatorDetectionPrompt.DisplayName.Text = player.DisplayName
-	moderatorDetectionPrompt.Rank.Text = role
-	moderatorDetectionPrompt.Avatar.Image = "https://www.roblox.com/headshot-thumbnail/image?userId=" .. player.UserId .. "&width=420&height=420&format=png"
-
-	moderatorDetectionPrompt.Visible = true
-
-	moderatorDetectionPrompt.Serverhop.Visible = true
-	moderatorDetectionPrompt.ServersAvailableFade.Visible = true
-
-	task.spawn(function()
-		local serversAvailable = false
-		local success, response = pcall(function()
-			return httpService:JSONDecode(game:HttpGetAsync("https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100"))
-		end)
-
-		if success and response and response.data then
-			for _, v in ipairs(response.data) do
-				if type(v) == "table" and v.maxPlayers > v.playing and v.id ~= jobId then
-					serversAvailable = true
-					break
-				end
-			end
-		end
-
-		if not moderatorDetectionPrompt.Visible then
-			return
-		end
-
-		moderatorDetectionPrompt.Serverhop.Visible = serversAvailable
-		moderatorDetectionPrompt.ServersAvailableFade.Visible = serversAvailable
-	end)
-
-	tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-	tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 300, 0, 186) }):Play()
-	tweenService:Create(moderatorDetectionPrompt.UIGradient, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.65) }):Play()
-	tweenService:Create(moderatorDetectionPrompt.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	tweenService:Create(moderatorDetectionPrompt.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	tweenService:Create(moderatorDetectionPrompt.Avatar, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.7 }):Play()
-	tweenService:Create(moderatorDetectionPrompt.Avatar, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
-	tweenService:Create(moderatorDetectionPrompt.DisplayName, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	tweenService:Create(moderatorDetectionPrompt.Rank, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	tweenService:Create(moderatorDetectionPrompt.Serverhop, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.7 }):Play()
-	tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.7 }):Play()
-	task.wait(0.2)
-	tweenService:Create(moderatorDetectionPrompt.Serverhop, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	task.wait(0.3)
-	tweenService:Create(moderatorDetectionPrompt.Close, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0.6 }):Play()
-
-	closeModPrompt = function()
-		tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 283, 0, 175) }):Play()
-		tweenService:Create(moderatorDetectionPrompt.UIGradient, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 1) }):Play()
-		tweenService:Create(moderatorDetectionPrompt.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt.Avatar, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt.Avatar, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt.DisplayName, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt.Rank, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt.Serverhop, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt.Serverhop, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt.Leave, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-		tweenService:Create(moderatorDetectionPrompt.Close, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
-		task.wait(0.5)
-		moderatorDetectionPrompt.Visible = false
-	end
+local function promptModerator(player,role)
+ if altairValues.dialogMotion:IsOpen(moderatorDetectionPrompt)then return end
+ moderatorDetectionPrompt.DisplayName.Text=player.DisplayName
+ moderatorDetectionPrompt.Rank.Text=role
+ moderatorDetectionPrompt.Avatar.Image="https://www.roblox.com/headshot-thumbnail/image?userId="..player.UserId.."&width=420&height=420&format=png"
+ altairValues.dialogMotion:Element(moderatorDetectionPrompt.Serverhop,true)
+ altairValues.dialogMotion:Element(moderatorDetectionPrompt.ServersAvailableFade,true)
+ closeModPrompt=function()altairValues.dialogMotion:Close(moderatorDetectionPrompt)end
+ local version=altairValues.dialogMotion:Open(moderatorDetectionPrompt)
+ task.spawn(function()
+  local serversAvailable=false
+  local success,response=pcall(function()
+   return httpService:JSONDecode(game:HttpGetAsync("https://games.roblox.com/v1/games/"..placeId.."/servers/Public?sortOrder=Asc&limit=100"))
+  end)
+  if success and response and response.data then
+   for _,server in ipairs(response.data)do
+    if type(server)=="table"and server.maxPlayers>server.playing and server.id~=jobId then serversAvailable=true;break end
+   end
+  end
+  if not altairValues.dialogMotion:Owns(moderatorDetectionPrompt,version)then return end
+  altairValues.dialogMotion:Element(moderatorDetectionPrompt.Serverhop,serversAvailable)
+  altairValues.dialogMotion:Element(moderatorDetectionPrompt.ServersAvailableFade,serversAvailable)
+ end)
 end
 
 altairValues.homeIsolation=altairValues.interfaceBindings.HomeIsolation(UI)
@@ -5829,13 +6131,27 @@ for _,object in ipairs(homeContent:GetDescendants()) do
  elseif object:IsA("UIStroke") then object.Thickness=2 object.BorderStrokePosition=Enum.BorderStrokePosition.Inner end
 end
 altairValues.homeView=altairValues.interfaceBindings.HomeSurface(homeContent)
+-- Reuse the page groups for Home visibility; the small navigation group keeps
+-- header controls together without adding a full-screen offscreen texture.
+do
+ local old=homeContent.Sidebar
+ if not old:IsA("CanvasGroup")then
+  local group=Instance.new("CanvasGroup")
+  for _,property in ipairs({"Name","Position","Size","AnchorPoint","ZIndex","Visible","BackgroundTransparency","BackgroundColor3","BorderSizePixel"})do group[property]=old[property]end
+  for key,value in pairs(old:GetAttributes())do group:SetAttribute(key,value)end
+  for _,child in ipairs(old:GetChildren())do child.Parent=group end
+  old:Destroy();group.Parent=homeContent
+ end
+end
 local homeScale=Instance.new("UIScale",homeContent)
 local function fitHome()
  local size=homeContainer.AbsoluteSize
- homeScale.Scale=math.max(.25,math.min((UI:GetAttribute("AltairPreferredScale") or altairValues.interfaceBindings.DisplayScale(size)),(size.X-40)/1104,(size.Y-160)/650))
+ local authored=homeContent.Size;local width=math.max(1,authored.X.Offset);local height=math.max(1,authored.Y.Offset)
+ homeScale.Scale=math.max(.25,math.min((UI:GetAttribute("AltairPreferredScale") or altairValues.interfaceBindings.DisplayScale(size)),(size.X-40)/width,(size.Y-160)/height))
 end
 fitHome()
 track(homeContainer:GetPropertyChangedSignal("AbsoluteSize"):Connect(fitHome))
+track(homeContent:GetPropertyChangedSignal("Size"):Connect(fitHome))
 local homeController = (function()
  local pages = homeContent:FindFirstChild('Pages')
  assert(pages and pages:FindFirstChild('Home') and pages:FindFirstChild('Friends') and pages:FindFirstChild('Games'), 'The published GUI is missing Home.Pages.Home/Friends/Games')
@@ -5889,13 +6205,18 @@ local homeController = (function()
   end
  end
  local alive, opened = true, false
+ local homeOpacity=1
+ local pageOpacity,pageOpacityTweens=setmetatable({},{__mode="k"}),setmetatable({},{__mode="k"})
+ local nativeHomeTween=game:GetService("TweenService")
  local connections, data, metadata = {}, {history={}, saved={}}, {}
  local friends, favorites, selectedFriend, selectedGame = {}, {}, nil, nil
+ local friendSelectionVersion,friendProfileVersion,friendAbout=0,0,'Loading profile...'
  local friendFilter, gameFilter, activePage = 'All', 'Recent', 'Home'
  local friendBusy, favoriteBusy, friendError, favoriteError = false, false, nil, nil
  local lastFriends, lastFavorites = -math.huge, -math.huge
  local sessionStarted = altairValues.sessionMemory.startedAt
  local renderFriends, renderGames, selectFriend, selectGame, refreshFriends, refreshFavorites, showPage, recordActivity
+ local friendPaint={generation=0,pools=setmetatable({},{__mode="k"})}
  local storePath = altairValues.altairFolder .. '/home-' .. tostring(localPlayer.UserId) .. '.json'
  local model={}
  function model.id(value)
@@ -5925,12 +6246,11 @@ local homeController = (function()
     seen[model.key(item)]=true table.insert(result.history,item)
    end
   end
-  local count=0
   for _,raw in pairs(value.saved) do
    local item=model.normalize(raw)
-   if item and count<100 then
+    if item then
     local key=model.key(item)
-    if not result.saved[key] then result.saved[key]=item count+=1 end
+     if not result.saved[key] then result.saved[key]=item end
    end
   end
   return result
@@ -5947,7 +6267,7 @@ local homeController = (function()
   if not button or not button:IsA('GuiButton') then return end
   connect(button.Activated,function() if alive then local ok,err=pcall(fn) if not ok then if alive then notification('Home', 'Action failed: '..tostring(err), 4370336704) end end end end)
  end
- local function text(o, name, value) local v=o and o:FindFirstChild(name) if v and (v:IsA('TextLabel') or v:IsA('TextButton')) then v.Text=tostring(value or '') end end
+ local function text(o, name, value) local v=o and o:FindFirstChild(name) if v and (v:IsA('TextLabel') or v:IsA('TextButton')) then local nextText=tostring(value or '');if v.Text~=nextText then v.Text=nextText end end end
  local function label(o, value) if o:FindFirstChild('Title') then o.Title.Text=value else o.Text=value end end
  local function head(id) return 'rbxthumb://type=AvatarHeadShot&id='..tostring(id)..'&w=150&h=150' end
  local function gameIcon(id) return tonumber(id) and tonumber(id)>0 and ('rbxthumb://type=GameIcon&id='..tostring(id)..'&w=150&h=150') or 'rbxasset://textures/loading/robloxTilt.png' end
@@ -5967,25 +6287,32 @@ local homeController = (function()
  end
  local homeNetwork={active=0,pending={},cooldowns={},hits=0}
  altairValues.homeNetwork=homeNetwork
- local function getJSON(url)
-  if not alive then return nil,'Closed' end
+ local function getJSON(url,canRun)
+  local function active()return alive and(not canRun or canRun())end
+  if not active()then return nil,'Closed' end
   local host=url:match('^https?://([^/]+)') or ''
   local deadline=os.clock()+15
   if (homeNetwork.cooldowns[host] or 0)>os.clock() then return nil,'Service rate limit; retry shortly' end
-  local pending=homeNetwork.pending[url]
+  -- An owned request must not join an earlier policy generation's response.
+  local requestKey=canRun or url
+  local pending=homeNetwork.pending[requestKey]
   if pending then homeNetwork.hits+=1 end
-  while not pending and homeNetwork.active>=4 and alive and os.clock()<deadline do
-   task.wait(.03) pending=homeNetwork.pending[url]
+  while not pending and homeNetwork.active>=4 and active()and os.clock()<deadline do
+   task.wait(.03) pending=homeNetwork.pending[requestKey]
   end
-  if not alive then return nil,'Closed' end
+  if not active()then return nil,'Closed' end
   if os.clock()>=deadline then return nil,'Requests are busy; retry shortly' end
   if not pending then
    if (homeNetwork.cooldowns[host] or 0)>os.clock() then return nil,'Service rate limit; retry shortly' end
-   pending={done=false} homeNetwork.pending[url]=pending homeNetwork.active+=1
+   pending={done=false} homeNetwork.pending[requestKey]=pending homeNetwork.active+=1
    task.spawn(function()
     local ok,result=pcall(function()
+     assert(active(),'Closed')
      assert(type(originalRequest)=='function','HTTP requests are unavailable')
-     local response=originalRequest({Url=url,Method='GET',Headers={Accept='application/json'}})
+    -- Match the bounded transport option already used by Script Search. The
+    -- caller deadline alone cannot stop a provider that ignores this option.
+    local response=originalRequest({Url=url,Method='GET',Timeout=12,Headers={Accept='application/json'}})
+     assert(active(),'Closed')
      assert(type(response)=='table','Invalid response')
      local status=tonumber(response.StatusCode) or 0
      if status==429 then
@@ -6002,19 +6329,28 @@ local homeController = (function()
      return decoded
     end)
     pending.value=ok and result or nil pending.error=not ok and tostring(result) or nil pending.done=true
-    homeNetwork.pending[url]=nil homeNetwork.active-=1
+    homeNetwork.pending[requestKey]=nil homeNetwork.active-=1
    end)
   end
-  while not pending.done and alive and os.clock()<deadline do task.wait(.03) end
-  if not alive then return nil,'Closed' end
+  while not pending.done and active()and os.clock()<deadline do task.wait(.03) end
+  if not active()then return nil,'Closed' end
   if not pending.done then return nil,'Request timed out' end
   return pending.value,pending.error
  end
 
  data.serverRegion=(function()
+  local function providedRegion()
+   for _,source in ipairs({game,workspace})do
+    local region=source:GetAttribute('ServerRegion')
+    if type(region)=='string'and region~=''then return region end
+   end
+   return nil
+  end
   local state={
-   value=tostring(game:GetAttribute('ServerRegion') or workspace:GetAttribute('ServerRegion') or ''),
+   value=providedRegion()or'Not available',
    busy=false,
+   generation=0,
+   enabled=false,
    peer=nil,
    networkClient=getService('NetworkClient'),
    hiddenProperty=typeof(gethiddenproperty)=='function' and gethiddenproperty or nil,
@@ -6023,18 +6359,34 @@ local homeController = (function()
   }
 
   local function validPublicIPv4(ip)
-   if type(ip)~='string' then return nil end
-   local a,b,c,d=ip:match('(%d+)%.(%d+)%.(%d+)%.(%d+)')
+   if type(ip)~='string'or #ip>15 then return nil end
+   local a,b,c,d=ip:match('^(%d+)%.(%d+)%.(%d+)%.(%d+)$')
    a,b,c,d=tonumber(a),tonumber(b),tonumber(c),tonumber(d)
    if not a or not b or not c or not d or a>255 or b>255 or c>255 or d>255 then return nil end
-   if a==10 or a==127 or a==0 or (a==169 and b==254) or (a==172 and b>=16 and b<=31) or (a==192 and b==168) then return nil end
-   return string.format('%d.%d.%d.%d',a,b,c,d)
+   local canonical=string.format('%d.%d.%d.%d',a,b,c,d)
+   if ip~=canonical then return nil end -- No substring, endpoint, or octal-looking interpretation.
+   -- A conservative game-server lookup allow path, not an IANA reachability
+   -- oracle. Never disclose private, shared, test, multicast or reserved IPs.
+   if a==0 or a==10 or a==127 or a>=224 or(a==100 and b>=64 and b<=127)
+    or(a==169 and b==254)or(a==172 and b>=16 and b<=31)or(a==192 and b==168)
+    or(a==192 and b==0 and((c==0 and d~=9 and d~=10)or c==2))or(a==192 and b==88 and c==99)
+    or(a==198 and(b==18 or b==19))or(a==198 and b==51 and c==100)
+    or(a==203 and b==0 and c==113)then return nil end
+   return canonical
   end
 
   local function ipFromValue(value)
    local kind=typeof(value)
    if kind=='string' or kind=='number' then
-    return validPublicIPv4(tostring(value))
+    local text=tostring(value)
+    local ip=validPublicIPv4(text)
+    if ip then return ip end
+    -- Explicit endpoint fields may include a decimal port. Do not recover an
+    -- IP from arbitrary prose, URLs, paths or an ambiguous authority string.
+    local address,port=text:match('^(%d+%.%d+%.%d+%.%d+):(%d+)$')
+    local number=tonumber(port)
+    if not number or number<1 or number>65535 or tostring(number)~=port then return nil end
+    return validPublicIPv4(address)
    end
    if kind=='table' then
     for _,key in ipairs({'Value','value','Address','address','Peer','peer','Endpoint','endpoint','MachineAddress','RemoteAddress','ServerAddress'}) do
@@ -6045,14 +6397,17 @@ local homeController = (function()
    return nil
   end
 
-  local function readProperty(object,name)
+  local function readProperty(object,name,canRun)
+   if not canRun()then return nil end
    local ok,value=pcall(function() return object[name] end)
+   if not canRun()then return nil end
    if ok then
     local ip=ipFromValue(value)
     if ip then return ip end
    end
    if state.hiddenProperty then
     local hiddenOk,hiddenValue=pcall(state.hiddenProperty,object,name)
+    if not canRun()then return nil end
     if hiddenOk then
      local ip=ipFromValue(hiddenValue)
      if ip then return ip end
@@ -6061,25 +6416,29 @@ local homeController = (function()
    return nil
   end
 
-  local function scanProperties(object)
-   if not object then return nil end
+  local function scanProperties(object,canRun)
+   if not object or not canRun()then return nil end
    for _,name in ipairs({'MachineAddress','RemoteAddress','ServerAddress','PeerAddress','Address','Endpoint','Peer'}) do
-    local ip=readProperty(object,name)
+    if not canRun()then return nil end
+    local ip=readProperty(object,name,canRun)
     if ip then return ip end
    end
    for _,provider in ipairs({state.properties,state.hiddenProperties}) do
+    if not canRun()then return nil end
     if provider then
      local ok,properties=pcall(provider,object)
+     if not canRun()then return nil end
      if ok and type(properties)=='table' then
       for key,value in pairs(properties) do
+       if not canRun()then return nil end
        local ip=ipFromValue(value)
        if ip then return ip end
        if type(key)=='string' then
-        ip=readProperty(object,key)
+        ip=readProperty(object,key,canRun)
         if ip then return ip end
        end
        if type(value)=='string' and value:match('^[%a_][%w_]*$') then
-        ip=readProperty(object,value)
+        ip=readProperty(object,value,canRun)
         if ip then return ip end
        end
       end
@@ -6089,29 +6448,36 @@ local homeController = (function()
    return nil
   end
 
-  local function findServerIPv4()
+  local function findServerIPv4(canRun)
+   if not canRun()then return nil end
    local ip=ipFromValue(game:GetAttribute('ServerIP')) or ipFromValue(workspace:GetAttribute('ServerIP')) or ipFromValue(state.peer)
    if ip then return ip end
 
-   ip=scanProperties(state.networkClient)
+   ip=scanProperties(state.networkClient,canRun)
    if ip then return ip end
 
+   if not canRun()then return nil end
    local ok,children=pcall(function() return state.networkClient:GetChildren() end)
+   if not canRun()then return nil end
    if ok then
     for _,object in ipairs(children) do
+     if not canRun()then return nil end
      if object:IsA('ClientReplicator') or object:IsA('NetworkReplicator') then
-      ip=scanProperties(object)
+      ip=scanProperties(object,canRun)
       if ip then return ip end
      end
     end
    end
 
    local network=statsService:FindFirstChild('Network')
+   if not canRun()then return nil end
    if network then
     for _,item in ipairs(network:GetDescendants()) do
+     if not canRun()then return nil end
      local valueOk,value=pcall(function()
       if item.GetValueString then return item:GetValueString() end
      end)
+     if not canRun()then return nil end
      if valueOk then
       ip=ipFromValue(value)
       if ip then return ip end
@@ -6122,8 +6488,9 @@ local homeController = (function()
    return nil
   end
 
-  local function lookupServerRegion(ip)
-   local result,err=getJSON('https://ipapi.co/'..httpService:UrlEncode(ip)..'/json/')
+  local function lookupServerRegion(ip,canRun)
+   if not canRun()then return nil,'Closed' end
+   local result,err=getJSON('https://ipapi.co/'..httpService:UrlEncode(ip)..'/json/',canRun)
    if not result or result.error then return nil,err or tostring(result and result.reason or 'Region lookup failed') end
    local city=tostring(result.city or '')
    local region=tostring(result.region_code or result.region or '')
@@ -6136,32 +6503,67 @@ local homeController = (function()
    return table.concat(parts,', '),nil
   end
 
+  local function paint(value)
+   state.value=value
+   text(home.Server.Region,'Value',value~=''and value or'Searching...')
+  end
+  local function invalidate()
+   state.generation+=1;state.busy=false;state.peer=nil
+   homeContainer:SetAttribute('ResolvedServerIP',nil)
+  end
+  function state.policyChanged(enabled)
+   if not alive or not altairValues.lifecycle.alive then return end
+   -- Run synchronously when the option changes: even OFF -> ON must retire
+   -- every request started by the previous enabled generation.
+   invalidate();state.enabled=enabled==true
+   paint(providedRegion()or(state.enabled and''or'Not available'))
+   if state.enabled then state.refresh(true)end
+  end
   function state.refresh(force)
-   local provided=game:GetAttribute('ServerRegion') or workspace:GetAttribute('ServerRegion')
-   if provided and tostring(provided)~='' then
-    state.value=tostring(provided)
-    return
+   if not alive or not altairValues.lifecycle.alive then return end
+   local enabled=settingValue('Server Region Lookup',false)==true
+   if enabled~=state.enabled then state.policyChanged(enabled);return end
+   local provided=providedRegion()
+   if provided then
+    if state.busy then invalidate()end
+    state.peer=nil;homeContainer:SetAttribute('ResolvedServerIP',nil)
+    paint(provided);return
    end
-   if state.busy or (state.value~='' and not force) then return end
-   state.busy=true
+   if not enabled then
+    state.peer=nil;homeContainer:SetAttribute('ResolvedServerIP',nil)
+    paint('Not available');return
+   end
+   if state.busy or(state.value~=''and not force)then return end
+   state.generation+=1;local generation=state.generation
+   state.busy=true;paint('')
+   local function current()
+    return alive and altairValues.lifecycle.alive and state.enabled
+     and settingValue('Server Region Lookup',false)==true and state.generation==generation
+   end
    task.spawn(function()
-    local ip=findServerIPv4()
-    if not ip then
-     state.busy=false
-     if state.value=='' then state.value='Not available' end
-     return
-    end
-    local region=lookupServerRegion(ip)
-    state.busy=false
-    if region then
-     state.value=region
-     homeContainer:SetAttribute('ResolvedServerIP',ip)
-    elseif state.value=='' then
-     state.value='Not available'
-    end
+    if not current()then return end
+    local ip=findServerIPv4(current)
+    if not current()then return end
+    if not ip then state.busy=false;paint('Not available');return end
+    local region=lookupServerRegion(ip,current)
+    if not current()then return end
+    state.busy=false;paint(region or'Not available')
+    if region then homeContainer:SetAttribute('ResolvedServerIP',ip)end
    end)
   end
+  function state.connectionAccepted(peer)
+   if not alive then return end
+   invalidate();state.enabled=settingValue('Server Region Lookup',false)==true
+   local provided=providedRegion()
+   paint(provided or(state.enabled and''or'Not available'))
+   if state.enabled and not provided then state.peer=tostring(peer or'')end
+   state.refresh(true)
+  end
+  function state.cancel()
+   invalidate();state.value='Not available'
+  end
 
+  altairValues.serverRegion=state
   return state
  end)()
 
@@ -6230,13 +6632,29 @@ local homeController = (function()
   v:SetAttribute('RuntimeEntry',true) v:SetAttribute('IsTemplate',false) v:SetAttribute('IsPreview',nil)
   v.Parent=list return v
  end
+ local function revealHomeRow(entry,animated)
+  local objects={entry};for _,object in ipairs(entry:GetDescendants())do objects[#objects+1]=object end
+  for _,object in ipairs(objects)do
+   local properties=altairValues.transparencyProperties[object.ClassName]
+   if properties then
+    local goal={}
+    for _,property in ipairs(properties)do
+     local target=object:GetAttribute('AltairHomeFade_'..property)
+     if target==nil then target=object[property];object:SetAttribute('AltairHomeFade_'..property,target)end
+     if animated and target~=1 then object[property]=1;goal[property]=target elseif object[property]~=target then object[property]=target end
+    end
+    if next(goal)then tweenService:Create(object,TweenInfo.new(.18,Enum.EasingStyle.Quint),goal):Play()end
+   end
+  end
+  entry.Visible=true
+ end
 
  local function friendRowControls(v)
   if not v or not v:IsA('GuiObject') then return end
   if v:GetAttribute('AltairFriendTile')then
    local hit=v:FindFirstChild('Interact');if hit then hit.Size=UDim2.fromScale(1,1);hit.ZIndex=25 end
-   if v:FindFirstChild('Join')then v.Join.AnchorPoint=Vector2.zero;v.Join.Position=UDim2.fromOffset(12,110);v.Join.Size=UDim2.fromOffset(90,24);v.Join.ZIndex=27 end
-   if v:FindFirstChild('More')then v.More.AnchorPoint=Vector2.new(1,0);v.More.Position=UDim2.new(1,-12,0,110);v.More.Size=UDim2.fromOffset(78,24);v.More.ZIndex=27 end
+   if v:FindFirstChild('Join')then v.Join.AnchorPoint=Vector2.zero;v.Join.Position=UDim2.fromOffset(12,94);v.Join.Size=UDim2.fromOffset(90,24);v.Join.ZIndex=27 end
+   if v:FindFirstChild('More')then v.More.AnchorPoint=Vector2.new(1,0);v.More.Position=UDim2.new(1,-12,0,94);v.More.Size=UDim2.fromOffset(78,24);v.More.ZIndex=27 end
    return
   end
 
@@ -6276,51 +6694,91 @@ local homeController = (function()
  end
  local function matches(value,query) return tostring(value or ''):lower():find(query:lower(),1,true)~=nil end
  local function profileURL(id) return 'https://www.roblox.com/users/'..tostring(id)..'/profile' end
- local function copy(value) if originalSetClipboard then originalSetClipboard(value) if alive then notification('Home', 'Copied to clipboard.', 4370336704) end else if alive then notification('Home', 'Clipboard is unavailable.', 4370336704) end end end
- local menu=Instance.new('Frame') menu.Name='HomeActionMenu' menu.Visible=false menu.Size=UDim2.fromOffset(280,146) menu.AnchorPoint=Vector2.new(.5,.5) menu.Position=UDim2.fromScale(.5,.5) menu.BackgroundColor3=Color3.fromRGB(27,27,30) menu.BorderSizePixel=0 menu.ZIndex=90 menu.Parent=homeContent
- Instance.new('UICorner',menu).CornerRadius=UDim.new(0,12)
+ local function copy(value)
+  if not alive or not checkAltair()then return end
+  if originalSetClipboard then
+   originalSetClipboard(value)
+   if alive and checkAltair()then notification('Home', 'Copied to clipboard.', 4370336704)end
+  else notification('Home', 'Clipboard is unavailable.', 4370336704)end
+ end
+ local menu=Instance.new("CanvasGroup")
+ menu.Name="HomeActionMenu";menu.Visible=false;menu.Size=UDim2.fromOffset(280,146)
+ menu.AnchorPoint=Vector2.new(.5,.5);menu.Position=UDim2.fromScale(.5,.5)
+ menu.BackgroundTransparency=1;menu.BorderSizePixel=0;menu.ZIndex=90;menu.Parent=homeContent
+ menu:SetAttribute("AltairDesignRole","surface");menu:SetAttribute("AltairDesignManaged",true)
+ menu:SetAttribute("AltairDesignTransparencyOffset",.04)
+ menu:SetAttribute("AltairDialogManaged",true);menu:SetAttribute("AltairDialogSize",menu.Size);menu:SetAttribute("AltairDialogPosition",menu.Position)
+ Instance.new("UICorner",menu).CornerRadius=UDim.new(0,16)
+ local backdrop=Instance.new("Frame");backdrop.Name="Backdrop";backdrop.Size=UDim2.fromScale(1,1)
+ backdrop.BackgroundColor3=Color3.fromRGB(14,14,16);backdrop.BackgroundTransparency=.14;backdrop.BorderSizePixel=0;backdrop.ZIndex=90;backdrop.Parent=menu
+ backdrop:SetAttribute("AltairDesignRole","surface");backdrop:SetAttribute("AltairDesignManaged",true)
+ Instance.new("UICorner",backdrop).CornerRadius=UDim.new(0,16)
+ local edge=Instance.new("UIStroke");edge.Color=Color3.fromRGB(148,157,176);edge.Thickness=.6;edge.Transparency=.9
+ edge.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;edge.BorderStrokePosition=Enum.BorderStrokePosition.Inner;edge.Parent=backdrop
  local menuButtons={}
- for i=1,3 do local b=Instance.new('TextButton') b.Name='Action'..i b.Position=UDim2.new(0,10,0,10+(i-1)*43) b.Size=UDim2.new(1,-20,0,37) b.BackgroundColor3=Color3.fromRGB(49,49,54) b.TextColor3=Color3.new(1,1,1) b.TextSize=15 b.Font=Enum.Font.Gotham b.ZIndex=91 b.Parent=menu Instance.new('UICorner',b).CornerRadius=UDim.new(0,8) menuButtons[i]=b end
+ for index=1,3 do
+  local button=Instance.new("TextButton");button.Name="Action"..index
+  button.Position=UDim2.fromOffset(10,10+(index-1)*43);button.Size=UDim2.new(1,-20,0,37)
+  button.BackgroundColor3=Color3.fromRGB(28,28,30);button.BackgroundTransparency=.12
+  button.BorderSizePixel=0;button.AutoButtonColor=false
+  button.TextColor3=Color3.fromRGB(242,244,249);button.TextSize=14
+  button.FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium)
+  button.ZIndex=91;button.Parent=menu
+  button:SetAttribute("AltairDesignRole","control");button:SetAttribute("AltairDesignManaged",true)
+  Instance.new("UICorner",button).CornerRadius=UDim.new(0,10)
+  local feedback=Instance.new("UIScale");feedback.Name="DialogFeedback";feedback.Parent=button
+  menuButtons[index]=button
+ end
  local menuActions={}
- for i,b in ipairs(menuButtons) do action(b,function() menu.Visible=false if menuActions[i] then menuActions[i]() end end) end
+ for i,b in ipairs(menuButtons)do action(b,function()altairValues.dialogMotion:Close(menu);if menuActions[i]then menuActions[i]()end end)end
  local function moreFriend(f)
   if not f then return end
   menuButtons[1].Text='Copy profile link' menuButtons[2].Text='Copy username' menuButtons[3].Text='Close'
-  menuActions={function() copy(profileURL(f.id)) end,function() copy(f.username) end,function() end} menu.Visible=true
+  menuActions={function() copy(profileURL(f.id)) end,function() copy(f.username) end,function() end};altairValues.dialogMotion:Open(menu)
  end
  local function inspect(id)
   task.spawn(function()
+   if not alive or not checkAltair()then return end
    local ok=pcall(function() guiService:InspectPlayerFromUserId(id) end)
    if not ok then copy(profileURL(id)) end
   end)
  end
  local resolveRoot
  local joining=false
- local function playGame(item,job)
-  if not item or not tonumber(item.placeId) or item.placeId<=0 then if alive then notification('Home', 'This experience is unavailable to join.', 4370336704) end return end
+ local function playGame(item,job,ownsRequest)
+  local function current()return alive and checkAltair()and(not ownsRequest or ownsRequest())end
+  if not current()then return end
+  if not item or not tonumber(item.placeId) or item.placeId<=0 then notification('Home', 'This experience is unavailable to join.', 4370336704) return end
   if not job and (tonumber(item.placeId)==game.PlaceId or (tonumber(item.universeId) and item.universeId>0 and item.universeId==game.GameId)) then
    if not originalSetClipboard then notification('Unable to copy join script','Clipboard support is unavailable.',4335479658) return end
    local joinScript=string.format('game:GetService("TeleportService"):TeleportToPlaceInstance(%d, %q)',game.PlaceId,game.JobId)
    local ok=pcall(originalSetClipboard,joinScript)
+   if not current()then return end
    notification(ok and 'Copied Join Script' or 'Unable to copy join script',ok and 'Copied a join script for your current server.' or 'The clipboard operation failed.',ok and 4335479121 or 4335479658)
    return
   end
   if joining then return end
   joining=true
   task.spawn(function()
+   if not current()then joining=false return end
    local target=job and item.placeId or resolveRoot(item)
-   if not alive then joining=false return end
+   if not current()then joining=false return end
    if not target then joining=false notification('Home','The experience launch place is unavailable. Try again shortly.',4370336704) return end
    recordActivity('Joining experience',item.name or 'Experience')
+   if not current()then joining=false return end
    local ok,err=pcall(function()
     if job and job~='' then teleportService:TeleportToPlaceInstance(target,job,localPlayer)
     else teleportService:Teleport(target,localPlayer) end
    end)
    joining=false
-   if not ok and alive then notification('Home','Could not join: '..tostring(err),4370336704) end
+   if not ok and current()then notification('Home','Could not join: '..tostring(err),4370336704) end
   end)
  end
- local friendActivity={roster=nil,rosterAt=0,version=0,placeCache={},refreshError=nil}
+ local friendActivity={roster=nil,rosterAt=0,version=0,placeCache={},refreshError=nil,byId={}}
+ function friendActivity.current(f,version)
+  return alive and checkAltair()and type(f)=='table'and friendActivity.byId[f.id]==f
+   and(version==nil or(f.activityVersion or 0)==version)
+ end
  function friendActivity.showPlaying(count)
   local section=home.NowPlaying.FriendsPlaying
   section.Visible=count>0
@@ -6392,8 +6850,9 @@ local homeController = (function()
    f.presence=status==2 and 'InGame' or (status==1 or status==3) and 'Online' or status==0 and 'Offline' or 'Unknown'
    f.source='Roblox presence fallback'
   elseif onlineKnown then
-   f.presence='Offline'
-   f.source='Roblox client'
+   -- The online list is bounded/cached; omission is not proof of being offline.
+   f.presence='Unknown'
+   f.source='Roblox client (not confirmed)'
   else
    f.presence='Unknown'
    f.source='Unavailable'
@@ -6417,14 +6876,20 @@ local homeController = (function()
    end
   end
 
-  f.joinable=f.presence=='InGame' and f.placeId>0 and f.jobId~=''
+  -- Presence samples (including cached job IDs) are hints, not a confirmed
+  -- destination. Only this action's native server lookup marks it joinable.
+  f.joinable=false
   f.canAttemptJoin=f.presence=='InGame'
   return f
  end
- function friendActivity.online()
+ function friendActivity.online(ownsRequest)
+  local function current()return alive and checkAltair()and(not ownsRequest or ownsRequest())end
+  if not current()then return nil,'Closed'end
   local result,err=bounded(function() return localPlayer:GetFriendsOnlineAsync(200) end,8)
+  if not current()then return nil,'Closed'end
   if type(result)~='table' then
    result,err=bounded(function() return localPlayer:GetFriendsOnline(200) end,8)
+   if not current()then return nil,'Closed'end
   end
   if type(result)~='table' then return nil,err or 'Invalid online-friends response' end
   local indexed={}
@@ -6434,19 +6899,22 @@ local homeController = (function()
   end end
   return indexed
  end
- function friendActivity.resolvePlaceInstance(userId)
+ function friendActivity.resolvePlaceInstance(userId,ownsRequest)
+  local function current()return alive and checkAltair()and(not ownsRequest or ownsRequest())end
+  if not current()then return nil,nil,'Closed'end
   local done,result=false,nil
   local worker=task.spawn(function()
+   if not current()then done=true return end
    result=table.pack(pcall(function()
     return teleportService:GetPlayerPlaceInstanceAsync(userId)
    end))
    done=true
   end)
   local deadline=os.clock()+7
-  repeat task.wait(.03) until done or not alive or os.clock()>=deadline
-  if not alive or not done then
+  repeat task.wait(.03) until done or not current()or os.clock()>=deadline
+  if not current()or not done then
    pcall(task.cancel,worker)
-   return nil,nil,alive and 'Server lookup timed out' or 'Closed'
+   return nil,nil,current()and 'Server lookup timed out' or 'Closed'
   end
   if not result[1] then return nil,nil,tostring(result[2]) end
 
@@ -6463,7 +6931,7 @@ local homeController = (function()
   button.Active=f.presence=='InGame'
  end
  function friendActivity.updateDetails(f)
-  if not selectedFriend or selectedFriend.id~=f.id then return end
+  if not friendActivity.current(f)or selectedFriend~=f then return end
   local d=fp.Details
   text(d.Activity,'Status',f.presence=='InGame' and 'In Game' or f.presence)
   text(d.Activity,'GameName',f.location)
@@ -6473,25 +6941,24 @@ local homeController = (function()
   text(d,'Availability',f.presence=='InGame' and (f.joinable and 'Join this server' or 'Server will be resolved when you join') or f.presence=='Unknown' and 'Activity unavailable' or f.presence)
  end
  function friendActivity.updateRow(f)
+  if not friendActivity.current(f)then return end
   local lists={fp.Browser.List,home.Friends.List,home.NowPlaying.FriendsPlaying.List}
   if fp:FindFirstChild('InThisSession') then table.insert(lists,fp.InThisSession.List) end
   for _,list in ipairs(lists) do
    local v=list:FindFirstChild('Entry_'..f.id)
    if v then
-    text(v,'Location',f.location)
-    if v:FindFirstChild('GameIcon') then v.GameIcon.Image=gameIcon(f.universeId) v.GameIcon.Visible=f.presence=='InGame' and f.universeId>0 end
-    v:SetAttribute('PlaceId',f.placeId) v:SetAttribute('UniverseId',f.universeId) v:SetAttribute('JobId',f.jobId)
-    v:SetAttribute('ActivitySource',f.source)
-    if v:FindFirstChild('Join') then friendActivity.joinButton(v.Join,f) end
-    friendRowControls(v)
+    -- Data, comparison key and visuals belong to the same exact friend sample.
+    -- Updating activity must not reveal a row excluded by the active filter.
+    friendPaint.fill(friendPaint.ensure(list,f,v.LayoutOrder),f,true)
    end
   end
   local list=home.NowPlaying.FriendsPlaying.List
-  if f.presence=='InGame' and ((f.universeId>0 and f.universeId==game.GameId) or (f.placeId>0 and f.placeId==game.PlaceId)) and not list:FindFirstChild('Entry_'..f.id) then
-   local count=0 for _,entry in ipairs(list:GetChildren()) do if entry:GetAttribute('RuntimeEntry') then count+=1 end end
-   local entry=row(list,f.id,count+1) entry.Avatar.Image=head(f.id)
+  if f.presence=='InGame' and ((f.universeId>0 and f.universeId==game.GameId) or (f.placeId>0 and f.placeId==game.PlaceId)) and not list:FindFirstChild('Entry_'..f.id) and friendPaint.visible and friendPaint.visible(list)then
+   local count=0 for _,entry in ipairs(list:GetChildren()) do if entry:GetAttribute('RuntimeEntry')and entry.Visible then count+=1 end end
+   local entry
+   if friendPaint.ensure then entry=friendPaint.ensure(list,f,count+1);friendPaint.fill(entry,f)
+   else entry=row(list,f.id,count+1);entry.Avatar.Image=head(f.id);action(entry.Interact,function()showPage('Friends');selectFriend(f,true)end)end
    entry:SetAttribute('UserId',f.id) entry:SetAttribute('PlaceId',f.placeId) entry:SetAttribute('UniverseId',f.universeId) entry:SetAttribute('JobId',f.jobId)
-   action(entry.Interact,function() showPage('Friends') selectFriend(f,true) end)
    text(home.NowPlaying.FriendsPlaying,'Summary',(count+1)..' friends playing this experience')
    friendActivity.showPlaying(count+1)
   end
@@ -6502,11 +6969,12 @@ local homeController = (function()
   for _,f in ipairs(snapshot) do if f.presence=='InGame' and (f.placeId>0 or f.universeId>0) then
    local key=f.placeId>0 and f.placeId or ('universe:'..f.universeId)
    if not grouped[key] then grouped[key]={} table.insert(queue,key) end
-   table.insert(grouped[key],f)
+   table.insert(grouped[key],{value=f,version=f.activityVersion or 0,placeId=f.placeId,universeId=f.universeId})
   end end
   local nextIndex=0
   for _=1,math.min(4,#queue) do task.spawn(function()
-   while alive and friendActivity.version==version and friends==snapshot do
+   while alive and checkAltair()and friendActivity.version==version and friends==snapshot do
+    local function current()return alive and checkAltair()and friendActivity.version==version and friends==snapshot end
     nextIndex+=1 local key=queue[nextIndex] if not key then return end
     local placeId=grouped[key][1].placeId
     local cached=friendActivity.placeCache[key]
@@ -6514,38 +6982,46 @@ local homeController = (function()
      cached={time=os.clock(),universeId=grouped[key][1].universeId}
      if cached.universeId==0 then
       local universe=getJSON('https://apis.roblox.com/universes/v1/places/'..placeId..'/universe')
+      if not current()then return end
       cached.universeId=friendActivity.positive(universe and universe.universeId)
      end
      if cached.universeId>0 then
       local response=getJSON('https://games.roblox.com/v1/games?universeIds='..cached.universeId)
+      if not current()then return end
       local info=response and response.data and response.data[1]
       cached.name=info and friendActivity.string(info.name) or ''
      end
      if placeId>0 and (not cached.name or cached.name=='') then
       local info=bounded(function() return marketplaceService:GetProductInfo(placeId) end,8)
+      if not current()then return end
       cached.name=type(info)=='table' and friendActivity.string(info.Name) or ''
      end
      if cached.name~='' or cached.universeId>0 then friendActivity.placeCache[key]=cached end
     end
-    if not alive or friendActivity.version~=version or friends~=snapshot then return end
-    for _,f in ipairs(grouped[key]) do
-     if cached.name and cached.name~='' then f.location=cached.name elseif f.location=='Loading game...' then f.location='Game name unavailable' end
-     if cached.universeId>0 then f.universeId=cached.universeId end
-     friendActivity.updateRow(f)
+    if not alive or not checkAltair()or friendActivity.version~=version or friends~=snapshot then return end
+    for _,entry in ipairs(grouped[key]) do
+     local f=entry.value
+     if friendActivity.current(f,entry.version)then
+      if cached.name and cached.name~='' then f.location=cached.name elseif f.location=='Loading game...' then f.location='Game name unavailable' end
+      if cached.universeId>0 then f.universeId=cached.universeId end
+      friendActivity.updateRow(f)
+     end
     end
    end
   end) end
  end
  refreshFriends=function(force)
-  if not alive or friendBusy or (not force and os.clock()-lastFriends<35) then return end
+  if not alive or not checkAltair()or friendBusy or (not force and os.clock()-lastFriends<35) then return end
   friendBusy=true
   lastFriends=os.clock()
   friendActivity.version+=1
   local version=friendActivity.version
+  local function current()return alive and checkAltair()and friendActivity.version==version end
 
   if #friends==0 then state(fp.Browser,'Loading','Loading friends...') end
 
-  task.spawn(function()
+  task.defer(function()
+   if not alive or not checkAltair()then return end
    local roster=friendActivity.roster
    local rosterError
 
@@ -6555,6 +7031,7 @@ local homeController = (function()
      local seen={}
      local page=players:GetFriendsAsync(localPlayer.UserId)
      for _=1,100 do
+      if not current()then error('Closed')end
       for _,f in ipairs(page:GetCurrentPage()) do
        local id=tonumber(f.Id)
        if id and not seen[id] then
@@ -6567,9 +7044,11 @@ local homeController = (function()
      end
      error('Too many friend pages')
     end,25)
+    if not current()then return end
 
     if type(roster)~='table' then
      local result=getJSON('https://friends.roblox.com/v1/users/'..localPlayer.UserId..'/friends')
+     if not current()then return end
      if result and type(result.data)=='table' then
       roster={}
       for _,f in ipairs(result.data) do
@@ -6584,7 +7063,7 @@ local homeController = (function()
     end
    end
 
-   if not alive or friendActivity.version~=version then return end
+   if not alive or not checkAltair()or friendActivity.version~=version then return end
    if type(roster)~='table' then
     friendBusy=false
     friendError=rosterError or 'Friends unavailable'
@@ -6596,18 +7075,19 @@ local homeController = (function()
    for _,p in ipairs(players:GetPlayers()) do inServer[p.UserId]=true end
 
    local function publish(online,presence,onlineKnown)
-    if not alive or friendActivity.version~=version then return end
-    local snapshot={}
+    if not alive or not checkAltair()or friendActivity.version~=version then return end
+    local snapshot,indexed={},{}
     for _,f in ipairs(roster) do
      local id=tonumber(f.Id)
      if id then
-      table.insert(snapshot,friendActivity.normalize(
+      local value=friendActivity.normalize(
        f,
        online and online[id],
        presence and presence[id],
        inServer[id],
        onlineKnown
-      ))
+      )
+      table.insert(snapshot,value);indexed[id]=value
      end
     end
 
@@ -6618,15 +7098,20 @@ local homeController = (function()
     end)
 
     friends=snapshot
+    friendActivity.byId=indexed
+    for _,pool in pairs(friendPaint.pools)do for id,slot in pairs(pool)do
+     local value=indexed[id]
+     if slot.data~=value then slot.data=value;slot.key=nil end
+    end end
+    if selectedFriend then selectFriend(indexed[selectedFriend.id],false,true)end
     renderFriends()
-    if selectedFriend then friendActivity.updateDetails(selectedFriend) end
     return snapshot
    end
 
    if #friends==0 then publish(nil,nil,false) end
 
    local online,onlineError=friendActivity.online()
-   if not alive or friendActivity.version~=version then return end
+   if not alive or not checkAltair()or friendActivity.version~=version then return end
 
    local presence=nil
    local webError=nil
@@ -6635,7 +7120,7 @@ local homeController = (function()
     presence={}
     if originalRequest then
      for startIndex=1,#roster,100 do
-      if not alive or friendActivity.version~=version then break end
+      if not alive or not checkAltair()or friendActivity.version~=version then break end
       local ids={}
       for index=startIndex,math.min(startIndex+99,#roster) do
        table.insert(ids,tonumber(roster[index].Id))
@@ -6666,7 +7151,7 @@ local homeController = (function()
     end
    end
 
-   if not alive or friendActivity.version~=version then return end
+   if not alive or not checkAltair()or friendActivity.version~=version then return end
 
    friendBusy=false
    friendError=nil
@@ -6686,10 +7171,15 @@ local homeController = (function()
  end
  local joiningFriends={}
  local function joinFriend(f)
+  if not alive or not checkAltair()or not f or joining then return end
+  f=friendActivity.byId[f.id]
   if not f or joiningFriends[f.id] then return end
+  local activityVersion=f.activityVersion or 0
+  local function current()return friendActivity.current(f,activityVersion)end
   joiningFriends[f.id]=true
 
   task.spawn(function()
+   if not current()then joiningFriends[f.id]=nil return end
    if players:GetPlayerByUserId(f.id) then
     joiningFriends[f.id]=nil
     notification('Home','This friend is already in your server.',4370336704)
@@ -6697,14 +7187,14 @@ local homeController = (function()
    end
 
    local target=f
-   local online=friendActivity.online()
+   local online=friendActivity.online(current)
 
-   if not alive then
+   if not current()then
     joiningFriends[f.id]=nil
     return
    end
 
-   if online and online[f.id] then
+   if online then
     target=friendActivity.normalize(
      {Id=f.id,Username=f.username,DisplayName=f.displayName},
      online[f.id],
@@ -6712,20 +7202,31 @@ local homeController = (function()
      false,
      true
     )
+    activityVersion+=1;f.activityVersion=activityVersion
     for key,value in pairs(target) do f[key]=value end
+    target=f
     friendActivity.updateRow(f)
+    renderFriends()
    end
 
-   if target.joinable then
+   if target.presence=='Offline'then
     joiningFriends[f.id]=nil
-    playGame(target,target.jobId)
+    notification('Join Friend','This friend is not currently in a joinable experience.',4370336704)
     return
    end
 
-   local placeId,jobId,resolveError=friendActivity.resolvePlaceInstance(f.id)
+   -- Client presence can be cached. Only the explicit server lookup may
+   -- supply the destination for this Join action, never a cached job ID.
+   f.jobId='';f.joinable=false
+   activityVersion+=1;f.activityVersion=activityVersion
+   friendActivity.updateRow(f)
+   local placeId,jobId,resolveError=friendActivity.resolvePlaceInstance(f.id,current)
    joiningFriends[f.id]=nil
+   if not current()then return end
 
    if placeId and jobId then
+    activityVersion+=1;f.activityVersion=activityVersion
+    if f.placeId~=placeId then f.universeId=0;f.location='Playing'end
     f.presence='InGame'
     f.placeId=placeId
     f.jobId=jobId
@@ -6734,25 +7235,28 @@ local homeController = (function()
     f.source='Roblox server lookup'
     if f.location=='' or f.location=='Playing · activity private' then f.location='Playing' end
     friendActivity.updateRow(f)
-    playGame(f,jobId)
+    renderFriends()
+    playGame(f,jobId,current)
     return
    end
 
    if f.presence=='InGame' or (online and online[f.id]) then
     local followUrl='https://www.roblox.com/games/start?userId='..tostring(f.id)
     if originalSetClipboard then
+     if not current()then return end
      local copied=pcall(originalSetClipboard,followUrl)
+     if not current()then return end
      notification(
       'Join Friend',
-      copied and 'Roblox is hiding the exact server. Copied the official follow link to your clipboard.'
-       or 'Roblox is hiding the exact server and the follow link could not be copied.',
+      copied and 'The exact server could not be confirmed. Copied the official follow link; Roblox may still refuse the join.'
+       or 'The exact server could not be confirmed and the follow link could not be copied.',
       copied and 4335479121 or 4370336704
      )
     else
-     notification('Join Friend','Roblox is hiding the exact server for this friend. Their join/privacy settings may prevent direct following.',4370336704)
+     notification('Join Friend','The exact server could not be confirmed. Their join/privacy settings may prevent direct following.',4370336704)
     end
    else
-    notification('Join Friend','This friend is not currently in a joinable experience.'..(resolveError and (' '..tostring(resolveError)) or ''),4370336704)
+    notification('Join Friend','This friend\'s activity or joinable server could not be confirmed.'..(resolveError and (' '..tostring(resolveError)) or ''),4370336704)
    end
   end)
  end
@@ -6761,6 +7265,18 @@ local homeController = (function()
  local function toggleSave(item)
   if not item then return end
   local key=gameKey(item)
+   if not saved(item) then
+     -- The limit applies to new saves. Keep valid legacy overflow on load
+     -- and allow existing saves to be removed without evicting other games.
+    local count=0
+    for _ in pairs(data.saved) do
+     count+=1
+     if count>=100 then
+       notification('Library full','New saves are limited to 100 games. Unsave games until your Library is below that limit before saving another.',4370336704)
+      return
+     end
+    end
+   end
   data.saved[key]=not saved(item) and model.normalize(item) or nil
   save() renderGames() if selectedGame then selectGame(selectedGame) end
   recordActivity(saved(item) and 'Saved game' or 'Removed saved game',item.name)
@@ -6821,21 +7337,35 @@ local homeController = (function()
    text(d,'Title',detail.name) text(d,'Creator',detail.creator) text(d,'Description',detail.description or 'Description unavailable.') d.Artwork.Image=detail.artwork or gameIcon(detail.universeId)
   end)
  end
- selectFriend=function(f,animate)
+ selectFriend=function(f,animate,rebase)
+  if not alive or not checkAltair()then return end
+  if f then f=friendActivity.byId[f.id];if not f then return end end
   local changed=not selectedFriend or not f or selectedFriend.id~=f.id
-  selectedFriend=f if not f then altairValues.homeView:SetSelection('Friends',false,homeOpen);return end
+  friendSelectionVersion+=1;local selectionVersion=friendSelectionVersion
+  selectedFriend=f
+  if changed then friendAbout='Loading profile...'end
+  if not f then friendProfileVersion+=1;altairValues.homeView:SetSelection('Friends',false,homeOpen);return end
   local d=fp.Details local wasVisible=d.Visible and d.GroupTransparency<.5;altairValues.homeView:SetSelection('Friends',true,homeOpen) if homeOpen and (changed or animate) then selectDetails(d,fp.Browser.List,f.id) end d:SetAttribute('SelectedUserId',f.id)
-  local about='Loading profile...'
+  local function current()return friendActivity.current(f)and selectedFriend==f and friendSelectionVersion==selectionVersion end
   local function paint()
+   if not current()then return end
    d.Avatar.Image=head(f.id) text(d,'DisplayName',f.displayName) text(d,'Username','@'..f.username)
    text(d.Activity,'Status',f.presence) text(d.Activity,'GameName',f.location or 'Location unavailable') d.Activity.GameIcon.Image=gameIcon(f.universeId)
-   friendActivity.updateDetails(f);text(d,'About',about)
+   friendActivity.updateDetails(f);text(d,'About',friendAbout)
   end
-  if wasVisible and changed and homeOpen then altairValues.homeView:SwapDetails(d,function()if selectedFriend and selectedFriend.id==f.id then paint()end end)else paint()end
-  task.spawn(function()
-   local info=getJSON('https://users.roblox.com/v1/users/'..f.id)
-   if alive and selectedFriend and selectedFriend.id==f.id then about=info and (info.description~='' and info.description or 'No bio provided.')or'Profile description unavailable.';text(d,'About',about)end
-  end)
+  if wasVisible and changed and homeOpen then altairValues.homeView:SwapDetails(d,paint)else paint()end
+  if not rebase then
+   friendProfileVersion+=1;local profileVersion=friendProfileVersion;local id=f.id
+   task.spawn(function()
+    local info=getJSON('https://users.roblox.com/v1/users/'..id)
+    -- A profile belongs to the user ID, not a particular activity snapshot.
+    -- Rebase activity without adding requests or letting an older selection win.
+    if profileVersion==friendProfileVersion and friendActivity.current(selectedFriend)and selectedFriend.id==id then
+     friendAbout=info and(info.description~=''and info.description or'No bio provided.')or'Profile description unavailable.'
+     text(d,'About',friendAbout)
+    end
+   end)
+  end
  end
  local tabVersion=0
  local PAGE_REST_X=0
@@ -6844,316 +7374,239 @@ local homeController = (function()
  local PAGE_REST=UDim2.fromOffset(PAGE_REST_X,PAGE_REST_Y)
  local TAB_ORDER={Home=1,Games=2,Friends=3}
  local profile=homeContent.Sidebar:FindFirstChild('Profile')
- local PROFILE_REST=profile and profile.Position
- local PROFILE_TRAVEL=28
 
  local function pageOffset(direction)
   return UDim2.fromOffset(PAGE_REST_X+(PAGE_TRAVEL*direction),PAGE_REST_Y)
  end
 
+ local function paintPageOpacity(page)
+  local phase=pageOpacity[page]
+  if page.Parent then page.GroupTransparency=1-(1-homeOpacity)*(1-(phase and phase.Value or 0))end
+ end
+ local function pagePhase(page)
+  local phase=pageOpacity[page]
+  if phase then return phase end
+  phase=Instance.new("NumberValue");phase.Name="PageVisibility";phase.Value=page.GroupTransparency;phase.Parent=page;pageOpacity[page]=phase
+  connect(phase.Changed,function()paintPageOpacity(page)end)
+  return phase
+ end
+ local function stopPageOpacity(page)
+  local tween=pageOpacityTweens[page];if tween then tween:Cancel();pageOpacityTweens[page]=nil end
+ end
+ local function setPageOpacity(page,target,duration,direction)
+  local phase=pagePhase(page);stopPageOpacity(page)
+  if not duration or duration<=0 then phase.Value=target;paintPageOpacity(page);return end
+  local time=UI:GetAttribute("AltairReduceMotion")and math.min(duration,.08)or math.min(duration,.22)
+  local tween=nativeHomeTween:Create(phase,TweenInfo.new(time,Enum.EasingStyle.Quint,direction or Enum.EasingDirection.Out),{Value=target});pageOpacityTweens[page]=tween
+  tween.Completed:Once(function()if pageOpacityTweens[page]==tween then pageOpacityTweens[page]=nil end end);tween:Play()
+ end
+
  local function pageFadeState(page,visible,duration,direction)
-  if page:GetAttribute("AltairHomePageGroup")then tweenService:Create(page,TweenInfo.new(duration,Enum.EasingStyle.Quint,direction),{GroupTransparency=visible and 0 or 1}):Play();return end
-  local props=altairValues.transparencyProperties
-  local objects={page}
-  for _,object in ipairs(page:GetDescendants()) do table.insert(objects,object) end
-  for _,object in ipairs(objects) do
-   local list=props[object.ClassName]
-   if list then
-    local goal={}
-    local hasGoal=false
-    for _,property in ipairs(list) do
-     local attr='AltairHomePageFade_'..property
-     local saved=object:GetAttribute(attr)
-     if saved==nil then
-      local homeSaved=object:GetAttribute('AltairHomeFade_'..property)
-      saved=homeSaved~=nil and homeSaved or object[property]
-      object:SetAttribute(attr,saved)
-     end
-     goal[property]=visible and saved or 1
-     hasGoal=true
-    end
-    if hasGoal then
-     tweenService:Create(object,TweenInfo.new(duration,Enum.EasingStyle.Quint,direction),goal):Play()
-    end
-   end
-  end
+  setPageOpacity(page,visible and 0 or 1,duration,direction)
  end
 
- local function primePageHidden(page)
-  if page:GetAttribute("AltairHomePageGroup")then page.GroupTransparency=1;return end
-  local props=altairValues.transparencyProperties
-  local objects={page}
-  for _,object in ipairs(page:GetDescendants()) do table.insert(objects,object) end
-  for _,object in ipairs(objects) do
-   local list=props[object.ClassName]
-   if list then
-    for _,property in ipairs(list) do
-     local attr='AltairHomePageFade_'..property
-     if object:GetAttribute(attr)==nil then
-      local homeSaved=object:GetAttribute('AltairHomeFade_'..property)
-      object:SetAttribute(attr,homeSaved~=nil and homeSaved or object[property])
-     end
-     object[property]=1
-    end
-   end
-  end
+ local pagePositionTweens=setmetatable({},{__mode="k"})
+ local function stopPageMotion(page)
+  stopPageOpacity(page)
+  local movement=pagePositionTweens[page];if movement then movement:Cancel();pagePositionTweens[page]=nil end
  end
-
- local function profileOffset(direction)
-  if not PROFILE_REST then return nil end
-  return UDim2.new(
-   PROFILE_REST.X.Scale,
-   PROFILE_REST.X.Offset+(PROFILE_TRAVEL*direction),
-   PROFILE_REST.Y.Scale,
-   PROFILE_REST.Y.Offset
-  )
+ local function movePage(page,position,duration,complete)
+  local old=pagePositionTweens[page];if old then old:Cancel()end
+  local movement=nativeHomeTween:Create(page,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Position=position})
+  pagePositionTweens[page]=movement
+  movement.Completed:Once(function(state)
+   if pagePositionTweens[page]~=movement then return end
+   pagePositionTweens[page]=nil
+   if state==Enum.PlaybackState.Completed and complete then complete()end
+  end)
+  movement:Play()
  end
-
- local function profileFadeState(visible,duration,easingDirection)
-  if not profile then return end
-  local props=altairValues.transparencyProperties
-  local objects={profile}
-  for _,object in ipairs(profile:GetDescendants()) do table.insert(objects,object) end
-
-  for _,object in ipairs(objects) do
-   local list=props[object.ClassName]
-   if list then
-    local goal={}
-    local hasGoal=false
-    for _,property in ipairs(list) do
-     local attr='AltairProfileFade_'..property
-     local saved=object:GetAttribute(attr)
-     if saved==nil then
-      local homeSaved=object:GetAttribute('AltairHomeFade_'..property)
-      saved=homeSaved~=nil and homeSaved or object[property]
-      object:SetAttribute(attr,saved)
-     end
-     goal[property]=visible and saved or 1
-     hasGoal=true
-    end
-    if hasGoal then
-     tweenService:Create(
-      object,
-      TweenInfo.new(duration,Enum.EasingStyle.Quint,easingDirection),
-      goal
-     ):Play()
-    end
-   end
-  end
- end
-
- local function primeProfileHidden()
-  if not profile then return end
-  local props=altairValues.transparencyProperties
-  local objects={profile}
-  for _,object in ipairs(profile:GetDescendants()) do table.insert(objects,object) end
-
-  for _,object in ipairs(objects) do
-   local list=props[object.ClassName]
-   if list then
-    for _,property in ipairs(list) do
-     local attr='AltairProfileFade_'..property
-     if object:GetAttribute(attr)==nil then
-      local homeSaved=object:GetAttribute('AltairHomeFade_'..property)
-      object:SetAttribute(attr,homeSaved~=nil and homeSaved or object[property])
-     end
-     object[property]=1
-    end
-   end
-  end
- end
-
  showPage=function(name)
   local targetPage=pages:FindFirstChild(name)
-  if not targetPage then return end
+  if not targetPage or not targetPage:IsA("CanvasGroup")then return end
   if activePage==name and opened and targetPage.Visible then return end
-
-  local previousName=activePage
-  local previousPage=nil
-  for _,page in ipairs(pages:GetChildren()) do
-   if page:IsA('GuiObject') and page.Visible and page~=targetPage then
-    previousPage=page
-    break
-   end
+  local previousName=activePage;local previousPage=pages:FindFirstChild(previousName)
+  if previousPage==targetPage or not previousPage or not previousPage.Visible then previousPage=nil end
+  local direction=(TAB_ORDER[name]or 1)>=(TAB_ORDER[previousName]or 1)and 1 or -1
+  activePage=name;tabVersion+=1;local version=tabVersion
+  homeContainer:SetAttribute('ActivePage',name);menu.Visible=false
+  for _,page in ipairs({home,fp,gp})do
+   stopPageMotion(page)
+   if page~=targetPage and page~=previousPage then page.Visible=false;page.Position=PAGE_REST;setPageOpacity(page,1,0)end
   end
-
-  local previousOrder=TAB_ORDER[previousName] or TAB_ORDER[name] or 1
-  local targetOrder=TAB_ORDER[name] or previousOrder
-  local direction=targetOrder>=previousOrder and 1 or -1
-  local enterPosition=pageOffset(direction)
-  local exitPosition=pageOffset(-direction)
-
-  local enteringFriends=name=='Friends' and previousName~='Friends'
-  local leavingFriends=previousName=='Friends' and name~='Friends'
-
-  activePage=name tabVersion+=1 local version=tabVersion
-  homeContainer:SetAttribute('ActivePage',name) menu.Visible=false
-
-  for _,button in ipairs(homeContent.Sidebar:GetChildren()) do
-   if button:IsA('GuiButton') and pages:FindFirstChild(button.Name) then
-    local selected=button.Name==name
-    local backgroundTransparency=selected and .15 or 1
-    local textColor=selected and Color3.fromRGB(242,242,246) or Color3.fromRGB(164,164,174)
-    local iconColor=selected and Color3.fromRGB(232,232,238) or Color3.fromRGB(154,154,164)
-    local fontWeight=selected and Enum.FontWeight.SemiBold or Enum.FontWeight.Regular
-
-    if not button:GetAttribute("AltairHomeAccent")then button.BackgroundColor3=Color3.fromRGB(62,62,68)end
-    tweenService:Create(button,TweenInfo.new(.2,Enum.EasingStyle.Quint),{BackgroundTransparency=backgroundTransparency}):Play()
-    button:SetAttribute('AltairHomeFade_BackgroundTransparency',backgroundTransparency)
-
-    local navObjects={button}
-    for _,object in ipairs(button:GetDescendants()) do
-     table.insert(navObjects,object)
-    end
-
-    for _,object in ipairs(navObjects) do
-     if object:IsA('TextLabel') or object:IsA('TextButton') or object:IsA('TextBox') then
-      object.TextColor3=textColor
-      object.FontFace=Font.new(object.FontFace.Family,fontWeight,object.FontFace.Style)
-     elseif object:IsA('ImageLabel') or object:IsA('ImageButton') then
-      object.ImageColor3=iconColor
-     end
+  for _,button in ipairs(homeContent.Sidebar:GetChildren())do
+   if button:IsA('GuiButton')and pages:FindFirstChild(button.Name)then
+    local selected=button.Name==name;local alpha=selected and .15 or 1
+    tweenService:Create(button,TweenInfo.new(.2,Enum.EasingStyle.Quint),{BackgroundTransparency=alpha}):Play()
+    button:SetAttribute('AltairHomeFade_BackgroundTransparency',alpha)
+    for _,object in ipairs(button:GetDescendants())do
+     if object:IsA('TextLabel')or object:IsA('TextButton')or object:IsA('TextBox')then object.FontFace=Font.new(object.FontFace.Family,selected and Enum.FontWeight.SemiBold or Enum.FontWeight.Regular,object.FontFace.Style)end
     end
    end
   end
-
-  if profile and not homeContent:GetAttribute("AltairHomeRedesign") then
-   if enteringFriends then
-    profile.Visible=true
-    profileFadeState(false,.28,Enum.EasingDirection.In)
-    tweenService:Create(
-     profile,
-     TweenInfo.new(.34,Enum.EasingStyle.Quint,Enum.EasingDirection.InOut),
-     {Position=profileOffset(-direction)}
-    ):Play()
-    task.delay(.30,function()
-     if alive and version==tabVersion and activePage=='Friends' then
-      profile.Visible=false
-     end
-    end)
-   elseif name=='Friends' then
-    profile.Visible=false
-   elseif not leavingFriends and PROFILE_REST then
-    profile.Visible=true
-    profile.Position=PROFILE_REST
-   end
-  end
-
-  local function reveal()
-   if not alive or version~=tabVersion then return end
-
-   if profile and leavingFriends and not homeContent:GetAttribute("AltairHomeRedesign") then
-    profile.Visible=true
-    primeProfileHidden()
-    profile.Position=profileOffset(direction)
-    profileFadeState(true,.52,Enum.EasingDirection.Out)
-    tweenService:Create(
-     profile,
-     TweenInfo.new(.58,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),
-     {Position=PROFILE_REST}
-    ):Play()
-   end
-
-   for _,page in ipairs(pages:GetChildren()) do
-    if page:IsA('GuiObject') then
-     page.Visible=page==targetPage
-    end
-   end
-
-   if opened then
-    primePageHidden(targetPage)
-    targetPage.Position=enterPosition
-    targetPage.Visible=true
-    pageFadeState(targetPage,true,.52,Enum.EasingDirection.Out)
-    tweenService:Create(targetPage,TweenInfo.new(.58,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{
-     Position=PAGE_REST
-    }):Play()
-   else
-    targetPage.Position=PAGE_REST
-   end
-  end
-
-  if opened and previousPage then
-   pageFadeState(previousPage,false,.28,Enum.EasingDirection.In)
-   tweenService:Create(previousPage,TweenInfo.new(.34,Enum.EasingStyle.Quint,Enum.EasingDirection.InOut),{
-    Position=exitPosition
-   }):Play()
-   task.delay(.30,reveal)
+  if not opened then
+   for _,page in ipairs({home,fp,gp})do page.Visible=page==targetPage;page.Position=PAGE_REST;setPageOpacity(page,page==targetPage and 0 or 1,0)end
   else
-   reveal()
+   local alreadyVisible=targetPage.Visible
+   if not alreadyVisible then targetPage.Position=pageOffset(direction);setPageOpacity(targetPage,1,0)end
+   targetPage.Visible=true
+   local duration=UI:GetAttribute("AltairReduceMotion")and .08 or .26
+   pageFadeState(targetPage,true,duration,Enum.EasingDirection.Out)
+   movePage(targetPage,PAGE_REST,duration)
+   if previousPage then
+    pageFadeState(previousPage,false,duration*.8,Enum.EasingDirection.Out)
+    movePage(previousPage,pageOffset(-direction),duration,function()
+     if alive and version==tabVersion and activePage~=previousPage.Name then previousPage.Visible=false;previousPage.Position=PAGE_REST;setPageOpacity(previousPage,1,0)end
+    end)
+   end
   end
-
-  if name=='Friends' then refreshFriends() elseif name=='Games' and gameFilter=='Favorites' then refreshFavorites() end
+  if name=='Friends'then renderFriends();refreshFriends()elseif name=='Games'then renderGames();if gameFilter=='Favorites'then refreshFavorites()end end
+ end
+ local function friendListVisible(list)
+  if not opened then return false end
+  local object=list
+  while object and object~=homeContent do if object:IsA('GuiObject')and not object.Visible then return false end;object=object.Parent end
+  return object==homeContent
+ end
+ friendPaint.visible=friendListVisible
+ function friendPaint.ensure(list,f,order)
+  local pool=friendPaint.pools[list];if not pool then pool={};friendPaint.pools[list]=pool end
+  local slot=pool[f.id]
+  if not slot or not slot.row.Parent then
+   local entry=list:FindFirstChild('Entry_'..f.id)
+   local fresh=entry==nil
+   if fresh then entry=list.Template:Clone();entry.Name='Entry_'..f.id;entry.Visible=false;entry:SetAttribute('RuntimeEntry',true);entry:SetAttribute('IsTemplate',false);entry:SetAttribute('IsPreview',nil);entry.Parent=list end
+   slot={row=entry,fresh=fresh};pool[f.id]=slot;friendRowControls(entry)
+   action(entry:FindFirstChild('Interact'),function()local target=slot.data;if target then showPage('Friends');selectFriend(target,true)end end)
+   action(entry:FindFirstChild('Join'),function()if slot.data then joinFriend(slot.data)end end)
+   action(entry:FindFirstChild('More'),function()if slot.data then selectFriend(slot.data);moreFriend(slot.data)end end)
+  end
+  slot.data=f;slot.row.LayoutOrder=order;return slot.row
+ end
+ function friendPaint.fill(entry,f,preserveVisibility)
+  if not friendActivity.current(f)then return end
+  local pool=friendPaint.pools[entry.Parent];local slot=pool and pool[f.id];if not slot then return end
+  if slot.row~=entry or slot.data~=f then return end
+  local key=f.displayName..'\0'..f.username..'\0'..f.presence..'\0'..tostring(f.location)..'\0'..tostring(f.placeId)..'\0'..tostring(f.universeId)..'\0'..tostring(f.jobId)..'\0'..tostring(f.source)
+  local fresh=slot.fresh
+  if slot.key~=key then
+   slot.key=key
+   for name,value in pairs({UserId=f.id,PlaceId=f.placeId,UniverseId=f.universeId,JobId=f.jobId,ActivitySource=f.source})do if entry:GetAttribute(name)~=value then entry:SetAttribute(name,value)end end
+   local avatar=head(f.id);if entry.Avatar.Image~=avatar then entry.Avatar.Image=avatar end
+   text(entry,'DisplayName',f.displayName);text(entry,'Username','@'..f.username);text(entry,'Status',f.presence=='InGame'and'In Game'or f.presence);text(entry,'Location',f.location)
+   local offline=f.presence=='Offline'or f.presence=='Unknown'
+   local function opacity(object,property,target)
+    local attr='AltairHomeFade_'..property;local previous=object:GetAttribute(attr);object:SetAttribute(attr,target)
+    if fresh then object[property]=target elseif previous~=target then tweenService:Create(object,TweenInfo.new(.18,Enum.EasingStyle.Quint),{[property]=target}):Play()end
+   end
+   opacity(entry.Avatar,'ImageTransparency',offline and .45 or 0)
+   for _,name in ipairs({'DisplayName','Username','Status','Location'})do local field=entry:FindFirstChild(name);if field then opacity(field,'TextTransparency',offline and .4 or 0)end end
+   local status=entry:FindFirstChild('Status');if status then status.TextColor3=offline and Color3.fromRGB(145,145,154)or Color3.fromRGB(86,216,145)end
+   local dot=entry:FindFirstChild('StatusDot');if dot then dot.BackgroundColor3=not offline and Color3.fromRGB(77,227,133)or Color3.fromRGB(144,154,168)end
+   local gameImage=entry:FindFirstChild('GameIcon');if gameImage then local image=gameIcon(f.universeId);if gameImage.Image~=image then gameImage.Image=image end;gameImage.Visible=f.presence=='InGame'and f.universeId>0 end
+   local join=entry:FindFirstChild('Join');if join then friendActivity.joinButton(join,f)end
+  end
+  if preserveVisibility then return end
+  if fresh or not entry.Visible then revealHomeRow(entry,opened);slot.fresh=false else entry.Visible=true end
  end
  renderFriends=function()
-  local browser=fp.Browser local query=browser.SearchBox.Text
-  clear(browser.List) clear(home.Friends.List) clear(home.NowPlaying.FriendsPlaying.List)
-  if fp:FindFirstChild('InThisSession') then clear(fp.InThisSession.List) end
-  local counts={All=#friends,InGame=0,Online=0,Offline=0} local shown,playing=0,0
-  for i,f in ipairs(friends) do
-   if f.presence=='InGame' then counts.InGame+=1 end
-   if f.presence=='Online' or f.presence=='InGame' then counts.Online+=1 end
-   if f.presence=='Offline' then counts.Offline+=1 end
-   local function fill(v)
-    v:SetAttribute('UserId',f.id) v:SetAttribute('PlaceId',f.placeId) v:SetAttribute('UniverseId',f.universeId) v:SetAttribute('JobId',f.jobId)
-    friendRowControls(v)
-    v.Avatar.Image=head(f.id) text(v,'DisplayName',f.displayName) text(v,'Username','@'..f.username) text(v,'Status',f.presence=='InGame' and 'In Game' or f.presence) text(v,'Location',f.location)
-    local offline=f.presence=='Offline' or f.presence=='Unknown'
-    v.Avatar.ImageTransparency=offline and .45 or 0
-    for _,name in ipairs({'DisplayName','Username','Status','Location'}) do local field=v:FindFirstChild(name) if field then field.TextTransparency=offline and .4 or 0 end end
-    if v:FindFirstChild('Status') then v.Status.TextColor3=offline and Color3.fromRGB(145,145,154) or Color3.fromRGB(86,216,145) end
-    if v:FindFirstChild('StatusDot') then v.StatusDot.BackgroundColor3=(f.presence=='InGame' or f.presence=='Online') and Color3.fromRGB(77,227,133) or Color3.fromRGB(144,154,168) end
-    action(v.Interact,function() showPage('Friends') selectFriend(f,true) end)
+  friendPaint.generation+=1;local generation=friendPaint.generation;local snapshot=friends;local filter=friendFilter;local query=fp.Browser.SearchBox.Text
+  task.defer(function()
+   if not alive or not checkAltair()or generation~=friendPaint.generation then return end
+   local browser=fp.Browser;local counts={All=#snapshot,InGame=0,Online=0,Offline=0};local playing=0;local budget=os.clock()
+   local function valid()return alive and checkAltair()and generation==friendPaint.generation end
+   local function yieldBudget()
+    if os.clock()-budget>.001 then runService.Heartbeat:Wait();budget=os.clock()end
+    return valid()
    end
-   if i<=40 then fill(row(home.Friends.List,f.id,i)) end
-   if (f.universeId>0 and f.universeId==game.GameId) or (f.placeId>0 and f.placeId==game.PlaceId) then playing+=1 fill(row(home.NowPlaying.FriendsPlaying.List,f.id,playing)) if fp:FindFirstChild('InThisSession') then fill(row(fp.InThisSession.List,f.id,playing)) end end
-   local included=friendFilter=='All' or f.presence==friendFilter or (friendFilter=='Online' and f.presence=='InGame')
-   if included and (matches(f.displayName,query) or matches(f.username,query)) then
-    shown+=1 local v=row(browser.List,f.id,shown) fill(v)
-    text(v,'Location',f.location) v.GameIcon.Image=gameIcon(f.universeId) v.GameIcon.Visible=f.presence=='InGame' and f.universeId>0
-    friendActivity.joinButton(v.Join,f) v:SetAttribute('ActivitySource',f.source)
-    friendRowControls(v)
-    action(v.Join,function() joinFriend(f) end) action(v.More,function() selectFriend(f) moreFriend(f) end)
+   for _,f in ipairs(snapshot)do
+    if f.presence=='InGame'then counts.InGame+=1 end
+    if f.presence=='Online'or f.presence=='InGame'then counts.Online+=1 end
+    if f.presence=='Offline'then counts.Offline+=1 end
+    if(f.universeId>0 and f.universeId==game.GameId)or(f.placeId>0 and f.placeId==game.PlaceId)then playing+=1 end
+    if not yieldBudget()then return end
+   end
+   friendActivity.showPlaying(playing)
+   local eligible,seen={},{}
+   local lists={browser.List,home.Friends.List,home.NowPlaying.FriendsPlaying.List};if fp:FindFirstChild('InThisSession')then lists[#lists+1]=fp.InThisSession.List end
+   for _,list in ipairs(lists)do eligible[list]=friendListVisible(list);seen[list]={}end
+   local shown,playingOrder=0,0
+   local function paint(list,f,order)
+    if not eligible[list]then return end
+    seen[list][f.id]=true;friendPaint.fill(friendPaint.ensure(list,f,order),f)
+   end
+   for index,f in ipairs(snapshot)do
+    if not valid()then return end
+    if index<=40 then paint(home.Friends.List,f,index)end
+    if(f.universeId>0 and f.universeId==game.GameId)or(f.placeId>0 and f.placeId==game.PlaceId)then
+     playingOrder+=1;paint(home.NowPlaying.FriendsPlaying.List,f,playingOrder);if fp:FindFirstChild('InThisSession')then paint(fp.InThisSession.List,f,playingOrder)end
+    end
+    local included=filter=='All'or f.presence==filter or(filter=='Online'and f.presence=='InGame')
+    if included and(matches(f.displayName,query)or matches(f.username,query))then shown+=1;paint(browser.List,f,shown)end
+    if not yieldBudget()then return end
+   end
+   for list,ids in pairs(seen)do if eligible[list]then
+    for id,slot in pairs(friendPaint.pools[list]or{})do if not ids[id]and slot.row.Parent then slot.row.Visible=false end;if not yieldBudget()then return end end
+   end end
+   if not valid()then return end
+   for _,button in ipairs(browser.Filters:GetChildren())do if button:IsA('GuiButton')then label(button,(button.Name=='InGame'and'In Game'or button.Name)..' ('..tostring(counts[button.Name]or 0)..')');button.BackgroundTransparency=button.Name==filter and .15 or .65 end end
+   text(home.Friends,'Title',#snapshot>0 and('Friends ('..#snapshot..')')or'Friends')
+   text(home.NowPlaying.FriendsPlaying,'Summary',friendError and'Friends unavailable · click to retry'or(playing..' friends playing this experience'))
+   state(browser,friendBusy and #snapshot==0 and'Loading'or friendError and #snapshot==0 and'Error'or shown==0 and'Empty'or nil,friendError or(query~=''and'No matching friends.'or'No friends in this filter.'))
+  end)
+ end
+ connect(fp:GetPropertyChangedSignal('Visible'),function()if fp.Visible and opened then renderFriends()end end)
+ connect(home:GetPropertyChangedSignal('Visible'),function()if home.Visible and opened then renderFriends()end end)
+
+ local gameRows=setmetatable({},{__mode="k"})
+ local function gameRow(list,item,order,directory)
+  local pool=gameRows[list];if not pool then pool={};gameRows[list]=pool end
+  local key=gameKey(item);local slot=pool[key]
+  if not slot or not slot.row.Parent then
+   local entry=row(list,key,order);slot={row=entry};pool[key]=slot
+   action(entry.Interact,function()
+    local current=slot.item;if not current then return end
+    if directory then selectGame(current,true)else
+     if gameFilter~='Recent'then gameFilter='Recent';renderGames()end
+     showPage('Games');selectGame(current,true)
+    end
+   end)
+   if directory then
+    action(entry.Play,function()if slot.item then playGame(slot.item)end end)
+    action(entry.Favorite,function()if slot.item then toggleSave(slot.item)end end)
    end
   end
-  for _,button in ipairs(browser.Filters:GetChildren()) do if button:IsA('GuiButton') then label(button,(button.Name=='InGame' and 'In Game' or button.Name)..' ('..tostring(counts[button.Name] or 0)..')') button.BackgroundTransparency=button.Name==friendFilter and .15 or .65 end end
-  friendActivity.showPlaying(playing)
-  text(home.Friends,'Title',#friends>0 and ('Friends ('..#friends..')') or 'Friends')
-  text(home.NowPlaying.FriendsPlaying,'Summary',friendError and 'Friends unavailable · click to retry' or (playing..' friends playing this experience'))
-  state(browser,friendBusy and #friends==0 and 'Loading' or friendError and #friends==0 and 'Error' or shown==0 and 'Empty' or nil,friendError or (query~='' and 'No matching friends.' or 'No friends in this filter.'))
-  if selectedFriend then
-   local replacement=nil for _,f in ipairs(friends) do if f.id==selectedFriend.id then replacement=f break end end
-   if replacement then selectedFriend=replacement else selectFriend(nil) end
-  end
+  slot.item=item;local entry=slot.row;entry.LayoutOrder=order
+  local image=gameIcon(item.universeId);if entry.Icon.Image~=image then entry.Icon.Image=image end
+  text(entry,'Title',item.name)
+  text(entry,'LastPlayed',directory and(gameFilter=='Recent'and age(item.lastPlayed)or saved(item)and'Saved in Altair'or'Roblox favorite')or(item.universeId==game.GameId and'Playing now'or age(item.lastPlayed)))
+  if directory then text(entry,'Creator',item.creator~=''and('By '..item.creator)or'');label(entry.Favorite,saved(item)and'Saved'or'Save')end
+  entry:SetAttribute('PlaceId',item.placeId);entry:SetAttribute('UniverseId',item.universeId);entry:SetAttribute('LastPlayedAt',item.lastPlayed or 0);entry:SetAttribute('IsFavorite',saved(item));entry.Visible=true
+  return key
+ end
+ local function hideUnusedGames(list,seen)
+  for key,slot in pairs(gameRows[list]or{})do if slot.row.Parent and not seen[key]then slot.row.Visible=false end end
  end
  renderGames=function()
-  local browser=gp.Browser local query=browser.SearchBox.Text local items={}
-  if gameFilter=='Recent' then for _,v in ipairs(data.history) do table.insert(items,v) end
+  local browser=gp.Browser;local query=browser.SearchBox.Text;local items={}
+  if gameFilter=='Recent'then for _,v in ipairs(data.history)do items[#items+1]=v end
   else
-   local seen={}
-   for _,v in ipairs(favorites) do seen[gameKey(v)]=true table.insert(items,v) end
-   for _,v in pairs(data.saved) do if not seen[gameKey(v)] then table.insert(items,v) end end
-   table.sort(items,function(a,b) return tostring(a.name)<tostring(b.name) end)
+   local seen={};for _,v in ipairs(favorites)do seen[gameKey(v)]=true;items[#items+1]=v end
+   for _,v in pairs(data.saved)do if not seen[gameKey(v)]then items[#items+1]=v end end
+   table.sort(items,function(a,b)return tostring(a.name)<tostring(b.name)end)
   end
-  clear(browser.List) clear(home.RecentlyPlayed.List)
-  if gp:FindFirstChild('ContinuePlaying') then clear(gp.ContinuePlaying.List) end
-  local recentLists={home.RecentlyPlayed.List}
-  if gp:FindFirstChild('ContinuePlaying') then table.insert(recentLists,gp.ContinuePlaying.List) end
-  for _,list in ipairs(recentLists) do
-  for i,item in ipairs(data.history) do if i>30 then break end local v=row(list,gameKey(item),i) v.Icon.Image=gameIcon(item.universeId) text(v,'Title',item.name) text(v,'LastPlayed',item.universeId==game.GameId and 'Playing now' or age(item.lastPlayed)) v:SetAttribute('PlaceId',item.placeId) v:SetAttribute('UniverseId',item.universeId) action(v.Interact,function() if gameFilter~='Recent' then gameFilter='Recent' renderGames() end showPage('Games') selectGame(item,true) end) end
+  local recentLists={home.RecentlyPlayed.List};if gp:FindFirstChild('ContinuePlaying')then recentLists[#recentLists+1]=gp.ContinuePlaying.List end
+  for _,list in ipairs(recentLists)do
+   local seen={};for i,item in ipairs(data.history)do if i>30 then break end;seen[gameRow(list,item,i,false)]=true end;hideUnusedGames(list,seen)
   end
-  local shown=0
-  for _,item in ipairs(items) do if matches(item.name,query) or matches(item.creator,query) then
-   shown+=1 local v=row(browser.List,gameKey(item),shown) v.Icon.Image=gameIcon(item.universeId) text(v,'Title',item.name) text(v,'Creator',item.creator~='' and ('By '..item.creator) or '') text(v,'LastPlayed',gameFilter=='Recent' and age(item.lastPlayed) or saved(item) and 'Saved in Altair' or 'Roblox favorite')
-   v:SetAttribute('PlaceId',item.placeId) v:SetAttribute('UniverseId',item.universeId) v:SetAttribute('LastPlayedAt',item.lastPlayed or 0) v:SetAttribute('IsFavorite',saved(item))
-   label(v.Favorite,saved(item) and 'Saved' or 'Save')
-   action(v.Interact,function() selectGame(item,true) end) action(v.Play,function() playGame(item) end) action(v.Favorite,function() toggleSave(item) end)
-  end end
-  for _,v in ipairs(browser.Filters:GetChildren()) do if v:IsA('GuiButton') then v.BackgroundTransparency=v.Name==gameFilter and .15 or .65 end end
+  local shown=0;local seen={}
+  for _,item in ipairs(items)do if matches(item.name,query)or matches(item.creator,query)then shown+=1;seen[gameRow(browser.List,item,shown,true)]=true end end
+  hideUnusedGames(browser.List,seen)
+  for _,v in ipairs(browser.Filters:GetChildren())do if v:IsA('GuiButton')then v.BackgroundTransparency=v.Name==gameFilter and .15 or .65 end end
   label(browser.Filters.Favorites,'Favorites')
-  text(browser,'Subtitle',gameFilter=='Recent' and 'Experiences visited while Altair is running' or (favoriteError and 'Roblox favorites unavailable · showing saved games' or 'Roblox favorites and games saved in Altair'))
-  local mode=gameFilter=='Favorites' and favoriteBusy and #items==0 and 'Loading' or gameFilter=='Favorites' and favoriteError and #items==0 and 'Error' or shown==0 and 'Empty' or nil
-  state(browser,mode,mode=='Error' and favoriteError or query~='' and 'No matching games.' or gameFilter=='Recent' and 'Your visits will appear here.' or 'No favorite or saved games yet.')
+  text(browser,'Subtitle',gameFilter=='Recent'and'Experiences visited while Altair is running'or(favoriteError and'Roblox favorites unavailable · showing saved games'or'Roblox favorites and games saved in Altair'))
+  local mode=gameFilter=='Favorites'and favoriteBusy and #items==0 and'Loading'or gameFilter=='Favorites'and favoriteError and #items==0 and'Error'or shown==0 and'Empty'or nil
+  state(browser,mode,mode=='Error'and favoriteError or query~=''and'No matching games.'or gameFilter=='Recent'and'Your visits will appear here.'or'No favorite or saved games yet.')
  end
  refreshFavorites=function(force)
   if favoriteBusy or (not force and os.clock()-lastFavorites<120) then return end
@@ -7186,7 +7639,7 @@ local homeController = (function()
   local key=gameKey(item)
   for i=#data.history,1,-1 do if gameKey(data.history[i])==key then table.remove(data.history,i) end end
   if item.placeId>0 then table.insert(data.history,1,item) while #data.history>100 do table.remove(data.history) end save() end
-  text(home.NowPlaying,'GameName',item.name) text(home.NowPlaying,'Creator',item.creator) home.NowPlaying.GameIcon.Image=gameIcon(item.universeId) home.NowPlaying.Artwork.Image=detail.artwork or gameIcon(item.universeId)
+  text(home.NowPlaying,'GameName',item.name) text(home.NowPlaying,'Creator',item.creator) home.NowPlaying.GameIcon.Image=gameIcon(item.universeId) home.NowPlaying.ArtworkViewport.Artwork.Image=detail.artwork or gameIcon(item.universeId)
   home.NowPlaying:SetAttribute('PlaceId',game.PlaceId) home.NowPlaying:SetAttribute('UniverseId',item.universeId)
   text(home.SessionStatus,'Game',item.name) renderGames()
   local images={detail.artwork or ('rbxthumb://type=GameThumbnail&id='..game.PlaceId..'&w=768&h=432')}
@@ -7203,19 +7656,34 @@ local homeController = (function()
  recordActivity=function(title,description,icon)
   return altairValues.activity:record(title,description,icon)
  end
+ local activityPaint={generation=0,rows={}}
  local function renderActivity()
-  if not home:FindFirstChild('RecentActivity') then return end
-  local list=home.RecentActivity.List clear(list)
-  for index,item in ipairs(activity) do local entry=row(list,index,index) text(entry,'Title',item.title) text(entry,'Description',item.description..' · '..age(item.time)) entry.Icon.Image=item.icon end
+  activityPaint.generation+=1;local generation=activityPaint.generation
+  local panel=home:FindFirstChild('RecentActivity');if not panel or not panel.Visible then return end
+  task.defer(function()
+   local list=panel.List;local budget=os.clock()
+   for index,item in ipairs(activity)do
+    if not alive or generation~=activityPaint.generation or not panel.Visible then return end
+    local entry=activityPaint.rows[index]
+    local fresh=not entry or not entry.Parent
+    if fresh then entry=list.Template:Clone();entry.Name='Entry_'..index;entry.Visible=false;entry.LayoutOrder=index;entry:SetAttribute('RuntimeEntry',true);entry.Parent=list;activityPaint.rows[index]=entry end
+    text(entry,'Title',item.title);text(entry,'Description',item.description..' · '..age(item.time));if entry.Icon.Image~=item.icon then entry.Icon.Image=item.icon end
+    if fresh then revealHomeRow(entry,opened)else entry.Visible=true end
+    if os.clock()-budget>.001 then runService.Heartbeat:Wait();budget=os.clock()end
+   end
+   for index=#activity+1,#activityPaint.rows do local entry=activityPaint.rows[index];if entry.Parent then entry.Visible=false end end
+  end)
  end
+ if home:FindFirstChild('RecentActivity')then connect(home.RecentActivity:GetPropertyChangedSignal('Visible'),function()renderActivity()end)end
  local lastActivityRender,activityRevision=0,-1
  local function tick()
   if not alive or not opened then return end
+  data.serverRegion.refresh(false)
   local now=os.clock()
   local playerCount=#players:GetPlayers()
   local ping=math.floor(getPing())
   text(homeContent,'HeaderTime',os.date('%I:%M'):gsub('^0',''))
-  text(homeContent,'HomeFooter',tostring(playerCount)..' players  ·  '..ping..' ms  ·  Altair')
+  text(homeContent,'HomeFooter',tostring(playerCount)..(playerCount==1 and ' player' or ' players')..'  ·  '..ping..' ms  ·  Altair')
   text(home.SessionStatus,'Time',os.date('%I:%M %p'):gsub('^0','')) text(home.SessionStatus,'Date',os.date('%a, %b %d, %Y')) text(home.SessionStatus,'Status','In Game ●')
   text(home.Server,'PlayerCount',playerCount..' / '..players.MaxPlayers)
   text(home.Server.Ping,'Value',ping..' ms')
@@ -7228,23 +7696,74 @@ local homeController = (function()
  local controller={}
 
  local homeFadeGeneration=0
+ local homeFadeTargets,homeFadeRecords,homeFadeTweens={},setmetatable({},{__mode="k"}),{}
+ local homeFadeHidden,homeFadeDead=true,0
+ local homeVisibility=Instance.new("NumberValue");homeVisibility.Name="HomeVisibility";homeVisibility.Value=1;homeVisibility.Parent=homeContent
+ local homeVisibilityTween
+ local function paintHomeVisibility()
+  homeOpacity=homeVisibility.Value
+  homeContent.Sidebar.GroupTransparency=homeOpacity
+  for _,page in ipairs({home,fp,gp})do pagePhase(page);paintPageOpacity(page)end
+ end
+ connect(homeVisibility.Changed,paintHomeVisibility)
+ local function groupedHomeObject(object)
+  local current=object
+  while current and current~=homeContent do
+   if current==homeContent.Sidebar or current:GetAttribute("AltairHomePageGroup")or current:GetAttribute("AltairDialogManaged")then return true end
+   current=current.Parent
+  end
+  return false
+ end
+ local function cacheHomeFade(object)
+  if homeFadeRecords[object]or not object:IsDescendantOf(homeContent)or groupedHomeObject(object)then return end
+  local properties=altairValues.transparencyProperties[object.ClassName];if not properties then return end
+  local record={object=object,properties=properties,index=#homeFadeTargets+1};homeFadeRecords[object]=record;homeFadeTargets[record.index]=record
+  for _,property in ipairs(properties)do local attr="AltairHomeFade_"..property;if object:GetAttribute(attr)==nil then object:SetAttribute(attr,object[property])end end
+  if homeFadeHidden then for _,property in ipairs(properties)do if object[property]~=1 then object[property]=1;record.touched=true end end end
+ end
+ local function homeFadeVisible(object)
+  local current=object
+  while current and current~=homeContent do if current:IsA("GuiObject")and not current.Visible then return false end;current=current.Parent end
+  return current==homeContent
+ end
+ connect(homeContent.DescendantAdded,function(object)task.defer(function()if alive and object.Parent then cacheHomeFade(object)end end)end)
+ connect(homeContent.DescendantRemoving,function(object)
+  local record=homeFadeRecords[object];if not record then return end
+  if record.tween then record.tween:Cancel();homeFadeTweens[record.tween]=nil end
+  record.dead=true;homeFadeDead+=1;homeFadeRecords[object]=nil
+ end)
  local function fadeHome(hidden,duration)
   homeFadeGeneration+=1;local generation=homeFadeGeneration
-  local props=altairValues.transparencyProperties
+  homeFadeHidden=hidden
+  if homeVisibilityTween then homeVisibilityTween:Cancel();homeVisibilityTween=nil end
+  if duration==0 then homeVisibility.Value=hidden and 1 or 0;paintHomeVisibility()
+  else
+   local time=UI:GetAttribute("AltairReduceMotion")and math.min(duration,.08)or duration
+   homeVisibilityTween=nativeHomeTween:Create(homeVisibility,TweenInfo.new(time,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Value=hidden and 1 or 0});homeVisibilityTween:Play()
+  end
+  for animation,record in pairs(homeFadeTweens)do animation:Cancel();record.tween=nil end;table.clear(homeFadeTweens)
+  if homeFadeDead>0 then local live={};for _,record in ipairs(homeFadeTargets)do if not record.dead and record.object.Parent then live[#live+1]=record;record.index=#live end end;homeFadeTargets=live;homeFadeDead=0 end
   local function apply()
    local deadline=os.clock()+.001
-   for _,obj in ipairs(homeContent:GetDescendants())do
+   for _,record in ipairs(homeFadeTargets)do
     if not alive or generation~=homeFadeGeneration then return end
-    local list=props[obj.ClassName]
-    if list then
+    local obj=record.object;local visible=obj.Parent and homeFadeVisible(obj)
+    if not record.dead and obj.Parent and(visible or not hidden and record.touched or duration==0)then
      local goals={}
-     for _,property in ipairs(list)do
+     for _,property in ipairs(record.properties)do
       local attr="AltairHomeFade_"..property
-      if obj:GetAttribute(attr)==nil then obj:SetAttribute(attr,obj[property])end
-      goals[property]=hidden and 1 or obj:GetAttribute(attr)
+      local goal=hidden and 1 or obj:GetAttribute(attr)
+      if goal~=nil and obj[property]~=goal then goals[property]=goal end
      end
-     if duration==0 then for property,value in pairs(goals)do obj[property]=value end
-     else tweenService:Create(obj,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goals):Play()end
+     record.touched=hidden
+     if next(goals)then
+      if duration==0 or not visible then for property,value in pairs(goals)do obj[property]=value end
+      else
+       local time=UI:GetAttribute("AltairReduceMotion")and math.min(duration,.08)or duration
+       local animation=nativeHomeTween:Create(obj,TweenInfo.new(time,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goals);record.tween=animation;homeFadeTweens[animation]=record
+       animation.Completed:Once(function()homeFadeTweens[animation]=nil;if record.tween==animation then record.tween=nil end end);animation:Play()
+      end
+     end
     end
     if duration>0 and os.clock()>deadline then runService.Heartbeat:Wait();deadline=os.clock()+.001 end
    end
@@ -7254,10 +7773,26 @@ local homeController = (function()
  function controller.fadeOut(duration)fadeHome(true,duration or .28)end
  function controller.fadeIn(duration)fadeHome(false,duration or .38)end
 
- function controller.setOpened(value) opened=value end
+ function controller.setOpened(value)
+  opened=value;tabVersion+=1
+  for _,page in ipairs({home,fp,gp})do stopPageMotion(page)end
+  if value then
+   local current=pages:FindFirstChild(activePage)or home
+   for _,page in ipairs({home,fp,gp})do page.Visible=page==current;page.Position=PAGE_REST;setPageOpacity(page,page==current and 0 or 1,0)end
+   renderFriends();renderGames();renderActivity()
+  else
+   if menu.Visible then altairValues.dialogMotion:Close(menu)end
+   -- Leave rendered rows intact while the containing page fades as one surface.
+   friendPaint.generation+=1;activityPaint.generation+=1
+  end
+ end
  function controller.destroy()
   if not alive then return end
   if closeHome then closeHome(true) end alive=false
+  data.serverRegion.cancel()
+  if homeVisibilityTween then homeVisibilityTween:Cancel()end
+  for _,page in ipairs({home,fp,gp})do stopPageMotion(page)end
+  for tween in pairs(homeFadeTweens)do tween:Cancel()end
   homeBlur:Destroy()
   for _,c in ipairs(connections) do c:Disconnect() end table.clear(connections)
   if menu.Parent then menu:Destroy() end
@@ -7271,7 +7806,7 @@ local homeController = (function()
  controller.refreshFavorites=refreshFavorites
  controller.debugState=function() return {opened=opened,friends=friends,history=data.history,saved=data.saved,friendBusy=friendBusy,favoriteBusy=favoriteBusy,friendError=friendError,favoriteError=favoriteError} end
  for _,v in ipairs(homeContainer:GetDescendants()) do if v:IsA('ScrollingFrame') and v:FindFirstChild('Template') then clear(v) end end
- home.NowPlaying.Artwork.Image='' home.NowPlaying.GameIcon.Image='' text(home.NowPlaying,'GameName','Loading experience...') text(home.NowPlaying,'Creator','')
+ home.NowPlaying.ArtworkViewport.Artwork.Image='' home.NowPlaying.GameIcon.Image='' text(home.NowPlaying,'GameName','Loading experience...') text(home.NowPlaying,'Creator','')
  homeContent.Sidebar.Profile.Avatar.Image=head(localPlayer.UserId) text(homeContent.Sidebar.Profile,'DisplayName',localPlayer.DisplayName) text(homeContent.Sidebar.Profile,'Status','● In Game')
  profile=homeContent.Sidebar.Profile
  if profile:IsA('GuiObject') then profile.ZIndex=50 end
@@ -7327,23 +7862,18 @@ local homeController = (function()
  connect(teleportService.TeleportInitFailed,function(p,_,message) if p==localPlayer then if alive then notification('Home', 'Teleport failed: '..tostring(message), 4370336704) end end end)
  pcall(function()
   connect(data.serverRegion.networkClient.ConnectionAccepted,function(peer)
-   data.serverRegion.peer=tostring(peer or '')
-   data.serverRegion.value=''
-   data.serverRegion.refresh(true)
+   data.serverRegion.connectionAccepted(peer)
   end)
  end)
+ connect(game:GetAttributeChangedSignal('ServerRegion'),function()data.serverRegion.refresh(true)end)
+ connect(workspace:GetAttributeChangedSignal('ServerRegion'),function()data.serverRegion.refresh(true)end)
  data.serverRegion.refresh(true)
  connect(UI.Destroying,controller.destroy)
  do
-  local props=altairValues.transparencyProperties
+  local budget=os.clock()
   for _,obj in ipairs(homeContent:GetDescendants()) do
-   local list=props[obj.ClassName]
-   if list then
-    for _,property in ipairs(list) do
-     local attr='AltairHomeFade_'..property
-     if obj:GetAttribute(attr)==nil then obj:SetAttribute(attr,obj[property]) end
-    end
-   end
+   cacheHomeFade(obj)
+   if os.clock()-budget>.001 then runService.Heartbeat:Wait();budget=os.clock()end
   end
   controller.fadeOut(0)
  end
@@ -7371,28 +7901,42 @@ altairValues.homeFovTarget.Value=camera.FieldOfView
 altairValues.lifecycle:own(altairValues.homeFovTarget)
 altairValues.homeFovBinding="AltairHomeFov-"..httpService:GenerateGUID(false)
 runService:BindToRenderStep(altairValues.homeFovBinding,Enum.RenderPriority.Last.Value+1,function()
- if not homeOpen then return end
- camera=workspace.CurrentCamera or camera
+ if not altairValues.lifecycle.alive or not homeOpen then return end
+ local activeCamera=syncCamera()
+ if not activeCamera then return end
  local target=altairValues.homeFovTarget.Value
- if math.abs(camera.FieldOfView-target)>.01 then camera.FieldOfView=target end
+ if math.abs(activeCamera.FieldOfView-target)>.01 then activeCamera.FieldOfView=target end
 end)
-track(altairValues.homeFovTarget.Changed:Connect(function(value)if homeOpen then camera.FieldOfView=value end end))
+track(altairValues.homeFovTarget.Changed:Connect(function()
+ if not altairValues.lifecycle.alive or not homeOpen then return end
+ local activeCamera=syncCamera()
+ if activeCamera then activeCamera.FieldOfView=altairValues.homeFovTarget.Value end
+end))
 
-openHome = function()
+openHome = function(requestVersion)
+ if not altairValues.lifecycle.alive then return end
+ requestVersion=type(requestVersion)=="number"and requestVersion or altairValues.nextPanelRequest("Home")
+ if not altairValues.ownsPanelRequest(requestVersion)then return end
+ if scriptSearch.Visible then closeScriptSearch(true,function()if altairValues.ownsPanelRequest(requestVersion)then openHome(requestVersion)end end);return end
  if homeOpen or not UI.Parent then return end
+ local activeCamera=syncCamera()
+ if not activeCamera then return end
+ cameraState:CancelClose()
  homeContainer:SetAttribute("AltairClosing",false)
- homeFov=homeFov or camera.FieldOfView
- altairValues.homeFovTarget.Value=camera.FieldOfView
+ homeFov=cameraState:Own(activeCamera)
+ if not homeFov then return end
+ altairValues.homeFovTarget.Value=activeCamera.FieldOfView
  homeOpen=true
  homeBlur.Enabled=true;homeBlur.Parent=lighting
  altairValues.homeIsolation:SetOpened(true)
+ if not altairValues.ownsPanelRequest(requestVersion)then return end
  for _,panel in ipairs(UI:GetChildren()) do
   if panel:IsA("GuiObject") and panel.Visible and smartBar.Back.Buttons:FindFirstChild(panel.Name) and isPanel(panel.Name) then
    task.spawn(closePanel,panel.Name,true)
   end
  end
  if settingsPanel.Visible then task.spawn(closeSettings) end
- if scriptSearch.Visible then task.spawn(closeScriptSearch) end
+ if scriptSearch.Visible then task.spawn(closeScriptSearch,true) end
  homeController.setOpened(true)
  if not homeContainer.Visible then homeContent.Position=UDim2.new(.5,-45,.5,0) end
  homeContainer.Visible=true
@@ -7401,15 +7945,17 @@ openHome = function()
  tweenService:Create(homeContainer.Dim,TweenInfo.new(.5),{BackgroundTransparency=.5}):Play()
  -- Home has no enclosing box; the full-screen scrim provides contrast.
 
- homeBlur.Size=0
+ -- Retarget the live blur so a close/reopen reversal keeps its current frame.
  tweenService:Create(homeBlur,TweenInfo.new(.8,Enum.EasingStyle.Quint),{Size=20}):Play()
  altairValues.homeTargetFov=math.max(20,homeFov-35)
- tweenService:Create(altairValues.homeFovTarget,TweenInfo.new(.8,Enum.EasingStyle.Quint),{Value=math.max(20,homeFov-35)}):Play()
+ tweenService:Create(altairValues.homeFovTarget,TweenInfo.new(fovMotionDuration(.8),Enum.EasingStyle.Quint),{Value=math.max(20,homeFov-35)}):Play()
  homeController.tick()
 end
 
 closeHome = function(immediate)
+ if not altairValues.lifecycle.alive then return end
  if not homeOpen and not immediate then return end
+ local activeCamera=syncCamera()
  homeContainer:SetAttribute("AltairClosing",true)
  homeOpen=false homeController.setOpened(false)
  altairValues.homeIsolation:SetOpened(false)
@@ -7418,8 +7964,20 @@ closeHome = function(immediate)
  local slide=tweenService:Create(homeContent,TweenInfo.new(immediate and 0 or .8,Enum.EasingStyle.Quint,Enum.EasingDirection.InOut),{Position=UDim2.new(.5,-45,.5,0)})
  tweenService:Create(homeContainer.Dim,TweenInfo.new(immediate and 0 or .3),{BackgroundTransparency=1}):Play()
  tweenService:Create(homeBlur,TweenInfo.new(immediate and 0 or .8,Enum.EasingStyle.Quint),{Size=0}):Play()
- tweenService:Create(camera,TweenInfo.new(immediate and 0 or .8,Enum.EasingStyle.Quint),{FieldOfView=homeFov or camera.FieldOfView}):Play()
+ cameraState:CancelClose()
+ if activeCamera and cameraState.owned[activeCamera] then
+  local restore=tweenService:Create(activeCamera,TweenInfo.new(immediate and 0 or fovMotionDuration(.8),Enum.EasingStyle.Quint),{FieldOfView=cameraState.baselines[activeCamera]})
+  altairValues.homeCameraTween=restore
+  cameraState.closingCamera=activeCamera
+  restore.Completed:Once(function(state)
+   if not altairValues.lifecycle.alive or altairValues.homeCameraTween~=restore then return end
+   altairValues.homeCameraTween=nil;cameraState.closingCamera=nil
+   if state==Enum.PlaybackState.Completed then cameraState.owned[activeCamera]=nil;cameraState.pendingRestore[activeCamera]=nil end
+  end)
+  restore:Play()
+ end
  slide.Completed:Once(function(state)
+  if not altairValues.lifecycle.alive then return end
   if state==Enum.PlaybackState.Completed and not homeOpen then homeContainer.Visible=false homeFov=nil
    if homeBlur.Parent then homeBlur.Parent=nil end
   end
@@ -7427,169 +7985,121 @@ closeHome = function(immediate)
  slide:Play()
 end
 
--- Search owns its input layer and transition state. The interface now uses
--- sibling Z ordering, so decorative siblings must stay below the text field.
-altairValues.scriptSearchState = { version = 0, phase = "closed" }
-
-function altairValues.scriptSearchState:prepareInput()
-	scriptSearch.ZIndex = math.max(scriptSearch.ZIndex, homeContainer.ZIndex + 1,
-		settingsPanel.ZIndex + 1, scriptsPanel.ZIndex + 1,
-		characterPanel.ZIndex + 1, playerlistPanel.ZIndex + 1)
-	scriptSearch.Active = true
-	scriptSearch.Interactable = true
-	local shadow = scriptSearch:FindFirstChild("Shadow")
-	if shadow then
-		shadow.Active = false
-		shadow.ZIndex = 0
-	end
-	local top = 1
-	for _, child in ipairs(scriptSearch:GetChildren()) do
-		if child:IsA("GuiObject") and child ~= scriptSearch.SearchBox and child ~= scriptSearch.Icon then
-			top = math.max(top, child.ZIndex + 1)
-		end
-	end
-	scriptSearch.SearchBox.ZIndex = top
-	scriptSearch.Icon.ZIndex = top
-	scriptSearch.Icon.Active = false
-	scriptSearch.SearchBox.Visible = true
-	scriptSearch.SearchBox.Active = true
-	scriptSearch.SearchBox.Interactable = true
-	scriptSearch.SearchBox.TextEditable = true
-	scriptSearch.SearchBox.ClearTextOnFocus = false
-	scriptSearch.SearchBox.MultiLine = false
-	scriptSearch.List.Active = true
-	scriptSearch.List.Interactable = true
-	-- A visible Modal button releases first-person mouse lock. Keep this tiny,
-	-- transparent button behind the content so it cannot cover search/results.
-	if not self.mouseUnlock then
-		local button = Instance.new("TextButton")
-		button.Name = "ScriptSearchMouseUnlock"
-		button.Size = UDim2.fromOffset(1, 1)
-		button.BackgroundTransparency = 1
-		button.Text = ""
-		button.AutoButtonColor = false
-		button.Active = false
-		button.Selectable = false
-		button.ZIndex = 0
-		button.Parent = scriptSearch
-		self.mouseUnlock = button
-	end
-	self.mouseUnlock.Modal = true
+-- Script Search owns one navigation generation for every pending operation.
+altairValues.scriptSearchState={version=0,nav=0,phase="closed"}
+function altairValues.scriptSearchState:stopSourceFade()
+ for _,animation in ipairs(self.sourceFadeTweens or {})do animation:Cancel()end
+ self.sourceFadeTweens={}
 end
-
--- Keep the shared surface material; legacy search transitions must not whiten it.
-altairValues.scriptSearchColours=function(active)
- local color=scriptSearch:GetAttribute("AltairTheme_BackgroundColor3")or scriptSearch:GetAttribute("AltairThemeDefault_BackgroundColor3")or Color3.fromRGB(10,11,14)
- local sequence=scriptSearch.UIGradient:GetAttribute("AltairTheme_Color")or scriptSearch.UIGradient:GetAttribute("AltairThemeDefault_Color")or scriptSearch.UIGradient.Color
- local points=sequence.Keypoints;local tint=points[1].Value:Lerp(points[#points].Value,.5)
- local brightness=.2126*color.R*tint.R+.7152*color.G*tint.G+.0722*color.B*tint.B
- local light=brightness>.58
- local foreground=light and Color3.fromRGB(22,24,29)or Color3.fromRGB(245,247,252)
- local muted=light and Color3.fromRGB(75,79,89)or Color3.fromRGB(166,173,187)
- tweenService:Create(scriptSearch.SearchBox,TweenInfo.new(.2),{TextColor3=active and foreground or muted,PlaceholderColor3=muted}):Play()
- tweenService:Create(scriptSearch.Icon,TweenInfo.new(.2),{ImageColor3=active and foreground or muted}):Play()
- return color,sequence
+function altairValues.scriptSearchState:fadeSource(version)
+ self:stopSourceFade()
+ local function fade(object,properties)
+  local animation=tweenService:Create(object,TweenInfo.new(.12,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),properties)
+  self.sourceFadeTweens[#self.sourceFadeTweens+1]=animation;animation:Play()
+ end
+ fade(scriptsPanel,{BackgroundTransparency=1})
+ for object,properties in pairs(self.source.fade)do if object.Parent then
+  local goal={};for property in pairs(properties)do goal[property]=1 end;fade(object,goal)
+ end end
+ task.delay(.14,function()if self.version==version and UI.Parent then scriptsPanel.Visible=false;self:stopSourceFade()end end)
 end
-local function applyScriptSearchMaterial()
- local color,sequence=altairValues.scriptSearchColours(false)
- scriptSearch.BackgroundColor3=color;scriptSearch.UIGradient.Color=sequence;scriptSearch.UIGradient.Enabled=true
+function altairValues.scriptSearchState:geometry(object)
+ local scale=scriptSearch:GetAttribute("AltairSurfaceScale")or UI:GetAttribute("AltairDisplayScale")or 1
+ local point=object.AbsolutePosition-UI.AbsolutePosition
+ return UDim2.fromOffset(point.X+object.AbsoluteSize.X/2,point.Y+object.AbsoluteSize.Y/2),UDim2.fromOffset(object.AbsoluteSize.X/scale,object.AbsoluteSize.Y/scale)
 end
-
 local function openScriptSearch()
-	local state = altairValues.scriptSearchState
-	if state.phase == "open" or state.phase == "opening" then return end
-	state.version += 1
-	local version = state.version
-	state.phase = "opening"
-	state:prepareInput()
-	applyScriptSearchMaterial()
-	scriptSearch.UIGradient.Enabled = true
-	if homeOpen then closeHome() end
-	debounce = true
-
-	scriptSearch.Size = UDim2.new(0, 480, 0, 23)
-	scriptSearch.Position = UDim2.new(0.5, 0, 0.5, 0)
-	scriptSearch.SearchBox.Position = UDim2.new(0.509, 0, 0.5, 0)
-	scriptSearch.Icon.Position = UDim2.new(0.04, 0, 0.5, 0)
-	scriptSearch.SearchBox.Text = ""
-	scriptSearch.UIGradient.Offset = Vector2.new(0, 2)
-	scriptSearch.SearchBox.PlaceholderText = "Search ScriptBlox.com"
-	scriptSearch.List.Template.Visible = false
-	scriptSearch.List.Visible = false
-	scriptSearch.Visible = true
-
-	wipeTransparency(scriptSearch, 1, true)
-
-	tweenService:Create(scriptSearch, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-	tweenService:Create(scriptSearch, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 580, 0, 43) }):Play()
-	local shadow = scriptSearch:FindFirstChild("Shadow")
-	if shadow then
-		tweenService:Create(shadow, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0.85 }):Play()
-	end
-	task.wait(0.03)
-	if state.version ~= version then return end
-	tweenService:Create(scriptSearch.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
-	task.wait(0.02)
-	if state.version ~= version then return end
-	tweenService:Create(scriptSearch.SearchBox, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-
-	task.wait(0.3)
-	if state.version ~= version or not scriptSearch.Visible then return end
-	state.phase = "open"
-	scriptSearch.SearchBox:CaptureFocus()
-	task.wait(0.2)
-	if state.version ~= version then return end
-	debounce = false
+ if not checkAltair()then return end
+ local state=altairValues.scriptSearchState
+ local native=altairValues.nativeCatalog
+ if native and(native.opened or native.closing)then
+  local version=state.version
+  native:Close(true,function()
+   if checkAltair()and smartBarOpen and not homeOpen and not(settingsPanel.Visible and not settingsPanel:GetAttribute("AltairClosing")and not settingsPanel:GetAttribute("AltairDeckSource"))and altairValues.smartBarLayout.activePanel==scriptsPanel and not scriptsPanel:GetAttribute("AltairClosing")and state.version==version then
+    scriptsPanel.Interactions.Selection.GroupTransparency=0
+    openScriptSearch()
+   end
+  end)
+  return
+ end
+ if state.phase=="open"or state.phase=="opening"then return end
+ state.version+=1;state.nav+=1;local version=state.version;state.phase="opening";state.afterClose=nil
+ state:stopSourceFade()
+ if not checkAltair()then state.phase="closed";return end
+ if homeOpen then closeHome()end
+ local dock=altairValues.smartBarLayout
+ local expectedNavigation=altairValues.sharedPanel.generation
+ if not scriptsPanel.Visible or scriptsPanel:GetAttribute("AltairClosing")then
+  -- Reserve this request before openPanel yields. A later navigation owns the
+  -- shared panel generation, so this older request must not reopen Search.
+  expectedNavigation+=1
+  openPanel("Scripts")
+ end
+ if not checkAltair()or state.version~=version or state.phase~="opening"then return end
+ if not checkAltair()or not smartBarOpen or homeOpen or not scriptsPanel.Visible or scriptsPanel:GetAttribute("AltairClosing")
+  or altairValues.sharedPanel.generation~=expectedNavigation
+  or(dock.activePanel and dock.activePanel~=scriptsPanel)
+  or(altairValues.sharedPanel.target and altairValues.sharedPanel.target~=scriptsPanel)then
+  state.phase="closed";state.nav+=1;return
+ end
+ local source=scriptsPanel.Interactions.Selection.Library
+ altairValues.sharedPanel:cancel(scriptsPanel)
+ local canonicalSize=dock:getPanelSize(scriptsPanel)
+ local canonicalPosition=dock:getPanelPosition(scriptsPanel,canonicalSize)
+ -- A quick library activation can arrive before the source entrance finishes.
+ -- Retain its true rest geometry and stop that older entrance from moving the
+ -- source underneath the button morph or writing after it has been restored.
+ tweenService:Create(scriptsPanel,TweenInfo.new(0),{Size=canonicalSize,Position=canonicalPosition}):Play()
+ state.source={size=canonicalSize,position=canonicalPosition,background=scriptsPanel.BackgroundTransparency,fade=altairValues.captureFadeState(scriptsPanel)}
+ local position,size=state:geometry(source)
+ altairValues.setPanelPointerVisible(scriptsPanel,smartBar.Back.Buttons.Scripts,false,.12)
+ scriptsPanel.Interactable=false
+ altairValues.panelBehindBar(scriptSearch,false)
+ altairValues.discovery:Open(position,size,function()if state.version==version and UI.Parent then state.phase="open"end end,source:Clone())
+ state:fadeSource(version)
+ if state.mouseUnlock then state.mouseUnlock.Modal=true end
+ if altairValues.discovery.LoadIdle then task.spawn(altairValues.discovery.LoadIdle)end
 end
-
-closeScriptSearch = function()
-	local state = altairValues.scriptSearchState
-	if state.phase == "closing" or state.phase == "closed" then return end
-	state.version += 1
-	local version = state.version
-	state.phase = "closing"
-	state.searching = nil
-	if state.mouseUnlock then state.mouseUnlock.Modal = false end
-	debounce = true
-
-	wipeTransparency(scriptSearch, 1, false)
-
-	task.wait(0.1)
-	if state.version ~= version then return end
-
-	tweenService:Create(scriptSearch,TweenInfo.new(.2),{BackgroundTransparency=1}):Play()
-	tweenService:Create(scriptSearch, TweenInfo.new(0.4, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 520, 0, 0) }):Play()
-	scriptSearch.SearchBox:ReleaseFocus()
-
-	task.wait(0.5)
-	if state.version ~= version then return end
-
-	for _, createdScript in ipairs(scriptSearch.List:GetChildren()) do
-		if createdScript.Name ~= "Placeholder" and createdScript.Name ~= "Template" and createdScript.ClassName == "Frame" then
-			createdScript:Destroy()
-		end
-	end
-
-	task.wait(0.1)
-	if state.version ~= version then return end
-	applyScriptSearchMaterial()
-	state.phase = "closed"
-	scriptSearch.Visible = false
-	scriptSearch.UIGradient.Enabled = true
-	debounce = false
+closeScriptSearch=function(dismiss,continuation,returnDuration)
+ if not checkAltair()then return end
+ local state=altairValues.scriptSearchState
+ if state.phase=="closed"then if continuation then task.spawn(continuation)end;return end
+ if state.phase=="closing"then state.afterClose=continuation;state.dismiss=dismiss;return end
+ state.version+=1;state.nav+=1;local version=state.version;state.phase="closing";state.searching=nil;state.dismiss=dismiss;state.afterClose=continuation
+ state:stopSourceFade()
+ if state.mouseUnlock then state.mouseUnlock.Modal=false end
+ local source=state.source
+ scriptsPanel:SetAttribute("AltairClosing",false);scriptsPanel:SetAttribute("AltairMotionVersion",(scriptsPanel:GetAttribute("AltairMotionVersion")or 0)+1)
+ altairValues.panelBehindBar(scriptsPanel,false)
+ if source then
+  scriptsPanel.Size=source.size;scriptsPanel.Position=source.position;scriptsPanel.BackgroundTransparency=source.background
+  for object,properties in pairs(source.fade)do if object.Parent then for key,value in pairs(properties)do object[key]=value end end end
+ end
+ scriptsPanel.Visible=true;scriptsPanel.Interactable=false
+ altairValues.setPanelPointerVisible(scriptsPanel,smartBar.Back.Buttons.Scripts,true,.14)
+ local button=scriptsPanel.Interactions.Selection.Library
+ local position,size=state:geometry(button)
+ altairValues.discovery:Close(position,size,function()
+  if state.version~=version or not checkAltair()then return end
+  state.phase="closed";scriptsPanel.Interactable=true;local nextAction=state.afterClose;state.afterClose=nil
+  if nextAction then task.spawn(nextAction)elseif state.dismiss then task.spawn(closePanel,"Scripts",true)end
+ end,button:Clone(),returnDuration or .2)
 end
-
+-- Palette is owned by the builder theme bindings; preserve the integration hook.
+altairValues.scriptSearchColours=function()end
 -- Search-only transport: bounded work, short-lived cache, and shared requests.
 altairValues.searchTransport = { cache = {}, pending = {}, active = 0, hits = 0, bytes = 0, cooldown = 0 }
 function altairValues.searchTransport:get(url, current)
 	local deadline = os.clock() + 12
+ local host=url:match("^https?://([^/]+)")or url
+ self.cooldowns=self.cooldowns or {}
 	if not current() then return nil, "Cancelled" end
 	local cached = self.cache[url]
 	if cached and cached.expires > os.clock() then
 		cached.used = os.clock(); self.hits += 1
 		return cached.value
 	end
-	if os.clock() < self.cooldown then return nil, "Search is rate limited; try again shortly." end
+	if os.clock() < (self.cooldowns[host]or 0) then return nil, "Search is rate limited; try again shortly." end
 	if type(httpRequest) ~= "function" then return nil, "This executor does not provide HTTP requests." end
 	while self.active >= 4 and not self.pending[url] do
 		if not current() then return nil, "Cancelled" end
@@ -7597,7 +8107,7 @@ function altairValues.searchTransport:get(url, current)
 		task.wait(0.05)
 	end
 	if not current() then return nil, "Cancelled" end
-	if os.clock() < self.cooldown then return nil, "Search is rate limited; try again shortly." end
+	if os.clock() < (self.cooldowns[host]or 0) then return nil, "Search is rate limited; try again shortly." end
 	local job = self.pending[url]
 	if not job then
 		job = { done = false }
@@ -7610,14 +8120,28 @@ function altairValues.searchTransport:get(url, current)
 				local status = tonumber(response.StatusCode or response.Status) or 200
 				if status == 429 then
 					local headers = type(response.Headers) == "table" and response.Headers or {}
-					self.cooldown = os.clock() + math.clamp(tonumber(headers["Retry-After"] or headers["retry-after"]) or 15, 1, 60)
+					local retryAfter
+					for key,value in pairs(headers)do
+						if type(key)=="string"and key:lower()=="retry-after"then retryAfter=tonumber(value);break end
+					end
+					self.cooldowns[host] = os.clock() + math.clamp(retryAfter or 15, 1, 60)
+                     self.cooldown=math.max(self.cooldown,self.cooldowns[host])
 				end
 				assert(status >= 200 and status < 300, "Search returned HTTP " .. tostring(status) .. ".")
 				assert(type(response.Body) == "string" and #response.Body <= 1024 * 1024, "Search response is missing or too large.")
 				local value = httpService:JSONDecode(response.Body)
 				assert(type(value) == "table", "Invalid search response.")
+                if type(value.data)=="table"and url:find("https://robloxscripts.com/api/v1/",1,true)==1 then
+                 local scripts={}
+                 for _,entry in ipairs(value.data)do if type(entry)=="table"and entry.accessType~="paid"then
+                  entry.owner=type(entry.author)=="table"and entry.author or {};entry.verified=entry.owner.verified==true
+                  if type(entry.features)=="table"then entry.features=table.concat(entry.features," · ")end
+                  scripts[#scripts+1]=entry
+                 end end
+                 value.result={scripts=scripts}
+                end
 				assert((type(value.result) == "table" and type(value.result.scripts) == "table")
-					or type(value.script) == "table", "Search data is unavailable.")
+					or(type(value.result)=="table"and type(value.result.games)=="table")or type(value.script) == "table", "Search data is unavailable.")
 				if UI.Parent then
 					local old = self.cache[url]
 					if old then self.bytes -= old.bytes end
@@ -7650,112 +8174,158 @@ function altairValues.searchTransport:get(url, current)
 	if not current() then return nil, "Cancelled" end
 	return job.value, job.problem
 end
-local function createScript(result, current)
-	if not current() or type(result) ~= "table" or type(result.title) ~= "string" then return end
-	local newScript = UI.ScriptSearch.List.Template:Clone()
-	newScript.Name = result.title
- newScript.Tags:SetAttribute("AltairThemeIgnore",true) -- Review/verification colours retain their meaning.
-	newScript.Parent = UI.ScriptSearch.List
-	newScript.Visible = true
+-- Only result-supplied HTTPS images are downloaded; bounded concurrency and cache.
+altairValues.searchImages={active=0,cache={},pending={}}
+function altairValues.searchImages:get(result,current)
+ local info=type(result.game)=="table"and result.game or {}
+ local url=result.image or result.thumbnailUrl or result.thumbnail or info.imageUrl or info.image or info.iconUrl
+ if type(url)=="table"then url=url.url end
+ if type(url)~="string"or url==""then return nil end
+ if url:sub(1,1)=="/"then url=(result.provider=="ScriptBlox"and "https://scriptblox.com"or result.provider=="RobloxScripts.com"and "https://robloxscripts.com"or "https://roscripts.io")..url end
+ local host=url:match("^https://([^/:]+)")
+ if not host or not host:find("%.")or host:match("^[%d%.]+$")or host:lower():match("%.local$")or #url>2048 then return nil end
+ if type(writefile)~="function"or type(isfile)~="function"or type(makefolder)~="function"or type(isfolder)~="function"or type(getcustomasset)~="function"then return nil end
+ local cached=self.cache[url];if cached and(cached.asset or os.clock()<(cached.retryAt or 0))then cached.used=os.clock();return cached.asset end
+ local job=self.pending[url]
+ if not job then
+  job={done=false};self.pending[url]=job
+  task.spawn(function()
+   while self.active>=3 do if not UI.Parent then job.done=true;self.pending[url]=nil;return end;task.wait(.05)end
+   self.active+=1
+   local ok,asset=pcall(function()
+    local hash=5381;for i=1,#url do hash=(hash*33+url:byte(i))%4294967296 end
+    local folder=altairValues.altairFolder.."/Image Cache";if not isfolder(folder)then makefolder(folder)end
+    local path=folder.."/search-"..string.format("%08x",hash)..".png"
+    if not isfile(path)then
+     local response=httpRequest({Url=url,Method="GET",Timeout=10})
+     assert(type(response)=="table"and tonumber(response.StatusCode or response.Status)==200,"image unavailable")
+     local body=response.Body;assert(type(body)=="string"and #body>12 and #body<=2*1024*1024,"invalid image")
+     local valid=body:sub(1,8)=="\137PNG\13\10\26\10"or body:sub(1,3)=="\255\216\255"or(body:sub(1,4)=="RIFF"and body:sub(9,12)=="WEBP")
+     assert(valid,"unsupported image");writefile(path,body)
+    end
+    return getcustomasset(path)
+   end)
+   self.active-=1;job.asset=ok and asset or nil;job.done=true;self.pending[url]=nil
+   self.cache[url]={asset=job.asset,used=os.clock(),retryAt=os.clock()+30}
+   local count=0;for _ in pairs(self.cache)do count+=1 end
+   if count>64 then local oldest,time=nil,math.huge;for key,item in pairs(self.cache)do if item.used<time then oldest,time=key,item.used end end;if oldest then self.cache[oldest]=nil end end
+  end)
+ end
+ local deadline=os.clock()+12
+ while not job.done do if not current()or os.clock()>deadline then return nil end;task.wait(.05)end
+ return current()and job.asset or nil
+end
+altairValues.discovery=altairValues.interfaceBindings.Discovery({
+ Root=UI,
+ Back=function()closeScriptSearch(false,nil,.42)end,
+ Invalidate=function()altairValues.scriptSearchState.nav+=1 end,
+ Position=function(size)return altairValues.smartBarLayout:getPanelPosition(scriptSearch,size)end,
+ Error=function(problem)if checkAltair()then notification("Script Search",problem,4384402990)end end,
+ Detail=function(result)
+  if not checkAltair()then return end
+  if result.provider=="RoScripts"or result.provider=="RobloxScripts.com"then return result end
+  local state=altairValues.scriptSearchState;local version,nav=state.version,state.nav
+  local function current()return checkAltair()and scriptSearch.Visible and state.version==version and state.nav==nav end
+  local response=altairValues.searchTransport:get("https://scriptblox.com/api/script/"..httpService:UrlEncode(tostring(result.slug or "")),current)
+  if not current()then return end
+  if response and type(response.script)=="table"then result.script=response.script.script;return response.script end
+ end,
+ Image=function(result,current)return altairValues.searchImages:get(result,function()return checkAltair()and current()end)end,
+ Execute=function(result)
+  local state=altairValues.scriptSearchState;local version,nav=state.version,state.nav
+  local function current()return checkAltair()and scriptSearch.Visible and state.version==version and state.nav==nav and altairValues.discovery.selected==result end
+  if not current()then return end
+  if result.provider=="RoScripts"then
+   if type(result.loadstring)=="string"and result.loadstring:match("^https://script%.roscripts%.io/[%w_-]+$")then result.script="loadstring(game:HttpGet("..string.format("%q",result.loadstring).."))()"end
+  elseif result.provider=="ScriptBlox"and(type(result.script)~="string"or result.script=="")then
+   local response=altairValues.searchTransport:get("https://scriptblox.com/api/script/"..httpService:UrlEncode(tostring(result.slug or "")),current)
+   if not current()then return end
+   result.script=response and type(response.script)=="table"and response.script.script or nil
+  end
+  if not current()then return end
+  if type(result.script)~="string"or result.script==""then return "The provider did not return runnable source."end
+  local ok,chunk,problem=pcall(loadstring,result.script)
+  if not current()then return end
+  if not ok or type(chunk)~="function"then return tostring(problem or chunk)end
+  Toast("Running script · "..tostring(result.title or "Untitled script"))
+  if not current()then return end
+  closeScriptSearch(true)
+  if not checkAltair()then return end
+  altairValues.activity:record("Script started",result.title.." · Script Search")
+  if not checkAltair()then return end
+  local success,err=pcall(chunk);if checkAltair()and not success then notification("Script Search",tostring(err),4384402990)end
+ end,
+})
+do
+ local button=Instance.new("TextButton");button.Name="ScriptSearchMouseUnlock";button.Text="";button.BackgroundTransparency=1;button.Size=UDim2.fromOffset(1,1);button.ZIndex=0;button.Active=false;button.Parent=scriptSearch
+ altairValues.scriptSearchState.mouseUnlock=button
+end
 
-	for _, tag in ipairs(newScript.Tags:GetChildren()) do
-		if tag.ClassName == "Frame" then
-			tag.Shadow.ImageTransparency = 1
-			tag.BackgroundTransparency = 1
-			tag.Title.TextTransparency = 1
-		end
+local function extractDomain(link)
+	if type(link) ~= "string" or link:find("[%z\1-\32\127]") or link:find("\\", 1, true) then return nil end
+	local scheme, authority = link:match("^([%a][%w+%.%-]*)://([^/?#]*)")
+	local remember = scheme ~= nil and (scheme:lower() == "http" or scheme:lower() == "https")
+	if scheme and not remember then return nil end
+	if not authority then
+		-- Scheme-less values are used for invite/clipboard display, never HTTP trust.
+		authority = link:match("^([^/?#]+)")
+		remember = false
 	end
-
-	task.defer(function()
-		local response = altairValues.searchTransport:get("https://scriptblox.com/api/script/" .. httpService:UrlEncode(tostring(result.slug or "")),
-			function() return current() and newScript.Parent ~= nil end)
-		if not current() or not newScript.Parent then return end
-		if not response or type(response.script) ~= "table" then
-			newScript.ScriptDescription.Text = "Details unavailable. The search result is still available."
-			return
+	if not authority or authority == "" or authority:find("%", 1, true) then return nil end
+	local userinfo = authority:match(".*()@")
+	if userinfo then authority = authority:sub(userinfo + 1); remember = false end
+	local function ipv4(value)
+		local a, b, c, d = value:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+		if not a then return false end
+		for _, octet in ipairs({a, b, c, d}) do
+			if #octet > 3 or (#octet > 1 and octet:sub(1, 1) == "0") or tonumber(octet) > 255 then return false end
 		end
-
-		newScript.ScriptDescription.Text = tostring(response.script.features or "No description provided.")
-
-		local likes = tonumber(response.script.likeCount) or 0
-		local dislikes = tonumber(response.script.dislikeCount) or 0
-
-		if likes ~= dislikes then
-			newScript.Tags.Review.Title.Text = (likes > dislikes) and "Positive Reviews" or "Negative Reviews"
-			newScript.Tags.Review.BackgroundColor3 = (likes > dislikes) and Color3.fromRGB(0, 139, 102) or Color3.fromRGB(180, 0, 0)
-			newScript.Tags.Review.Size = (likes > dislikes) and UDim2.new(0, 145, 1, 0) or UDim2.new(0, 150, 1, 0)
-		elseif likes > 0 then
-			newScript.Tags.Review.Title.Text = "Mixed Reviews"
-			newScript.Tags.Review.BackgroundColor3 = Color3.fromRGB(198, 132, 0)
-			newScript.Tags.Review.Size = UDim2.new(0, 130, 1, 0)
-		else
-			newScript.Tags.Review.Visible = false
-		end
-
-		local owner = type(response.script.owner) == "table" and response.script.owner or {}
-		newScript.ScriptAuthor.Text = "uploaded by " .. tostring(owner.username or "Unknown")
-		newScript.Tags.Verified.Visible = owner.verified == true
-
-		tweenService:Create(newScript, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.8 }):Play()
-		tweenService:Create(newScript.ScriptName, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-		tweenService:Create(newScript.Execute, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.8 }):Play()
-		tweenService:Create(newScript.Execute, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-
-		newScript.Tags.Visible = true
-
-		tweenService:Create(newScript.ScriptDescription, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.3 }):Play()
-		tweenService:Create(newScript.ScriptAuthor, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.7 }):Play()
-
-		for _, tag in ipairs(newScript.Tags:GetChildren()) do
-			if tag.ClassName == "Frame" then
-				tweenService:Create(tag.Shadow, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0.7 }):Play()
-				tweenService:Create(tag, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-				tweenService:Create(tag.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
+		return true
+	end
+	local host, suffix
+	if authority:sub(1, 1) == "[" then
+		local close = authority:find("]", 2, true)
+		if not close then return nil end
+		host, suffix = authority:sub(1, close):lower(), authority:sub(close + 1)
+		local address = host:sub(2, -2)
+		if address == "" or address:find("[^%x:%.]") or address:find(":::", 1, true) then return nil end
+		if (address:sub(1, 1) == ":" and address:sub(1, 2) ~= "::")
+			or (address:sub(-1) == ":" and address:sub(-2) ~= "::") then return nil end
+		local compressed = address:find("::", 1, true)
+		if compressed and address:find("::", compressed + 2, true) then return nil end
+		if not compressed and (address:sub(1, 1) == ":" or address:sub(-1) == ":") then return nil end
+		local groups = 0
+		for part in address:gmatch("[^:]+") do
+			if part:find(".", 1, true) then
+				if not ipv4(part) or address:sub(-#part) ~= part then return nil end
+				groups += 2
+			else
+				if #part > 4 then return nil end
+				groups += 1
 			end
 		end
-	end)
-
-	wipeTransparency(newScript, 1, true)
-
-	newScript.ScriptName.Text = result.title
-	newScript.ScriptDescription.Text = "Loading details..."
-	newScript.ScriptAuthor.Text = ""
-	newScript.BackgroundTransparency = 0.8
-	newScript.ScriptName.TextTransparency = 0
-	newScript.Execute.BackgroundTransparency = 0.8
-	newScript.Execute.TextTransparency = 0
-	newScript.ScriptDescription.TextTransparency = 0.3
-
-	newScript.Tags.Visible = false
-	newScript.Tags.Patched.Visible = result.isPatched or false
-
-	newScript.Execute.MouseButton1Click:Connect(function()
-		if type(result.script) ~= "string" or #result.script == 0 then
-			notification("ScriptSearch", "ScriptBlox didn't return a script body for " .. result.title .. ".", 4384402990)
-			return
+		if (compressed and groups >= 8) or (not compressed and groups ~= 8) then return nil end
+	else
+		host, suffix = authority:match("^([^:]+)(:.*)$")
+		if not host then host, suffix = authority, "" end
+		host = host:lower():gsub("%.$", "")
+		if host == "" or #host > 253 or host:sub(1, 1) == "." or host:sub(-1) == "."
+			or host:find("[^a-z0-9%.%-]") or host:find("..", 1, true) then return nil end
+		for label in host:gmatch("[^.]+") do
+			if #label > 63 or label:sub(1, 1) == "-" or label:sub(-1) == "-" then return nil end
 		end
-
-		notification("ScriptSearch", "Running " .. result.title .. " via ScriptSearch", 4384403532)
-		closeScriptSearch()
-
-		local compiled, chunk, compileError = pcall(loadstring, result.script)
-		if not compiled or type(chunk) ~= "function" then
-			altairValues.activity:record("Script failed", result.title .. " · Compile error")
-			notification("ScriptSearch", "Couldn't run " .. result.title .. ": " .. tostring(compiled and compileError or chunk), 4384402990)
-			return
-		end
-
-		altairValues.activity:record("Script started", result.title .. " · ScriptSearch")
-		local runSuccess, runError = pcall(chunk)
-		if not runSuccess then
-			altairValues.activity:record("Script failed", result.title .. " · Runtime error")
-			notification("ScriptSearch", result.title .. " errored while running: " .. tostring(runError), 4384402990)
-		end
-	end)
-end
-local function extractDomain(link)
-	local domainToReturn = link:match("([%w-_]+%.[%w-_%.]+)")
-	return domainToReturn
+		-- URL stacks disagree about abbreviated/hex/octal numeric host spellings.
+		if host:match("^[%d%.]+$") then
+			if not ipv4(host) then return nil end
+		elseif host:match("^[^.]+$") and host:match("^0x%x+$") then return nil
+		elseif host:match("%.%d+$") or host:match("%.0x%x+$") then return nil end
+	end
+	if suffix ~= "" then
+		local port = suffix:match("^:(%d+)$")
+		if not port or #port > 5 or tonumber(port) < 1 or tonumber(port) > 65535 then return nil end
+	end
+	-- Preserve existing host-wide permissions across paths, schemes, and ports.
+	return host, remember and host or nil
 end
 
 local function readAllowlist()
@@ -7781,51 +8351,60 @@ local function readAllowlist()
 	return decoded
 end
 
-local function securityDetection(title, content, link, gradient, actions)
+local allowlistWriting = false
+local function rememberAllowedDomain(domain)
+	while allowlistWriting do
+		if not checkAltair() then return false end
+		task.wait()
+	end
+	if not checkAltair() then return false end
+	allowlistWriting = true
+	local ok = pcall(function()
+		checkFolder()
+		local allowed = readAllowlist() or {}
+		if not table.find(allowed, domain) then table.insert(allowed, domain) end
+		if checkAltair() then
+			writefile(altairValues.altairFolder .. "/allowedLinks.altair", httpService:JSONEncode(allowed))
+		end
+	end)
+	allowlistWriting = false
+	return ok
+end
+
+local function securityDetection(title, content, link, gradient, actions, operation)
 	if not checkAltair() then
 		return
 	end
 
-	local domain = extractDomain(link) or link
+	local domain, allowedDomain = extractDomain(link)
+	domain = domain or link
+	if operation ~= "request" then allowedDomain = nil end
 	checkFolder()
-	local currentAllowlist = readAllowlist()
-	if currentAllowlist and table.find(currentAllowlist, domain) then
+	if not checkAltair() then return false end
+	local currentAllowlist = allowedDomain and readAllowlist() or nil
+	if not checkAltair() then return false end
+	if currentAllowlist and table.find(currentAllowlist, allowedDomain) then
 		return true
+	end
+	if not allowedDomain then
+		local oneTimeActions = {}
+		for _, action in ipairs(actions) do if not action[3] then table.insert(oneTimeActions, action) end end
+		actions = oneTimeActions
 	end
 
 	local newSecurityPrompt = UI.SecurityPrompt:Clone()
 
+	newSecurityPrompt.Name = "SecurityReview-" .. httpService:GenerateGUID(false)
 	newSecurityPrompt.Parent = UI
-	newSecurityPrompt.Name = link
 
-	wipeTransparency(newSecurityPrompt, 1, true)
-	newSecurityPrompt.Size = UDim2.new(0, 478, 0, 150)
-
-	newSecurityPrompt.Title.Text = title
-	newSecurityPrompt.Subtitle.Text = content
-	newSecurityPrompt.FoundLink.Text = domain
-
-	newSecurityPrompt.Visible = true
-	newSecurityPrompt.UIGradient.Color = gradient
-
-	newSecurityPrompt.Buttons.Template.Visible = false
-
-	local function closeSecurityPrompt()
-		tweenService:Create(newSecurityPrompt, TweenInfo.new(0.52, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 500, 0, 165) }):Play()
-		tweenService:Create(newSecurityPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-		tweenService:Create(newSecurityPrompt.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-		tweenService:Create(newSecurityPrompt.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-		tweenService:Create(newSecurityPrompt.FoundLink, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-
-		for _, button in ipairs(newSecurityPrompt.Buttons:GetChildren()) do
-			if button.Name ~= "Template" and button.ClassName == "TextButton" then
-				tweenService:Create(button, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-				tweenService:Create(button, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-			end
-		end
-		task.wait(0.55)
-		newSecurityPrompt:Destroy()
-	end
+ newSecurityPrompt.Title.Text=title
+ newSecurityPrompt.Subtitle.Text=content
+ newSecurityPrompt.FoundLink.Text=domain
+ altairValues.dialogMotion:Accent(newSecurityPrompt,gradient.Keypoints[#gradient.Keypoints].Value)
+ newSecurityPrompt.Buttons.Template.Visible=false
+ local function closeSecurityPrompt()
+  altairValues.dialogMotion:Close(newSecurityPrompt,function()newSecurityPrompt:Destroy()end)
+ end
 
 	local decision
 
@@ -7835,45 +8414,32 @@ local function securityDetection(title, content, link, gradient, actions)
 		newAction.Text = action[1]
 		newAction.Parent = newSecurityPrompt.Buttons
 		newAction.Visible = true
-		newAction.Size = UDim2.new(0, newAction.TextBounds.X + 50, 0, 36) -- textbounds
+  local layout=newSecurityPrompt.Buttons:FindFirstChildOfClass("UIListLayout")
+  local gap=layout and layout.Padding.Offset or 8
+  newAction.Size=UDim2.new(1/#actions,-math.ceil(gap*(#actions-1)/#actions),1,0)
 
 		newAction.MouseButton1Click:Connect(function()
 			if decision ~= nil then
 				return
 			end -- one answer per prompt
 
-			if action[2] then
-				if action[3] and writefile then
-					checkFolder()
-					local allowed = currentAllowlist or {}
-					table.insert(allowed, domain)
-					pcall(writefile, altairValues.altairFolder .. "/" .. "allowedLinks.altair", httpService:JSONEncode(allowed))
-				end
-				decision = true
-			else
+			if not checkAltair() then
 				decision = false
+				closeSecurityPrompt()
+				return
+			end
+			decision = action[2] == true
+			if action[2] then
+				if action[3] and allowedDomain and writefile then
+					rememberAllowedDomain(allowedDomain)
+				end
 			end
 
 			closeSecurityPrompt()
 		end)
 	end
 
-	tweenService:Create(newSecurityPrompt, TweenInfo.new(0.4, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 576, 0, 181) }):Play()
-	tweenService:Create(newSecurityPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-	tweenService:Create(newSecurityPrompt.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	tweenService:Create(newSecurityPrompt.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.3 }):Play()
-	task.wait(0.03)
-	tweenService:Create(newSecurityPrompt.FoundLink, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.2 }):Play()
-
-	task.wait(0.1)
-
-	for _, button in ipairs(newSecurityPrompt.Buttons:GetChildren()) do
-		if button.Name ~= "Template" and button.ClassName == "TextButton" then
-			tweenService:Create(button, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.7 }):Play()
-			tweenService:Create(button, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.05 }):Play()
-			task.wait(0.1)
-		end
-	end
+ altairValues.dialogMotion:Open(newSecurityPrompt)
 
 	newSecurityPrompt.FoundLink.MouseEnter:Connect(function()
 		newSecurityPrompt.FoundLink.Text = link
@@ -7887,6 +8453,11 @@ local function securityDetection(title, content, link, gradient, actions)
 
 	local deadline = os.clock() + SECURITY_PROMPT_TIMEOUT
 	while decision == nil do
+		if not checkAltair() then
+			decision = false
+			task.spawn(closeSecurityPrompt)
+			break
+		end
 		if os.clock() > deadline then
 			decision = false
 			task.spawn(closeSecurityPrompt)
@@ -7899,7 +8470,7 @@ local function securityDetection(title, content, link, gradient, actions)
 		task.wait()
 	end
 
-	return decision
+	return checkAltair() and decision or false
 end
 
 if originalRequest then
@@ -7917,11 +8488,13 @@ if originalRequest then
 		local url = data.Url or data.url or "Unknown Link"
 		local gradient = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0, 0, 0)), ColorSequenceKeypoint.new(1, Color3.new(0.764706, 0.305882, 0.0941176)) })
 		local actions = { { "Always Allow", true, true }, { "Allow just this once", true }, { "Don't Allow", false } }
+		local operation = "request"
 
 		if url == "http://127.0.0.1:6463/rpc?v=1" and data.Body then
 			local decodeSuccess, bodyDecoded = pcall(httpService.JSONDecode, httpService, data.Body)
 
 			if decodeSuccess and type(bodyDecoded) == "table" and bodyDecoded.cmd == "INVITE_BROWSER" then
+				operation = "discord-invite"
 				title = "Would you like to join this Discord server?"
 				content = "Altair has prevented your Discord client from automatically joining this Discord server, would you like to continue and join, or block it?"
 				url = bodyDecoded.args and bodyDecoded.args.code and "discord.gg/" .. bodyDecoded.args.code or "Unknown Invite"
@@ -7930,7 +8503,7 @@ if originalRequest then
 			end
 		end
 
-		if securityDetection(title, content, url, gradient, actions) then
+		if securityDetection(title, content, url, gradient, actions, operation) then
 			return originalRequest(data)
 		end
 
@@ -7963,80 +8536,87 @@ if originalSetClipboard then
 		local gradient = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0, 0, 0)), ColorSequenceKeypoint.new(1, Color3.new(0.776471, 0.611765, 0.529412)) })
 		local actions = { { "Allow", true }, { "Don't Allow", false } }
 
-		if securityDetection(title, content, url, gradient, actions) then
+		if securityDetection(title, content, url, gradient, actions, "clipboard") then
 			return originalSetClipboard(data)
 		end
 	end
 	altairValues.lifecycle:replaceGlobal(indexSetClipboard, altairValues.lifecycle.clipboardWrapper)
 end
 
-local function searchScriptBlox(query)
-	local state = altairValues.scriptSearchState
-	query = tostring(query or ""):match("^%s*(.-)%s*$")
-	if query == "" or #query > 160 or state.phase ~= "open" then return end
-	if state.searching == query then return end
-	state.requestVersion = (state.requestVersion or 0) + 1
-	local requestVersion, version = state.requestVersion, state.version
-	state.searching = query
-	local function current()
-		return UI.Parent ~= nil and scriptSearch.Visible and state.phase == "open"
-			and state.version == version and state.requestVersion == requestVersion
-	end
-	scriptSearch.SearchBox.PlaceholderText = "Searching..."
-	local response, problem = altairValues.searchTransport:get(
-		"https://scriptblox.com/api/script/search?q=" .. httpService:UrlEncode(query) .. "&mode=free&max=20&page=1", current)
-	if not current() then return end
-	state.searching = nil
-	scriptSearch.SearchBox.PlaceholderText = "Search ScriptBlox.com"
-	if not response or type(response.result) ~= "table" or type(response.result.scripts) ~= "table" then
-		notification("ScriptSearch", problem or "Search data is unavailable. Try again.", 4384402990)
-		return -- Keep the query and previous results available for retry.
-	end
-
-	tweenService:Create(scriptSearch.NoScriptsTitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-	tweenService:Create(scriptSearch.NoScriptsDesc, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-
-	for _, createdScript in ipairs(scriptSearch.List:GetChildren()) do
-		if createdScript.Name ~= "Placeholder" and createdScript.Name ~= "Template" and createdScript.ClassName == "Frame" then
-			wipeTransparency(createdScript, 1, true)
-		end
-	end
-
-	scriptSearch.List.Visible = true
-	task.wait(0.5)
-	if not current() then return end
-
-	scriptSearch.List.CanvasPosition = Vector2.new(0, 0)
-
-	for _, createdScript in ipairs(scriptSearch.List:GetChildren()) do
-		if createdScript.Name ~= "Placeholder" and createdScript.Name ~= "Template" and createdScript.ClassName == "Frame" then
-			createdScript:Destroy()
-		end
-	end
-
-	tweenService:Create(scriptSearch, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Size = UDim2.new(0, 580, 0, 529) }):Play()
-	tweenService:Create(scriptSearch.Icon, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = UDim2.new(0.054, 0, 0.056, 0) }):Play()
-	tweenService:Create(scriptSearch.SearchBox, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = UDim2.new(0.523, 0, 0.056, 0) }):Play()
-	tweenService:Create(scriptSearch.UIGradient, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.6) }):Play()
-
-	local scriptCreated = false
-	for index, scriptResult in ipairs(response.result.scripts) do
-		if index > 20 or not current() then break end
-		if type(scriptResult) == "table" and type(scriptResult.title) == "string" and pcall(createScript, scriptResult, current) then
-			scriptCreated = true
-		end
-	end
-
-	if not scriptCreated then
-		task.wait(0.2)
-		if not current() then return end
-		tweenService:Create(scriptSearch.NoScriptsTitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-		task.wait(0.1)
-		if not current() then return end
-		tweenService:Create(scriptSearch.NoScriptsDesc, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	else
-		tweenService:Create(scriptSearch.List, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ScrollBarImageTransparency = 0 }):Play()
-	end
+local function searchScripts(query,preview)
+ if not checkAltair()then return end
+ local state=altairValues.scriptSearchState
+ query=tostring(query or ""):match("^%s*(.-)%s*$")
+ if query==""or #query>160 or utf8.len(query)==nil or not scriptSearch.Visible or state.phase=="closing"or state.phase=="closed"then return end
+ local function providerPrefix(value,byteLimit)
+  if #value<=byteLimit then return value end
+  return value:sub(1,utf8.offset(value,0,byteLimit+1)-1)
+ end
+ state.nav+=1;local nav,version=state.nav,state.version;state.searching=query
+ local function current()return checkAltair()and scriptSearch.Visible and state.version==version and state.nav==nav end
+ local started=os.clock();altairValues.discovery:Skeleton(preview,query)
+ local providers={
+  {name="RoScripts",url="https://api.roscripts.io/v1/scripts/search?q="..httpService:UrlEncode(query).."&max=10&mode=free"},
+  {name="ScriptBlox",url="https://scriptblox.com/api/script/search?q="..httpService:UrlEncode(query).."&mode=free&max=10&page=1"},
+  {name="RobloxScripts.com",url="https://robloxscripts.com/api/v1/scripts?q="..httpService:UrlEncode(providerPrefix(query,100)).."&limit=10"},
+ }
+ local remaining=#providers+(preview and 1 or 0);local games={};local failures={}
+ if preview then task.spawn(function()
+  local ok,response=pcall(altairValues.searchTransport.get,altairValues.searchTransport,"https://api.roscripts.io/v1/suggest?q="..httpService:UrlEncode(query),current)
+  if ok and response and type(response.result)=="table"then
+   for _,group in ipairs({response.result.games or {},response.result.scripts or {}})do for _,item in ipairs(group)do if type(item)=="table"then games[#games+1]=item end end end
+  end
+  remaining-=1
+ end)end
+ for _,provider in ipairs(providers)do task.spawn(function()
+  local ok,response=pcall(altairValues.searchTransport.get,altairValues.searchTransport,provider.url,current)
+  if ok and response and type(response.result)=="table"and type(response.result.scripts)=="table"then provider.results=response.result.scripts
+  else failures[#failures+1]=provider.name;provider.results={}end
+  remaining-=1
+ end)end
+ while remaining>0 do if not current()then return end;task.wait(.03)end
+ local minimum=preview and .2 or 11/60
+ if os.clock()-started<minimum then task.wait(minimum-(os.clock()-started))end
+ if not current()then return end;state.searching=nil
+ local results={};local seen={}
+ for index=1,10 do for _,provider in ipairs(providers)do
+  local result=provider.results[index]
+  if type(result)=="table"and type(result.title)=="string"and result.title:match("%S")then
+   -- Keep UTF-8 title bytes; ASCII-only %W collapses unrelated names.
+   local key=result.title:lower():gsub("[%s%p_]","")
+   if key==""then key=result.title:lower():match("^%s*(.-)%s*$")end
+   if not seen[key]and #results<20 then seen[key]=true;result.provider=provider.name;results[#results+1]=result end
+  end
+ end end
+ altairValues.discovery:Results(results,preview,query,games)
+ if #failures==#providers then notification("Script Search","Search providers are unavailable. Try again shortly.",4384402990)end
+end
+altairValues.discovery.Query=function(query,preview)task.spawn(searchScripts,query,preview)end
+altairValues.discovery.LoadIdle=function()
+ local state=altairValues.scriptSearchState;local version,nav=state.version,state.nav;local started=os.clock()
+ local function current()return checkAltair()and scriptSearch.Visible and state.version==version and state.nav==nav end
+ local function namedScripts(response)
+  local scripts=type(response)=="table"and type(response.result)=="table"and response.result.scripts
+  local results={}
+  if type(scripts)=="table"then
+   for _,item in ipairs(scripts)do
+    if type(item)=="table"and type(item.title)=="string"and item.title:match("%S")then results[#results+1]=item end
+   end
+  end
+  return results
+ end
+ local response=altairValues.searchTransport:get("https://api.roscripts.io/v1/scripts?universal=1&mode=free&max=4&sortBy=views",current)
+ if os.clock()-started<.42 then task.wait(.42-(os.clock()-started))end
+ if not current()then return end
+ local results=namedScripts(response)
+ local provider="RoScripts"
+ if #results==0 and current()then
+  provider="ScriptBlox";local fallback=altairValues.searchTransport:get("https://scriptblox.com/api/script/fetch?mode=free&max=4&sortBy=views&universal=1",current)
+  results=namedScripts(fallback)
+ end
+ if not current()then return end
+ for _,result in ipairs(results)do result.provider=provider end
+ altairValues.discovery:Idle(results)
 end
 -- Each toggle owns its animation steps; older coroutines/callbacks cannot resume it.
 local smartBarTransition = { generation = 0, tweens = {} }
@@ -8056,6 +8636,9 @@ function smartBarTransition:create(object, info, goal)
 end
 
 local function openSmartBar()
+	if not checkAltair()then return end
+	if smartBarOpen and smartBar.Visible and not smartBar:GetAttribute("AltairClosing")then return end
+	local cold=not smartBar.Visible
 	local transition = smartBarTransition:begin()
 	smartBarOpen = true
 	smartBar:SetAttribute("AltairClosing",false)
@@ -8068,17 +8651,20 @@ local function openSmartBar()
 	layout.exitPosition=nil;layout.exitAnchor=nil
 	updateBackpackLayout()
 
-	smartBar.Back.BackgroundTransparency = 1
-	smartBar.Back.UIStroke.Transparency = 1
-	smartBar.BackgroundTransparency = 1
-	smartBar.Back.Time.TextTransparency = 1
-	smartBar.Back.Time.AMPM.TextTransparency = 1
+	if cold then
+	 smartBar.Back.BackgroundTransparency = 1
+	 smartBar.Back.UIStroke.Transparency = 1
+	 smartBar.BackgroundTransparency = 1
+	 smartBar.Back.Time.TextTransparency = 1
+	 smartBar.Back.Time.AMPM.TextTransparency = 1
+	 if smartBar.Back.Time:FindFirstChild("ClockDivider")then smartBar.Back.Time.ClockDivider.BackgroundTransparency=1 end
+	 smartBar.UIStroke.Transparency = 1
+	 smartBar.Shadow.ImageTransparency = 1
+	 smartBar.Size = altairValues.smartBarLayout:getBarSize()
+	end
 	smartBar.UIStroke.Enabled = true
 	smartBar.UIStroke.Thickness = .65
 	smartBar.UIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-	smartBar.UIStroke.Transparency = 1
-	smartBar.Shadow.ImageTransparency = 1
-	smartBar.Size = altairValues.smartBarLayout:getBarSize()
 
 	if not altairValues.smartBarPositionInitialized then
 		local viewport = UI:IsA("ScreenGui") and UI.AbsoluteSize or camera.ViewportSize
@@ -8093,12 +8679,12 @@ local function openSmartBar()
 	smartBar.Visible = true
 	drag.Visible = not settingValue("Hide Bar")
 
-	for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
+	if cold then for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 		if button:IsA("GuiObject") then
 			if button.Name == "Placeholder" then
 				button.Visible = true
 				button.BackgroundTransparency = 1
-				button.Size = UDim2.fromOffset(34, 34)
+				button.Size = altairValues.smartBarLayout:getButtonSize()
 				continue
 			end
 
@@ -8109,14 +8695,14 @@ local function openSmartBar()
 
 			if gradient then gradient.Rotation = -120 end
 			if strokeGradient then strokeGradient.Rotation = -120 end
-			button.Size = UDim2.fromOffset(34, 34)
+			button.Size = altairValues.smartBarLayout:getButtonSize()
 			button.BackgroundTransparency = 1
 			if stroke then stroke.Transparency = 1 end
 			if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then icon.ImageTransparency = 1 end
 		end
-	end
+	end end
 
-	altairValues.smartBarLayout:syncContents(false)
+	altairValues.smartBarLayout:syncContents(not cold)
 	altairValues.smartBarLayout:syncToasts()
 
 	-- Drag leaves the closed SmartBar position and returns to its authored
@@ -8127,11 +8713,12 @@ local function openSmartBar()
 			TweenInfo.new(0.42, Enum.EasingStyle.Back, Enum.EasingDirection.Out))
 	end
 
-	smartBarTransition:create(smartBar, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { BackgroundTransparency = UI:GetAttribute("AltairPanelTransparency") or .1 }):Play()
+	smartBarTransition:create(smartBar, TweenInfo.new(.8, Enum.EasingStyle.Quint), { BackgroundTransparency = altairValues.surfaceTransparency(smartBar) }):Play()
 	smartBarTransition:create(smartBar.Shadow, TweenInfo.new(1.2, Enum.EasingStyle.Quint), { ImageTransparency = .9 }):Play()
-	smartBarTransition:create(smartBar.Back.Time, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	smartBarTransition:create(smartBar.Back.Time.AMPM, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-	smartBarTransition:create(smartBar.UIStroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Transparency = 0.85 }):Play()
+	smartBarTransition:create(smartBar.Back.Time, TweenInfo.new(.8, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
+	smartBarTransition:create(smartBar.Back.Time.AMPM, TweenInfo.new(.8, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
+	if smartBar.Back.Time:FindFirstChild("ClockDivider")then smartBarTransition:create(smartBar.Back.Time.ClockDivider,TweenInfo.new(.3),{BackgroundTransparency=.9}):Play()end
+	smartBarTransition:create(smartBar.UIStroke, TweenInfo.new(.8, Enum.EasingStyle.Quint), { Transparency = 0.85 }):Play()
 
 	for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 		if button:IsA("GuiObject") and button.Name ~= "Placeholder" then
@@ -8140,18 +8727,18 @@ local function openSmartBar()
 			local strokeGradient = stroke and stroke:FindFirstChildOfClass("UIGradient")
 			local icon = button:FindFirstChild("Icon")
 
-			if stroke then smartBarTransition:create(stroke, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { Transparency = .82 }):Play() end
-			smartBarTransition:create(button, TweenInfo.new(0.8, Enum.EasingStyle.Quint), {
-				Size = UDim2.fromOffset(34, 34),
+			if stroke then smartBarTransition:create(stroke, TweenInfo.new(.8, Enum.EasingStyle.Quint), { Transparency = .94 }):Play() end
+			smartBarTransition:create(button, TweenInfo.new(.8, Enum.EasingStyle.Quint), {
+				Size = altairValues.smartBarLayout:getButtonSize(),
 				BackgroundTransparency = 0,
 			}):Play()
 			if gradient then smartBarTransition:create(gradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play() end
 			if strokeGradient then smartBarTransition:create(strokeGradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play() end
 			if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then
-				smartBarTransition:create(icon, TweenInfo.new(0.8, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
+				smartBarTransition:create(icon, TweenInfo.new(.8, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
 			end
-			task.wait(0.03)
-			if transition ~= smartBarTransition.generation then return end
+			task.wait(.03)
+			if not checkAltair()or transition ~= smartBarTransition.generation then return end
 		end
 	end
 
@@ -8161,7 +8748,10 @@ local function openSmartBar()
 	altairValues.smartBarLayout:syncToasts()
 end
 
-local function closeSmartBar()
+local function closeSmartBar(requestVersion)
+ requestVersion=type(requestVersion)=="number"and requestVersion or altairValues.nextPanelRequest(nil)
+ if not altairValues.ownsPanelRequest(requestVersion)then return end
+ if scriptSearch.Visible then closeScriptSearch(true,function()if altairValues.ownsPanelRequest(requestVersion)then closeSmartBar(requestVersion)end end);return end
 	local transition = smartBarTransition:begin()
 	local layout=altairValues.smartBarLayout
 	layout.exitPosition=layout.exitPosition or smartBar.Position
@@ -8190,12 +8780,13 @@ local function closeSmartBar()
 		if smartBar.Back.Buttons:FindFirstChild(otherPanel.Name) and isPanel(otherPanel.Name) and otherPanel.Visible then
 			task.spawn(closePanel, otherPanel.Name, true)
 			task.wait()
-			if transition ~= smartBarTransition.generation then return end
+			if not checkAltair()or transition ~= smartBarTransition.generation then return end
 		end
 	end
 
 	smartBarTransition:create(smartBar.Back.Time, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
 	smartBarTransition:create(smartBar.Back.Time.AMPM, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
+	if smartBar.Back.Time:FindFirstChild("ClockDivider")then smartBarTransition:create(smartBar.Back.Time.ClockDivider,TweenInfo.new(.2),{BackgroundTransparency=1}):Play()end
 
 	for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 		if button:IsA("GuiObject") and button.Name ~= "Placeholder" then
@@ -8203,7 +8794,7 @@ local function closeSmartBar()
 			local icon = button:FindFirstChild("Icon")
 			if stroke then smartBarTransition:create(stroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play() end
 			smartBarTransition:create(button, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {
-				Size = UDim2.fromOffset(30, 30),
+				Size = altairValues.smartBarLayout:getButtonSize(true),
 				BackgroundTransparency = 1,
 			}):Play()
 			if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then
@@ -8233,7 +8824,7 @@ local function closeSmartBar()
 	smartBarTransition:create(smartBar.Shadow, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
 
 	task.delay(0.35, function()
-		if transition == smartBarTransition.generation and not smartBarOpen and smartBar.Parent then
+		if checkAltair()and transition == smartBarTransition.generation and not smartBarOpen and smartBar.Parent then
 			smartBar.Visible = false
 			if layout.exitPosition then smartBar.Position=layout.exitPosition;layout.exitPosition=nil end
 			smartBar.Size = altairValues.smartBarLayout:getBarSize()
@@ -8246,6 +8837,7 @@ local function windowFocusChanged(value)
 	if not checkAltair() then
 		return
 	end
+	altairValues.muffleAudio.focused = value
 
 	if value then -- Window Focused
 		if setFpsCap then
@@ -8314,7 +8906,7 @@ local function onChatted(player, message)
 	end
 
 	if legacyChatActive then
-		altairValues.chatModeration:observe(player, message)
+		altairValues.chatModeration:observe(player, message, {source="legacy"})
 	end
 
 	if enabled and player ~= localPlayer then
@@ -8376,16 +8968,21 @@ local function sortPlayers()
 end
 
 local function restoreCamera()
+	local wasSpectating = spectating ~= nil
 	spectating = nil
+	if not wasSpectating then return end
+	local activeCamera = syncCamera()
+	if not activeCamera then return end
 	local character = localPlayer.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if humanoid then
-		camera.CameraSubject = humanoid
+		activeCamera.CameraSubject = humanoid
 	end
-	camera.CameraType = Enum.CameraType.Custom
+	activeCamera.CameraType = Enum.CameraType.Custom
 end
 
 local function toggleSpectate(player)
+	if not checkAltair()then return false end
 	if spectating == player then
 		restoreCamera()
 		Toast("Camera returned to your character.")
@@ -8400,14 +8997,20 @@ local function toggleSpectate(player)
 		return false
 	end
 
+	local activeCamera = syncCamera()
+	if not activeCamera then
+		Toast("The camera is not available right now.")
+		return false
+	end
 	spectating = player
-	camera.CameraSubject = humanoid
-	camera.CameraType = Enum.CameraType.Custom
+	activeCamera.CameraSubject = humanoid
+	activeCamera.CameraType = Enum.CameraType.Custom
 	Toast("Now spectating " .. player.DisplayName .. ".")
 	return true
 end
 
 local function teleportTo(player)
+	if not checkAltair()then return false end
 	local targetCharacter = player.Character
 	local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
 	local localCharacter = localPlayer.Character
@@ -8415,6 +9018,7 @@ local function teleportTo(player)
 
 	if targetRoot and localRoot then
 		Toast("Teleporting to " .. player.DisplayName .. ".")
+		if not checkAltair()then return false end
 		localRoot.CFrame = CFrame.new(targetRoot.Position) * (localRoot.CFrame - localRoot.CFrame.Position)
 		return true
 	end
@@ -8571,13 +9175,17 @@ function altairValues.playerlistUI:_setActionVisual(action, active)
 end
 
 function altairValues.playerlistUI:_pulseAction(action, success)
-	if not action then
+	if not action or not action:IsA("GuiObject")then
 		return
 	end
-
+	self.actionPulseVersions=self.actionPulseVersions or setmetatable({},{__mode="k"})
+	local versions=self.actionPulseVersions
+	local version=(versions[action]or 0)+1;versions[action]=version
 	self:_setActionVisual(action, success == true)
 	task.delay(0.5, function()
-		if checkAltair() then
+		if versions[action]~=version then return end
+		versions[action]=nil
+		if checkAltair()and action.Parent then
 			self:_setActionVisual(action, false)
 		end
 	end)
@@ -8703,7 +9311,7 @@ function altairValues.playerlistUI:init()
 		self.headerDivider.Name = "AltairHeaderDivider"
 		self.headerDivider.BorderSizePixel = 0
 		self.headerDivider.BackgroundColor3 = Color3.fromRGB(84, 84, 88)
-		self.headerDivider.BackgroundTransparency = 0.38
+		self.headerDivider.BackgroundTransparency = .9
 		self.headerDivider.AnchorPoint = Vector2.new(0, 0.5)
 		self.headerDivider.Position = UDim2.new(0.025, 0, 0.16, 0)
 		self.headerDivider.Size = UDim2.new(0.95, 0, 0, 1)
@@ -8720,7 +9328,7 @@ function altairValues.playerlistUI:init()
 		self.verticalDivider.Name = "AltairVerticalDivider"
 		self.verticalDivider.BorderSizePixel = 0
 		self.verticalDivider.BackgroundColor3 = Color3.fromRGB(84, 84, 88)
-		self.verticalDivider.BackgroundTransparency = 0.38
+		self.verticalDivider.BackgroundTransparency = .9
 		self.verticalDivider.AnchorPoint = Vector2.new(0.5, 0)
 		self.verticalDivider.Position = UDim2.new(
 			self.selectedSearchPosition.X.Scale,
@@ -8809,6 +9417,7 @@ function altairValues.playerlistUI:init()
 	self.rowsOpening = false
 
 	self:reset(true)
+
 	return true
 end
 
@@ -8919,6 +9528,7 @@ function altairValues.playerlistUI:_populate(player)
 		return
 	end
 
+	local transitionVersion = self.transitionVersion
 	local profile = self.selectedProfile
 	local avatar = profile:FindFirstChild("Avatar")
 	local displayName = profile:FindFirstChild("DisplayName")
@@ -8988,8 +9598,14 @@ function altairValues.playerlistUI:_populate(player)
 		premiumBadge.Visible = player.MembershipType == Enum.MembershipType.Premium
 	end
 	if friendBadge and friendBadge:IsA("GuiObject") then
-		local ok, isFriend = pcall(localPlayer.IsFriendsWith, localPlayer, player.UserId)
-		friendBadge.Visible = ok and isFriend or false
+		friendBadge.Visible = false
+		task.spawn(function()
+			local ok, isFriend = pcall(localPlayer.IsFriendsWith, localPlayer, player.UserId)
+			if self.selectedPlayer ~= player or self.transitionVersion ~= transitionVersion or not profile.Parent then
+				return
+			end
+			friendBadge.Visible = ok and isFriend or false
+		end)
 	end
 
 	if self.teamList then
@@ -9096,7 +9712,7 @@ function altairValues.playerlistUI:_setPlayerRowHighlight(row, highlighted)
 			tweenService:Create(
 				stroke,
 				TweenInfo.new(0.6, Enum.EasingStyle.Quint),
-				{ Transparency = 0.12 }
+				{ Transparency = .9 }
 			):Play()
 		end
 
@@ -9136,9 +9752,9 @@ function altairValues.playerlistUI:_setRuntimeRowMode(selected)
 	for _, row in ipairs(self.list:GetChildren()) do
 		if row:IsA("GuiObject") then
 			if row:GetAttribute("AltairRuntimePlayer") == true then
-				row.Size = selected
-					and UDim2.fromOffset(221, 34)
-					or UDim2.new(1, -26, 0, 34)
+    row.Size = selected
+     and UDim2.fromOffset(221,34)
+     or UDim2.new(1,-26,0,34)
 			elseif row.Name == "Placeholder" then
 				row.Visible = true
 				row.BackgroundTransparency = 1
@@ -9169,6 +9785,11 @@ function altairValues.playerlistUI:select(player)
 	end
 
 	self:_populate(player)
+	-- Friendship lookup may yield. A later selection or close owns both the
+	-- detail data and its entrance animation when that lookup resumes.
+	if self.transitionVersion ~= transitionVersion or self.selectedPlayer ~= player or not playerlistPanel.Parent then
+		return
+	end
 	self:_highlightSelected()
 
 	if not firstSelection then
@@ -9466,12 +10087,7 @@ do
 
 			local success = teleportTo(player)
 			if success then
-				setToggleVisual(gotoAction, true)
-				task.delay(0.5, function()
-					if checkAltair() then
-						setToggleVisual(gotoAction, false)
-					end
-				end)
+				altairValues.playerlistUI:_pulseAction(gotoAction,true)
 			end
 		end)
 	end
@@ -9526,6 +10142,16 @@ do
 	end
 end
 
+function altairValues.playerlistUI:filterRuntimePlayer(row, query)
+	if not row or not row.Parent or row:GetAttribute("AltairRuntimePlayer") ~= true then
+		return
+	end
+	query = query or string.lower(playerSearch.Text)
+	local displayName = string.lower(tostring(row:GetAttribute("AltairDisplayName") or ""))
+	local username = string.lower(tostring(row:GetAttribute("AltairUsername") or ""))
+	row.Visible = string.find(username, query, 1, true) ~= nil or string.find(displayName, query, 1, true) ~= nil
+end
+
 function altairValues.playerlistUI:refreshRuntimePlayer(player, row)
 	if not player or not row or not row.Parent or row:GetAttribute("AltairRuntimePlayer") ~= true then
 		return
@@ -9537,14 +10163,15 @@ function altairValues.playerlistUI:refreshRuntimePlayer(player, row)
 	row:SetAttribute("AltairPlayerUserId", player.UserId)
 	row:SetAttribute("AltairDisplayName", player.DisplayName)
 	row:SetAttribute("AltairUsername", player.Name)
-	row.Size = self.selectedPlayer
-		and UDim2.fromOffset(221, 34)
-		or UDim2.new(1, -26, 0, 34)
+	self:filterRuntimePlayer(row)
+ row.Size = self.selectedPlayer
+  and UDim2.fromOffset(221,34)
+  or UDim2.new(1,-26,0,34)
 
 	for _, object in ipairs(row:GetDescendants()) do
 		if object:IsA("UIStroke") then
 			object.Enabled = true
-			object.Thickness = 1
+			object.Thickness = .6
 		end
 
 		if object.Name == "DisplayName"
@@ -9722,13 +10349,13 @@ local function createPlayer(player)
 		and UDim2.fromOffset(221, 34)
 		or UDim2.new(1, -26, 0, 34)
 
-	newPlayer:SetAttribute("AltairPlayerOpen_BackgroundTransparency", 0)
+	newPlayer:SetAttribute("AltairPlayerOpen_BackgroundTransparency", .18)
 
 	for _, object in ipairs(newPlayer:GetDescendants()) do
 		if object:IsA("UIStroke") then
 			object.Enabled = true
-			object.Thickness = 1
-			object:SetAttribute("AltairPlayerOpen_Transparency", 0.12)
+			object.Thickness = .6
+			object:SetAttribute("AltairPlayerOpen_Transparency", .9)
 		else
 			local properties = altairValues.transparencyProperties[object.ClassName]
 			if properties then
@@ -9740,7 +10367,7 @@ local function createPlayer(player)
 	end
 
 	newPlayer.Parent = playerlistPanel.Interactions.List
-	newPlayer.Visible = not searchingForPlayer
+	altairValues.playerlistUI:filterRuntimePlayer(newPlayer)
 	if altairValues.registerRainbowPlayerRow then
 		altairValues.registerRainbowPlayerRow(newPlayer)
 	end
@@ -9767,7 +10394,7 @@ local function createPlayer(player)
 		tweenService:Create(
 			newPlayer,
 			TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-			{ BackgroundTransparency = 0 }
+			{ BackgroundTransparency = .18 }
 		):Play()
 
 		for _, object in ipairs(newPlayer:GetDescendants()) do
@@ -9775,7 +10402,7 @@ local function createPlayer(player)
 				tweenService:Create(
 					object,
 					TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
-					{ Transparency = 0.12 }
+					{ Transparency = .9 }
 				):Play()
 			elseif object.Name ~= "Interact" then
 				local properties = altairValues.transparencyProperties[object.ClassName]
@@ -9798,10 +10425,10 @@ local function createPlayer(player)
 			end
 		end
 	else
-		newPlayer.BackgroundTransparency = 0
+		newPlayer.BackgroundTransparency = .18
 		for _, object in ipairs(newPlayer:GetDescendants()) do
 			if object:IsA("UIStroke") then
-				object.Transparency = 0.12
+				object.Transparency = .9
 			end
 		end
 	end
@@ -9825,11 +10452,21 @@ local function createPlayer(player)
 		end
 	end))
 
-	addPlayerConnection(player, player.CharacterAdded:Connect(function()
+	addPlayerConnection(player, player.CharacterAdded:Connect(function(character)
 		task.defer(function()
 			if checkAltair() and newPlayer.Parent then
 				altairValues.playerlistUI:refreshRuntimePlayer(player, newPlayer)
 			end
+			if not checkAltair() or spectating ~= player or player.Character ~= character then return end
+			local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
+			-- The target may respawn again, spectating may stop, or Altair may
+			-- unload while waiting for the new character's Humanoid.
+			if not checkAltair() or spectating ~= player or player.Character ~= character
+				or not humanoid or not humanoid:IsA("Humanoid") then return end
+			local activeCamera = syncCamera()
+			if not activeCamera then return end
+			activeCamera.CameraSubject = humanoid
+			activeCamera.CameraType = Enum.CameraType.Custom
 		end)
 	end))
 
@@ -9907,23 +10544,47 @@ local function removePlayer(player)
 	end
 end
 
-local function openSettings()
+function altairValues.settingsPosition(name,fallback)
+ local layout=altairValues.settingsLayout;return layout and layout:GetPosition(name)or fallback
+end
+
+openSettings=function(requestVersion)
+ if not smartBarOpen then return end
+ requestVersion=type(requestVersion)=="number"and requestVersion or altairValues.nextPanelRequest("Settings")
+ if not altairValues.ownsPanelRequest(requestVersion)then return end
+ if homeOpen then closeHome()end
+ if not altairValues.ownsPanelRequest(requestVersion)then return end
+ if scriptSearch.Visible then closeScriptSearch(false,function()if altairValues.ownsPanelRequest(requestVersion)then openSettings(requestVersion)end end);return end
  local shared=altairValues.sharedPanel:prepare("Settings");if shared=="cancelled" then return end
+ local continuing=not shared and settingsPanel.Visible and settingsPanel:GetAttribute("AltairClosing")
+ local resumeSize,resumePosition=settingsPanel.Size,settingsPanel.Position
+ local resumeAlpha=settingsPanel.BackgroundTransparency
+ altairValues.smartBarLayout:cancelDragPositionTween()
  local sharedSize,sharedPosition=settingsPanel.Size,settingsPanel.Position
  altairValues.panelBehindBar(settingsPanel,false)
  settingsPanel:SetAttribute("AltairClosing",false)
+ if continuing and tweenService.Freeze then
+  tweenService:Freeze(settingsPanel,{"Size","Position","BackgroundTransparency"})
+  if settingsPanel:IsA("CanvasGroup")then tweenService:Freeze(settingsPanel,"GroupTransparency")end
+ end
  settingsPanel:SetAttribute("AltairMotionVersion",(settingsPanel:GetAttribute("AltairMotionVersion") or 0)+1)
  local motionVersion=settingsPanel:GetAttribute("AltairMotionVersion")
+ if not continuing then settingsPanel:SetAttribute("AltairSettingsRevealPending",true)end
  local glyph=settingsPanel:FindFirstChild("AltairMorphIcon");if glyph then glyph.Visible=false end
- altairValues.settingsRestPosition=altairValues.smartBarLayout:getPanelPosition(settingsPanel,UDim2.fromOffset(740,430))
- settingsPanel.SettingLists.Visible=false
+ altairValues.settingsRestPosition=altairValues.smartBarLayout:getPanelPosition(settingsPanel,(altairValues.settingsLayout and altairValues.settingsLayout:GetRestSize()or UDim2.fromOffset(740,430)))
+ if not continuing then settingsPanel.SettingLists.Visible=false end
  if altairValues.settingsFadeSnapshot then
-  for object,properties in pairs(altairValues.settingsFadeSnapshot) do if object.Parent then for key,value in pairs(properties) do if object[key]~=value then object[key]=value end end end end
+  for object,properties in pairs(altairValues.settingsFadeSnapshot)do if object.Parent then
+   if continuing then
+    if tweenService.Freeze then tweenService:Freeze(object,properties)end
+    tweenService:Create(object,TweenInfo.new(.18,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),properties,{ResolvedTransparency=true}):Play()
+   else for key,value in pairs(properties)do if object[key]~=value then object[key]=value end end end
+  end end
   altairValues.settingsFadeSnapshot=nil
  end
- if settingsPanel.SettingLists:IsA("CanvasGroup")then settingsPanel.SettingLists.GroupTransparency=1 end
+ if not continuing and settingsPanel.SettingLists:IsA("CanvasGroup")then settingsPanel.SettingLists.GroupTransparency=1 end
 	local stroke=settingsPanel:FindFirstChildOfClass("UIStroke")
-	if stroke then stroke.Enabled=true;stroke.Transparency=.6 end
+	if stroke then stroke.Enabled=true;if not continuing then stroke.Transparency=.6 end end
 	if homeOpen then closeHome() end
 	for _, panelName in ipairs({ "Character", "Scripts", "Playerlist" }) do
 		local panel = UI:FindFirstChild(panelName)
@@ -9932,49 +10593,64 @@ local function openSettings()
 			break
 		end
 	end
+	if not altairValues.ownsPanelRequest(requestVersion)or settingsPanel:GetAttribute("AltairMotionVersion")~=motionVersion or settingsPanel:GetAttribute("AltairClosing")then return end
 	debounce = true
 
-	settingsPanel.BackgroundTransparency = 1
-	settingsPanel.Title.TextTransparency = 1
-	settingsPanel.Subtitle.TextTransparency = 1
-	settingsPanel.Back.ImageTransparency = 1
-
-	wipeTransparency(settingsPanel.SettingTypes, 1, true)
+ if not continuing then
+  settingsPanel.BackgroundTransparency=1
+  settingsPanel.Title.TextTransparency=1
+  settingsPanel.Subtitle.TextTransparency=1
+  settingsPanel.Back.ImageTransparency=1
+  wipeTransparency(settingsPanel.SettingTypes,1,true)
+  for _,name in ipairs({"NavigationWell","ContentWell","ContentDivider"})do local layer=settingsPanel:FindFirstChild(name);if layer then layer.BackgroundTransparency=1 end end
+ end
 
 	settingsPanel.Visible = true
- if settingsPanel:IsA("CanvasGroup") then settingsPanel.GroupTransparency=1;tweenService:Create(settingsPanel,TweenInfo.new(.18),{GroupTransparency=0}):Play() end
+ for _,name in ipairs({"NavigationWell","ContentWell","ContentDivider"})do local layer=settingsPanel:FindFirstChild(name);if layer then tweenService:Create(layer,TweenInfo.new(.26),{BackgroundTransparency=layer:GetAttribute("AltairDesignRestAlpha")or .9}):Play()end end
+ if not continuing and altairValues.settingsSearch then altairValues.settingsSearch:Open()end
+ if settingsPanel:IsA("CanvasGroup")then if not continuing then settingsPanel.GroupTransparency=1 end;tweenService:Create(settingsPanel,TweenInfo.new(.18),{GroupTransparency=0}):Play()end
  altairValues.bindPanelPointer(settingsPanel,smartBar.Back.Buttons.Settings)
  altairValues.setPanelPointerVisible(settingsPanel,smartBar.Back.Buttons.Settings,true,.18)
-	settingsPanel.UIGradient.Enabled = true
-	settingsPanel.BackgroundColor3 = Color3.fromRGB(25,26,29)
-	settingsPanel.UIGradient.Color =
-		ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0.0470588, 0.0470588, 0.0470588)), ColorSequenceKeypoint.new(1, Color3.new(0.0470588, 0.0470588, 0.0470588)) })
-	settingsPanel.UIGradient.Offset = Vector2.new(0, 1.7)
- altairValues.interfaceBindings.Surface(settingsPanel)
- local divider=settingsPanel:FindFirstChild("SidebarDivider");if divider then tweenService:Create(divider,TweenInfo.new(.18),{BackgroundTransparency=.65}):Play()end
-	settingsPanel.SettingTypes.Visible = true
-	settingsPanel.SettingLists.Visible = false
+ if not continuing then
+  settingsPanel.UIGradient.Enabled=true
+  settingsPanel.BackgroundColor3=Color3.fromRGB(25,26,29)
+  settingsPanel.UIGradient.Color=ColorSequence.new(Color3.new(.0470588,.0470588,.0470588))
+  settingsPanel.UIGradient.Offset=Vector2.new(0,1.7)
+ end
+ if not continuing then altairValues.interfaceBindings.Surface(settingsPanel)end
+ if continuing then settingsPanel.BackgroundTransparency=resumeAlpha end
+ local divider=settingsPanel:FindFirstChild("SidebarDivider");if divider then tweenService:Create(divider,TweenInfo.new(.18),{BackgroundTransparency=.9}):Play()end
+	settingsPanel.SettingTypes.Visible=true
+ if not continuing then settingsPanel.SettingLists.Visible=false end
 	local originSize,originPosition=getPanelButtonGeometry(settingsPanel,smartBar.Back.Buttons.Settings)
-	settingsPanel.Size=shared and sharedSize or originSize;settingsPanel.Position=shared and sharedPosition or originPosition
-	altairValues.openPanelCorners(settingsPanel,smartBar.Back.Buttons.Settings,shared)
-	settingsPanel.Title.Position = UDim2.fromOffset(50,12)
- settingsPanel.Subtitle.Position=UDim2.fromOffset(50,35)
- for _,category in ipairs(altairSettings)do if category.name=="General"then settingsPanel.ContentTitle.Text=category.name;settingsPanel.ContentSubtitle.Text=category.description;break end end
- settingsPanel.ContentTitle.TextTransparency=1;settingsPanel.ContentSubtitle.TextTransparency=1
- settingsPanel.HeaderIcon.Visible=true;settingsPanel.HeaderIcon.ImageTransparency=1
+	settingsPanel.Size=continuing and resumeSize or shared and sharedSize or originSize
+ settingsPanel.Position=continuing and resumePosition or shared and sharedPosition or originPosition
+	altairValues.openPanelCorners(settingsPanel,smartBar.Back.Buttons.Settings,shared or continuing)
+ if not settingsPanel:GetAttribute("AltairResumingDeck")then
+  settingsPanel.Title.Position=altairValues.settingsPosition("Title",UDim2.fromOffset(50,12))
+  settingsPanel.Subtitle.Position=altairValues.settingsPosition("Subtitle",UDim2.fromOffset(50,35))
+ end
+ if not continuing then
+  for _,category in ipairs(altairSettings)do if category.name=="General"then settingsPanel.ContentTitle.Text=category.name;settingsPanel.ContentSubtitle.Text=category.description;break end end
+  settingsPanel.ContentTitle.TextTransparency=1;settingsPanel.ContentSubtitle.TextTransparency=1
+ end
+ settingsPanel.HeaderIcon.Visible=true;if not continuing then settingsPanel.HeaderIcon.ImageTransparency=1 end
  tweenService:Create(settingsPanel.HeaderIcon,TweenInfo.new(.18),{ImageTransparency=0}):Play()
 
-	settingsPanel.Title.Text = "Preferences"
-	settingsPanel.Subtitle.Text = "Make Altair your own."
+ if not continuing then
+  settingsPanel.Title.Text="Preferences"
+  settingsPanel.Subtitle.Text="Make Altair your own."
+ end
 
-	tweenService:Create(settingsPanel, TweenInfo.new(.38), { Size = UDim2.fromOffset(740,430),Position=altairValues.settingsRestPosition }):Play()
- altairValues.sharedPanel:animate(settingsPanel,UDim2.fromOffset(740,430))
-	tweenService:Create(settingsPanel, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = UI:GetAttribute("AltairPanelTransparency") or .1 }):Play()
+ if altairValues.settingsLayout and altairValues.settingsLayout:IsLiteral()then altairValues.settingsLayout:Open(false)end
+	if not shared then tweenService:Create(settingsPanel, TweenInfo.new(.38), { Size = (altairValues.settingsLayout and altairValues.settingsLayout:GetRestSize()or UDim2.fromOffset(740,430)),Position=altairValues.settingsRestPosition }):Play()end
+ altairValues.sharedPanel:animate(settingsPanel,(altairValues.settingsLayout and altairValues.settingsLayout:GetRestSize()or UDim2.fromOffset(740,430)))
+	tweenService:Create(settingsPanel, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = altairValues.surfaceTransparency(settingsPanel) }):Play()
 	tweenService:Create(settingsPanel.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 	tweenService:Create(settingsPanel.Subtitle, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 
 	task.wait(0.1)
-	if settingsPanel:GetAttribute("AltairClosing") or settingsPanel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
+	if not altairValues.ownsPanelRequest(requestVersion)or settingsPanel:GetAttribute("AltairClosing") or settingsPanel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
 
 	for _, settingType in ipairs(settingsPanel.SettingTypes:GetChildren()) do
 		if settingType.ClassName == "Frame" then
@@ -9991,7 +10667,7 @@ local function openSettings()
             if settingType:FindFirstChild("CategoryIcon") then tweenService:Create(settingType.CategoryIcon,TweenInfo.new(.18),{ImageTransparency=0}):Play() end
 
 			task.wait(0.02)
-		if settingsPanel:GetAttribute("AltairClosing") or settingsPanel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
+		if not altairValues.ownsPanelRequest(requestVersion)or settingsPanel:GetAttribute("AltairClosing") or settingsPanel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
 		end
 	end
 
@@ -10005,11 +10681,15 @@ local function openSettings()
 		end
 	end
 
- if altairValues.settingsSelectors and altairValues.settingsSelectors.General then altairValues.settingsSelectors.General() end
+ if altairValues.settingsLayout and altairValues.settingsLayout:IsLiteral()then altairValues.settingsLayout:Open(true)
+ elseif not continuing and altairValues.settingsSelectors and altairValues.settingsSelectors.General then altairValues.settingsSelectors.General()end
 	debounce = false
 end
 
 closeSettings = function(combined)
+ altairValues.settingsPageVersion=(altairValues.settingsPageVersion or 0)+1
+ if altairValues.resetSettingsFeedback then altairValues.resetSettingsFeedback()end
+ if smartBarOpen and settingsPanel.Visible then altairValues.smartBarLayout:cancelDragPositionTween()end
  altairValues.setPanelPointerVisible(settingsPanel,smartBar.Back.Buttons.Settings,false,.12)
  altairValues.sharedPanel:cancel(settingsPanel)
  if altairValues.themePicker then altairValues.themePicker:_setShown(false,true)end
@@ -10018,7 +10698,7 @@ closeSettings = function(combined)
  settingsPanel:SetAttribute("AltairMotionVersion",(settingsPanel:GetAttribute("AltairMotionVersion") or 0)+1)
  local motionVersion=settingsPanel:GetAttribute("AltairMotionVersion")
  altairValues.settingsFadeSnapshot=altairValues.captureFadeState(settingsPanel)
- wipeTransparency(settingsPanel,1,false,true,.06)
+ wipeTransparency(settingsPanel,1,false,true,.16)
 
 	local stroke=settingsPanel:FindFirstChildOfClass("UIStroke")
 	if stroke then
@@ -10028,11 +10708,11 @@ closeSettings = function(combined)
 
 	for _, settingType in ipairs(settingsPanel.SettingTypes:GetChildren()) do
 		if settingType.ClassName == "Frame" then
-			tweenService:Create(settingType, TweenInfo.new(0.1, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
-			tweenService:Create(settingType.Shadow, TweenInfo.new(0.05, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
-			tweenService:Create(settingType.UIStroke, TweenInfo.new(0.05, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
-			tweenService:Create(settingType.Title, TweenInfo.new(0.05, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
-			tweenService:Create(settingType.Description, TweenInfo.new(0.05, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
+			tweenService:Create(settingType, TweenInfo.new(.16, Enum.EasingStyle.Quint), { BackgroundTransparency = 1 }):Play()
+			tweenService:Create(settingType.Shadow, TweenInfo.new(.16, Enum.EasingStyle.Quint), { ImageTransparency = 1 }):Play()
+			tweenService:Create(settingType.UIStroke, TweenInfo.new(.16, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
+			tweenService:Create(settingType.Title, TweenInfo.new(.16, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
+			tweenService:Create(settingType.Description, TweenInfo.new(.16, Enum.EasingStyle.Quint), { TextTransparency = 1 }):Play()
 		end
 	end
 
@@ -10102,22 +10782,37 @@ function altairValues.settingsStore:load()
 end
 
 function altairValues.settingsStore:write(encoded)
+	if not checkAltair()then return false end
 	if type(writefile) ~= "function" then self.status = "Session only"; return false end
 	if self.writing then self.pending = encoded; return false end
 	if encoded == self.lastGood and not self.recovered then return true end
 	self.writing = true
 	local ok, problem = pcall(function()
-		checkFolder()
+		local function current()assert(checkAltair(),"Altair is unloaded")end
+		current()
+		assert(checkFolder(checkAltair)~=false,"Altair is unloaded")
+		current()
 		-- Never replace a good backup with unreadable primary data.
 		writefile(settingsPath() .. ".backup", self.lastGood or encoded)
+		current()
 		if type(readfile) == "function" then
-			assert(readfile(settingsPath() .. ".backup") == (self.lastGood or encoded), "Backup verification failed")
+			local backup=readfile(settingsPath() .. ".backup")
+			current()
+			assert(backup == (self.lastGood or encoded), "Backup verification failed")
 		end
+		current()
 		writefile(settingsPath(), encoded)
-		if type(readfile) == "function" then assert(readfile(settingsPath()) == encoded, "Settings verification failed") end
+		current()
+		if type(readfile) == "function" then
+			local saved=readfile(settingsPath())
+			current()
+			assert(saved == encoded, "Settings verification failed")
+		end
 	end)
+	if not checkAltair()then self.pending=nil;self.writing=false;return false end
 	if self.pending then
 		task.defer(function()
+			if not checkAltair()then self.pending=nil;self.writing=false;return end
 			local pending = self.pending; self.pending = nil; self.writing = false
 			self:write(pending)
 		end)
@@ -10132,16 +10827,22 @@ function altairValues.settingsStore:write(encoded)
 	return false
 end
 local function saveSettings(notifyUser)
+	if not checkAltair()then return false end
 	local flat = {}
 	for _, category in ipairs(altairSettings) do
 		for _, setting in ipairs(category.categorySettings) do
-			if setting.persistent ~= false and setting.current ~= nil then
-				flat[setting.id] = setting.current
+			if setting.persistent ~= false then
+				if setting.settingType == "Key" and setting.current == nil then
+					-- An absent key means "use the default"; false means explicitly unbound.
+					flat[setting.id] = false
+				elseif setting.current ~= nil then
+					flat[setting.id] = setting.current
+				end
 			end
 		end
 	end
 	local spotify={}
-	for _,id in ipairs({"spotifyenabled","spotifyclientid","spotifybridgekey","spotifyport"}) do spotify[id]=flat[id] end
+	for _,id in ipairs({"spotifyenabled","spotifyclientid","spotifyclientidmanual","spotifybridgekey","spotifyport"}) do spotify[id]=flat[id] end
 	altairValues.spotifySession.settings=spotify
 	if not writefile then
 		if notifyUser then notification("Settings updated","",nil,{Key="settings-update",Duration=3}) end
@@ -10149,12 +10850,14 @@ local function saveSettings(notifyUser)
 	end
 
 	local encodeSuccess, encoded = pcall(httpService.JSONEncode, httpService, flat)
+	if not checkAltair()then return false end
 	if not encodeSuccess then
 		warn("Altair | Unable to encode settings: " .. tostring(encoded))
 		return
 	end
 
 	local saved=altairValues.settingsStore:write(encoded)
+	if not checkAltair()then return false end
 	if saved and notifyUser then notification("Settings saved","",nil,{Key="settings-update",Duration=3}) end
 	return saved
 end
@@ -10162,9 +10865,10 @@ end
 function altairValues.importSpotifyConnection()
  if type(readfile)~="function"then return false end
  local ok,data=pcall(function()return httpService:JSONDecode(readfile(altairValues.altairFolder.."/Spotify.connection.json"))end)
- if not ok or type(data)~="table"or data.version~=1 or type(data.bridgeKey)~="string"or #data.bridgeKey<32 or #data.bridgeKey>256 or type(data.port)~="number"or data.port<1024 or data.port>65535 then return false end
+ if not ok or type(data)~="table"or data.version~=1 or type(data.bridgeKey)~="string"or #data.bridgeKey<32 or #data.bridgeKey>256 or type(data.port)~="number"or data.port<1024 or data.port>65535 or data.port%1~=0 then return false end
  for _,entry in ipairs({{"Spotify Bridge Key",data.bridgeKey},{"Spotify Bridge Port",data.port},{"Spotify Client ID",data.clientId}})do
-  local setting=checkSetting(entry[1]);if setting and entry[2]~=nil and(entry[1]~="Spotify Client ID"or setting.current=="")then setting.current=entry[2]end
+  local setting=checkSetting(entry[1]);local override=checkSetting("Spotify Client ID Override")
+  if setting and entry[2]~=nil and(entry[1]~="Spotify Client ID"or(type(entry[2])=="string"and setting.current=="" and not(override and override.current)))then setting.current=entry[2]end
  end
  return true
 end
@@ -10178,6 +10882,7 @@ end
 
 local function restoreSettings()
 	if altairValues.settingsStore.restored then return end
+	local spotifyConnectionRestored=false
 	do
 		local stored = altairValues.settingsStore:load() or altairValues.spotifySession.settings
 		if type(stored) == "table" then
@@ -10190,7 +10895,7 @@ local function restoreSettings()
 						for _, storedCategory in ipairs(stored) do
 							if type(storedCategory) == "table" and type(storedCategory.categorySettings) == "table" then
 								for _, storedSetting in ipairs(storedCategory.categorySettings) do
-									if storedSetting.id == setting.id then
+									if type(storedSetting) == "table" and storedSetting.id == setting.id then
 										value = storedSetting.current
 										break
 									end
@@ -10199,23 +10904,74 @@ local function restoreSettings()
 						end
 					end
 
-					if value ~= nil and (setting.current == nil or typeof(value) == typeof(setting.current)) then
+					if setting.settingType == "Key" then
+						if value == false then
+							setting.current = nil
+						elseif type(value) == "string" then
+							setting.current = value
+						end
+					elseif value ~= nil and (setting.current == nil or typeof(value) == typeof(setting.current)) then
+						if setting.settingType=="Number"then
+							if type(value)~="number"or value~=value or math.abs(value)==math.huge then continue end
+							-- Keep the legacy scale=3 marker for Layout's existing 1.25 migration.
+							if setting.values and not(setting.id=="capsulescale"and value==3)then value=math.clamp(value,setting.values[1],setting.values[2])end
+						end
 						setting.current = value
+						if setting.id=="spotifyenabled"then spotifyConnectionRestored=true end
 					end
 				end
 			end
 		end
 	end
     local paired=altairValues.importSpotifyConnection()
-    if paired then
-     local stored=altairValues.settingsStore:load()
-     if not stored or stored.spotifyenabled==nil then checkSetting("Spotify Connection").current=true end
+    if paired and not spotifyConnectionRestored then
+     checkSetting("Spotify Connection").current=true
     end
 	altairValues.settingsStore.restored=true
+	if altairValues.serverRegion then altairValues.serverRegion.refresh(true) end
 end
 
+-- Preference pages and input bindings
 local function assembleSettings()
  local buildAt=os.clock()
+ local feedbackRows=setmetatable({},{__mode="k"})
+ altairValues.resetSettingsFeedback=function()for row,reset in pairs(feedbackRows)do if row.Parent then reset()else feedbackRows[row]=nil end end end
+ local searchEntries={}
+ local searchKeywords={
+  uisize="zoom scaling resolution display",
+  themetint="accent colour color strength saturation",
+  themelightness="bright light dark appearance",
+  panelopacity="transparent transparency glass",
+  rainbow="rainbow rgb animated colours colors",
+  avoidgameui="hud collision overlap avoid interface",
+  capsuleposition="dock island top dynamic hidden drag bar",
+  capsulerevealtime="capsule hover hide timeout",
+  spotifyenabled="music media playback connection reconnect",
+  spotifyclientid="music spotify oauth app setup",
+  spotifybridgekey="music companion pairing",
+  notificationduration="notification toast timeout duration",
+  oledidledim="oled burn in screen dim idle",
+  oledidledelay="oled idle timeout dim",
+  suspiciousplayerdetection="player movement unusual signals experimental",
+  detectflight="hover flying levitation airborne",
+  detectspeed="running sprint fast movement platform",
+  detectfling="spinning angular velocity physics fling",
+  detectteleport="position jumps teleport dash portals",
+  detectjump="air jump double jumping upward impulse",
+  chatspamdetection="chat messages flood repeats links emoji",
+  detectionselftest="test own character local player myself chat movement",
+  detectioncooldown="signal notifications rate delay cooldown",
+ }
+ local categoryPresentation={
+  Experimental={icon="flask-conical",description="Early features and integrations"},
+  General={icon="sliders-horizontal",description="Appearance and everyday preferences"},
+  Keybinds={icon="keyboard",description="Shortcuts for actions and controls"},
+  Performance={icon="gauge",description="Performance and rendering options"},
+  Detections={icon="shield-check",description="Audio, permissions and moderator notices"},
+  Logging={icon="scroll-text",description="Activity and notification logs"},
+  Developer={icon="terminal",description="Diagnostics and development tools"},
+ }
+
 	restoreSettings()
 
 	saveSettings() -- write back quietly, picking up settings added since the file was created
@@ -10235,11 +10991,17 @@ local function assembleSettings()
         item.InputFrame.ClipsDescendants=true
         local corner=item.InputFrame:FindFirstChildOfClass("UICorner");if corner then corner.CornerRadius=UDim.new(1,0) end
 		item.InputFrame.Size = UDim2.new(0, math.clamp(box.TextBounds.X/(UI:GetAttribute("AltairDisplayScale") or 1)+24,54,220), 0, 30)
-		box:GetPropertyChangedSignal("Text"):Connect(function()
-			tweenService:Create(item.InputFrame, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
-				Size = UDim2.new(0, math.clamp(box.TextBounds.X/(UI:GetAttribute("AltairDisplayScale") or 1)+24,54,220), 0, 30),
-			}):Play()
-		end)
+  local pending=false
+  local function resize()
+   if pending then return end;pending=true
+   task.defer(function()
+    pending=false;if not item.Parent or not box.Parent then return end
+    local width=math.clamp(math.ceil(box.TextBounds.X/(UI:GetAttribute("AltairDisplayScale")or 1))+28,54,220)
+    tweenService:Create(item.InputFrame,TweenInfo.new(.18,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Size=UDim2.fromOffset(width,30)}):Play()
+   end)
+  end
+  box:GetPropertyChangedSignal("Text"):Connect(resize)
+  box:GetPropertyChangedSignal("TextBounds"):Connect(resize)
 	end
 
 	local function makeValueInput(list, setting, placeholder)
@@ -10255,11 +11017,12 @@ local function assembleSettings()
 	end
 
 	settingsPanel.Back.MouseButton1Click:Connect(function()
+  if altairValues.settingsLayout and altairValues.settingsLayout:Back(true)then return end
 		tweenService:Create(settingsPanel.Back, TweenInfo.new(0.5, Enum.EasingStyle.Quint), {
 			ImageTransparency = 1,
 			Position = UDim2.new(0.002, 0, 0.052, 0),
 		}):Play()
-		tweenService:Create(settingsPanel.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = UDim2.fromOffset(50,12) }):Play()
+		tweenService:Create(settingsPanel.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = altairValues.settingsPosition("Title",UDim2.fromOffset(50,12)) }):Play()
 		tweenService:Create(settingsPanel.UIGradient, TweenInfo.new(1, Enum.EasingStyle.Exponential), { Offset = Vector2.new(0, 1.3) }):Play()
 		settingsPanel.Title.Text = "Preferences"
 		settingsPanel.Subtitle.Text = "Make Altair your own."
@@ -10273,15 +11036,14 @@ local function assembleSettings()
 		local newCategory = settingsPanel.SettingTypes.Template:Clone()
 		newCategory.Name = category.name
 		newCategory.Title.Text = category.name
-        local categoryIcons={Experimental="flask-conical",General="sliders-horizontal",Keybinds="keyboard",Performance="gauge",Detections="shield-check",Logging="scroll-text",Developer="terminal"}
-        altairValues.interfaceBindings.ApplyIcon(newCategory.CategoryIcon,categoryIcons[category.name] or "settings-2")
-		local cardDescriptions={Experimental="Styles and experimental features",General="Appearance and everyday preferences",Keybinds="Shortcuts for actions and controls",Performance="Performance and rendering options",Detections="Protection and detection options",Logging="Activity and notification logs",Developer="Diagnostics and development tools"}
-		newCategory.Description.Text = cardDescriptions[category.name] or category.description
+        local presentation=categoryPresentation[category.name]
+        altairValues.interfaceBindings.ApplyIcon(newCategory.CategoryIcon,presentation and presentation.icon or "settings-2")
+        newCategory.Description.Text=presentation and presentation.description or category.description
         newCategory.Description.Visible=false
 		newCategory.LayoutOrder = #settingsPanel.SettingTypes:GetChildren()
 		newCategory.Parent = settingsPanel.SettingTypes
 		newCategory.BackgroundColor3 = Color3.new(1,1,1)
-		newCategory.UIGradient.Color = ColorSequence.new(Color3.fromRGB(20,20,23), Color3.fromRGB(20,20,23):Lerp(category.color,.12))
+		newCategory.UIGradient.Color = ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.fromRGB(16,16,19):Lerp(category.color,.22)),ColorSequenceKeypoint.new(.55,Color3.fromRGB(16,16,19):Lerp(category.color,.36)),ColorSequenceKeypoint.new(1,Color3.fromRGB(16,16,19):Lerp(category.color,.56))})
 		newCategory.UIGradient.Offset=Vector2.new(0,.1)
 
 		newCategory.Visible = true
@@ -10293,7 +11055,7 @@ local function assembleSettings()
 		val = math.clamp(val + 0.2, 0, 1)
 
 		local newColor = Color3.fromHSV(hue, sat, val)
-		newCategory.UIStroke.UIGradient.Color = ColorSequence.new(Color3.fromRGB(135,135,145),newColor)
+		newCategory.UIStroke.UIGradient.Color = ColorSequence.new(category.color:Lerp(Color3.fromRGB(30,30,34),.45),newColor)
 		newCategory.Shadow.UIGradient.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.new(0.117647, 0.117647, 0.117647)), ColorSequenceKeypoint.new(1, newColor) })
 
 		local newList = settingsPanel.SettingLists.Template:Clone()
@@ -10310,33 +11072,51 @@ local function assembleSettings()
 			end
 		end
 
-		local function selectCategory()
+		local function selectCategory(preserveSearchNavigation)
             if settingsPanel:GetAttribute("AltairClosing") then return end
+            if altairValues.resetSettingsFeedback then altairValues.resetSettingsFeedback()end
+            if altairValues.settingsSearch then
+             if altairValues.settingsSearch.Active then altairValues.settingsSearch:Clear(true)
+             elseif preserveSearchNavigation~=true then altairValues.settingsSearch:CancelNavigation()end
+            end
+            altairValues.settingsActiveCategory=category
+            if altairValues.settingsLayout then altairValues.settingsLayout:SelectCategory(newCategory,true)end
 			if settingsPanel.SettingLists:FindFirstChild(category.name) then
 				settingsPanel.UIGradient.Color = settingsPanel.UIGradient:GetAttribute("AltairTheme_Color")or ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(230,232,238))
 				settingsPanel.SettingTypes.Visible = true
                 settingsPanel.HeaderIcon.Visible=true
 				settingsPanel.SettingLists.Visible = true
-                if settingsPanel.SettingLists:IsA("CanvasGroup")then tweenService:Create(settingsPanel.SettingLists,TweenInfo.new(.18),{GroupTransparency=0}):Play()end
+                local content=settingsPanel.SettingLists
+                if settingsPanel:GetAttribute("AltairSettingsRevealPending")then
+                 settingsPanel:SetAttribute("AltairSettingsRevealPending",false)
+                 local rest=content:GetAttribute("AltairContentRestPosition")or content.Position;content:SetAttribute("AltairContentRestPosition",rest)
+                 if content:IsA("CanvasGroup")then content.GroupTransparency=1 end
+                 if not settingsPanel:GetAttribute("AltairDeckActive")then altairValues.interfaceBindings.SlideContent(content,rest,1,24)end
+                end
+                if content:IsA("CanvasGroup")then tweenService:Create(content,TweenInfo.new(.26),{GroupTransparency=0}):Play()end
 				settingsPanel.SettingLists.UIPageLayout:JumpTo(settingsPanel.SettingLists[category.name])
                 local page=settingsPanel.SettingLists[category.name]
                 for _,row in ipairs(page:GetChildren()) do
                  if row:IsA("Frame") and not row:GetAttribute("AltairThemeEditor")then
                   row.ZIndex=settingsPanel.ZIndex+2
-                  tweenService:Create(row,TweenInfo.new(.18),{BackgroundTransparency=.9}):Play()
+                  local inset=row:GetAttribute("AltairDesignRole")=="inset"
+                  local rowAlpha=row:GetAttribute("AltairSourceRowRestAlpha")or(inset and(row:GetAttribute("AltairTheme_BackgroundTransparency")or .12)or .9)
+                  tweenService:Create(row,TweenInfo.new(.18),{BackgroundTransparency=rowAlpha}):Play()
                   for _,object in ipairs(row:GetDescendants()) do
+                   if object:FindFirstAncestor("RulerContent")then continue end
                    if object:IsA("GuiObject") and not object:GetAttribute("AltairRayfieldVisual") then object.ZIndex=settingsPanel.ZIndex+(object.Name=="Indicator" and 5 or object:IsA("GuiButton") and 6 or 4) end
-                   if object.Name=="Note" then object.Visible=false end
+                   if object.Name=="Note" then object.Visible=object:GetAttribute("AltairSourceRestVisible")==true end
                    if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
-                    tweenService:Create(object,TweenInfo.new(.18),{TextTransparency=object.Name=="Description" and .25 or 0}):Play()
+                    tweenService:Create(object,TweenInfo.new(.18),{TextTransparency=object:GetAttribute("AltairSourceRestAlpha")or(object.Name=="Description" and .25 or 0)}):Play()
                    elseif object:IsA("ImageLabel") or object:IsA("ImageButton") then
                     tweenService:Create(object,TweenInfo.new(.18),{ImageTransparency=.05}):Play()
                    elseif object:IsA("UIStroke") then
-                    tweenService:Create(object,TweenInfo.new(.18),{Transparency=.6}):Play()
+                    tweenService:Create(object,TweenInfo.new(.18),{Transparency=object:GetAttribute("AltairSourceRestAlpha")or(inset and .9 or .6)}):Play()
                    elseif object:IsA("Frame") and object.Name=="Indicator" then
-                    tweenService:Create(object,TweenInfo.new(.18),{BackgroundTransparency=.6}):Play()
+                    local model=checkSetting(row.Name)
+                    tweenService:Create(object,TweenInfo.new(.18),{BackgroundTransparency=row:GetAttribute("AltairSourceSettingsRow")and(model and model.current and .6 or .75)or .6}):Play()
                    elseif object:IsA("Frame") and object.Name=="Switch" then
-                    tweenService:Create(object,TweenInfo.new(.18),{BackgroundTransparency=.45}):Play()
+                    tweenService:Create(object,TweenInfo.new(.18),{BackgroundTransparency=object:GetAttribute("AltairSourceRestAlpha")or .45}):Play()
                    end
                   end
                  end
@@ -10346,9 +11126,10 @@ local function assembleSettings()
 				settingsPanel.Back.Visible = false
 				altairValues.settingsPageVersion=(altairValues.settingsPageVersion or 0)+1
                 local version=altairValues.settingsPageVersion
+                local motionVersion=settingsPanel:GetAttribute("AltairMotionVersion")
                 local title,subtitle=settingsPanel.ContentTitle,settingsPanel.ContentSubtitle
                 local function revealHeading()
-                 if version~=altairValues.settingsPageVersion or settingsPanel:GetAttribute("AltairClosing")then return end
+                 if not UI.Parent or not settingsPanel.Visible or version~=altairValues.settingsPageVersion or settingsPanel:GetAttribute("AltairClosing")or settingsPanel:GetAttribute("AltairMotionVersion")~=motionVersion then return end
                  title.Text=category.name;subtitle.Text=category.description
                  tweenService:Create(title,TweenInfo.new(.18),{TextTransparency=0}):Play()
                  tweenService:Create(subtitle,TweenInfo.new(.18),{TextTransparency=.2}):Play()
@@ -10358,6 +11139,10 @@ local function assembleSettings()
                  tweenService:Create(title,TweenInfo.new(.1),{TextTransparency=1}):Play()
                  tweenService:Create(subtitle,TweenInfo.new(.1),{TextTransparency=1}):Play()
                  task.delay(.11,revealHeading)
+                else
+                 -- Returning to the still-assigned heading revokes the prior
+                 -- page's pending fade, even before that page changed its text.
+                 revealHeading()
                 end
 
 				local gradientRotation = math.random(78, 95)
@@ -10365,7 +11150,8 @@ local function assembleSettings()
 				tweenService:Create(settingsPanel.UIGradient, TweenInfo.new(0.5, Enum.EasingStyle.Exponential), { Offset = Vector2.new(0, 0.65) }):Play()
 				tweenService:Create(settingsPanel.Back, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
 				tweenService:Create(settingsPanel.Back, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Position = UDim2.new(0.041, 0, 0.052, 0) }):Play()
-				settingsPanel.Title.Position=UDim2.fromOffset(50,12)
+				settingsPanel.Title.Position=altairValues.settingsPosition("Title",UDim2.fromOffset(50,12))
+    if altairValues.settingsLayout and altairValues.settingsLayout:IsLiteral()then altairValues.settingsLayout:SelectCategory(newCategory,true)end
 			else
 				closeSettings()
 			end
@@ -10375,6 +11161,7 @@ local function assembleSettings()
         newCategory.Interact.MouseButton1Click:Connect(selectCategory)
 
 		newCategory.MouseEnter:Connect(function()
+   if altairValues.settingsLayout and altairValues.settingsLayout:HoverCategory(newCategory,true)then return end
 			tweenService:Create(newCategory.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 			tweenService:Create(newCategory.UIGradient, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0) }):Play()
 			tweenService:Create(newCategory.UIStroke.UIGradient, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.2) }):Play()
@@ -10382,6 +11169,7 @@ local function assembleSettings()
 		end)
 
 		newCategory.MouseLeave:Connect(function()
+   if altairValues.settingsLayout and altairValues.settingsLayout:HoverCategory(newCategory,false)then return end
 			tweenService:Create(newCategory.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.2 }):Play()
 			tweenService:Create(newCategory.UIGradient, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.1) }):Play()
 			tweenService:Create(newCategory.UIStroke.UIGradient, TweenInfo.new(0.7, Enum.EasingStyle.Quint), { Offset = Vector2.new(0, 0.4) }):Play()
@@ -10406,12 +11194,6 @@ local function assembleSettings()
 					end)
                 elseif settingType=="Choice"then
                     object=altairValues.interfaceBindings.Choice(settingsPanel.SettingLists.Template.ButtonTemplate,newList,setting,function()saveSettings(true)end)
-                elseif settingType == "Styles"then
-                    object,altairValues.styleGallery=altairValues.interfaceBindings.StyleGallery(newList,setting,function(value)
-                     setting.current=value
-                     altairValues.applyAppearance()
-                     saveSettings(true)
-                    end)
 				elseif settingType == "ColorPicker"then
                     setting.alpha=settingValue("Theme Tint",25)/100
                     local picker
@@ -10434,7 +11216,8 @@ local function assembleSettings()
                      end
                      if setting.id=="themetint"and altairValues.themePicker then altairValues.themePicker:SetAlpha(value/100,true)end
                      if setting.id=="themetint"then for _,category in ipairs(altairSettings)do for _,entry in ipairs(category.categorySettings)do if entry.id=="customtheme"then entry.current=true end end end end
-                     if altairValues.applyAppearance then altairValues.applyAppearance() end
+                     if setting.id=="notificationduration"then UI:SetAttribute("AltairNotificationDuration",value)end
+                     if(setting.id=="themetint"or setting.id=="themelightness"or setting.id=="panelopacity")and altairValues.applyAppearance then altairValues.applyAppearance()end
                     end,function() saveSettings(true) end)
                 elseif settingType == "Boolean" then
 					local newSwitch = settingsPanel.SettingLists.Template.SwitchTemplate:Clone()
@@ -10460,13 +11243,19 @@ local function assembleSettings()
 					end
 
 					newSwitch.Interact.MouseButton1Click:Connect(function()
+						if not checkAltair()then return end
 						if denyLocked(setting) then return end
 						local function applyChange()
+						if not checkAltair()then return end
 						local previousValue = setting.current
 						setting.current = not setting.current
+						if setting.onChangedSync and type(setting.onChanged)=="function"then
+							local changed,problem=pcall(setting.onChanged,setting.current,previousValue)
+							if not changed then warn("Altair | Setting change handler failed: "..tostring(problem))end
+						end
 						altairValues.activity:record("Setting changed", setting.name .. (setting.current and " · Enabled" or " · Disabled"))
 						saveSettings(true)
-						if type(setting.onChanged) == "function" then
+						if not setting.onChangedSync and type(setting.onChanged) == "function" then
 							task.spawn(setting.onChanged, setting.current, previousValue)
 						end
 
@@ -10507,7 +11296,8 @@ local function assembleSettings()
 							box.Text = truncateForDisplay(setting.current)
 							return
 						end
-						if box.Text ~= "" and box.Text~=tostring(setting.current) then
+						if (box.Text ~= "" or setting.allowEmpty == true) and box.Text~=tostring(setting.current) then
+							if setting.id=="spotifyclientid" then checkSetting("Spotify Client ID Override").current=true end
 							setting.current = box.Text
 							saveSettings(true)
 						end
@@ -10524,7 +11314,7 @@ local function assembleSettings()
 						end
 
 						local inputValue = tonumber(box.Text)
-						if inputValue then
+						if inputValue and inputValue==inputValue then
 							local oldValue = setting.current
 							local nextValue = setting.values and math.clamp(inputValue, setting.values[1], setting.values[2]) or inputValue
 							if nextValue ~= oldValue then
@@ -10576,8 +11366,12 @@ local function assembleSettings()
 
 				end
 
-				if object then rowOrder+=1;object.LayoutOrder=rowOrder end
-                if object and settingType~="ColorPicker"and settingType~="Styles"and settingType~="Choice"then
+				if object then
+                    rowOrder+=1;object.LayoutOrder=rowOrder;setting._uiObject=object
+                    local keywords=setting.keywords or"";if type(keywords)=="table"then keywords=table.concat(keywords," ")end
+                    searchEntries[#searchEntries+1]={name=setting.name,setting=setting,category=category,object=object,keywords=category.description.." "..keywords.." "..(searchKeywords[setting.id]or"")}
+                end
+                if object and settingType~="ColorPicker"and settingType~="Choice"and not object:GetAttribute("AltairExpandableSlider")then
                     object.Size=UDim2.new(1,-16,0,object.Size.Y.Offset)
 					if setting.description then
 						object.Description.Visible = true
@@ -10600,37 +11394,75 @@ local function assembleSettings()
 
                     object.Size=UDim2.new(1,-16,0,object.Size.Y.Offset)
                     if object:FindFirstChildOfClass("UICorner") then object:FindFirstChildOfClass("UICorner").CornerRadius=UDim.new(0,10) end
-					local objectTouching
+					local objectTouching=false
+					object:SetAttribute("AltairSettingsHover",false);object:SetAttribute("AltairSettingsFeedbackBound",true)
+					local feedbackVersion=0
+					local restAlpha=object:GetAttribute("AltairDesignRestAlpha")or(object:GetAttribute("AltairDesignRole")=="inset"and .12 or .9)
+					local restStroke=object:GetAttribute("AltairDesignRole")=="inset"and .9 or .6
+					local function feedback(hovered,pressed)
+						if not object.Parent then return end
+						local active=hovered and settingsPanel.Visible and not settingsPanel:GetAttribute("AltairClosing")
+						local restAlpha=object:GetAttribute("AltairSourceRowRestAlpha")or restAlpha
+						local restStroke=object:GetAttribute("AltairSourceRowRestStroke")or restStroke
+						local alpha=math.clamp(restAlpha-(pressed and .11 or active and .07 or 0),0,1)
+						tweenService:Create(object,TweenInfo.new(.16),{BackgroundTransparency=alpha}):Play()
+						tweenService:Create(object.UIStroke,TweenInfo.new(.16),{Transparency=active and math.max(.5,restStroke-.2)or restStroke}):Play()
+					end
+					feedbackRows[object]=function()feedbackVersion+=1;objectTouching=false;object:SetAttribute("AltairSettingsHover",false);feedback(false)end
 					object.MouseEnter:Connect(function()
-						objectTouching = true
-						tweenService:Create(object.UIStroke, TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Transparency = 0.45 }):Play()
-						tweenService:Create(object, TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { BackgroundTransparency = 0.83 }):Play()
+						objectTouching=true;object:SetAttribute("AltairSettingsHover",true);feedback(true)
 					end)
 
 					object.MouseLeave:Connect(function()
-						objectTouching = false
-						tweenService:Create(object.UIStroke, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Transparency = 0.6 }):Play()
-						tweenService:Create(object, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { BackgroundTransparency = 0.9 }):Play()
+						objectTouching=false;object:SetAttribute("AltairSettingsHover",false);feedback(false)
 					end)
 
 					if object:FindFirstChild("Interact") then
 						object.Interact.MouseButton1Click:Connect(function()
-							tweenService:Create(object.UIStroke, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Transparency = 1 }):Play()
-							tweenService:Create(object, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { BackgroundTransparency = 0.8 }):Play()
-							task.wait(0.1)
-							if objectTouching then
-								tweenService:Create(object.UIStroke, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Transparency = 0.45 }):Play()
-								tweenService:Create(object, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { BackgroundTransparency = 0.83 }):Play()
-							else
-								tweenService:Create(object.UIStroke, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Transparency = 0.6 }):Play()
-								tweenService:Create(object, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { BackgroundTransparency = 0.9 }):Play()
-							end
+							feedbackVersion+=1;local version=feedbackVersion;feedback(objectTouching,true)
+							task.delay(.1,function()if feedbackVersion==version then feedback(objectTouching)end end)
 						end)
 					end
 				end
 			end
 		end
 	end
+ if altairValues.settingsLayout then altairValues.settingsLayout:Destroy();altairValues.settingsLayout=nil end
+ if altairValues.settingsSearch then altairValues.settingsSearch:Destroy()end
+ altairValues.settingsSearch=altairValues.interfaceBindings.SettingsSearch({Panel=settingsPanel,Entries=searchEntries,
+  OnSearch=function(active,count)
+   if altairValues.settingsLayout and altairValues.settingsLayout:Search(active,count)then return end
+   if not settingsPanel.Visible or settingsPanel:GetAttribute("AltairClosing")then return end
+   altairValues.settingsPageVersion=(altairValues.settingsPageVersion or 0)+1;local version=altairValues.settingsPageVersion
+   local motionVersion=settingsPanel:GetAttribute("AltairMotionVersion")
+   local category=altairValues.settingsActiveCategory or altairSettings[1]
+   local title=active and"Search preferences"or category.name
+   local subtitle=active and(count==1 and"1 matching setting"or(count.." matching settings"))or category.description
+   local heading,description=settingsPanel.ContentTitle,settingsPanel.ContentSubtitle
+   tweenService:Create(heading,TweenInfo.new(.08),{TextTransparency=1}):Play();tweenService:Create(description,TweenInfo.new(.08),{TextTransparency=1}):Play()
+   task.delay(.09,function()if UI.Parent and settingsPanel.Visible and altairValues.settingsPageVersion==version and settingsPanel:GetAttribute("AltairMotionVersion")==motionVersion and not settingsPanel:GetAttribute("AltairClosing")then
+    heading.Text=title;description.Text=subtitle;tweenService:Create(heading,TweenInfo.new(.16),{TextTransparency=0}):Play();tweenService:Create(description,TweenInfo.new(.16),{TextTransparency=.2}):Play()
+   end end)
+   if active then
+    tweenService:Create(settingsPanel.SettingLists,TweenInfo.new(.1),{GroupTransparency=1}):Play()
+    task.delay(.11,function()if UI.Parent and settingsPanel.Visible and altairValues.settingsPageVersion==version and settingsPanel:GetAttribute("AltairMotionVersion")==motionVersion and not settingsPanel:GetAttribute("AltairClosing")and altairValues.settingsSearch and altairValues.settingsSearch.Active then settingsPanel.SettingLists.Visible=false end end)
+   else
+    settingsPanel.SettingLists.Visible=true;tweenService:Create(settingsPanel.SettingLists,TweenInfo.new(.18),{GroupTransparency=0}):Play()
+   end
+  end,
+  Navigate=function(entry)local selectCategory=altairValues.settingsSelectors[entry.category.name];if selectCategory then selectCategory(true)end end,
+  IsSelected=function(entry)return altairValues.settingsActiveCategory==entry.category end,
+ })
+ altairValues.settingsLayout=altairValues.interfaceBindings.SettingsLayout({Panel=settingsPanel,Search=altairValues.settingsSearch,Motion=tweenService,
+  Category=function(name)for _,category in ipairs(altairSettings)do if category.name==name then return category end end end,
+  Setting=function(row)return checkSetting(row.Name)end,
+  OnRestSize=function(size)
+   if not settingsPanel.Visible or settingsPanel:GetAttribute("AltairClosing")or settingsPanel:GetAttribute("AltairDeckActive")then return end
+   local position=altairValues.smartBarLayout:getPanelPosition(settingsPanel,size)
+   altairValues.settingsRestPosition=position
+   tweenService:Create(settingsPanel,TweenInfo.new(.34,Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{Size=size,Position=position}):Play()
+   altairValues.sharedPanel:animate(settingsPanel,size)
+  end})
 end
 
 local function initialiseAntiKick()
@@ -10697,9 +11529,12 @@ local developerTools = (function()
 		return false
 	end
 
-	function controller:PublishDebugState(enabled, details)
+	function controller:PublishDebugState(enabled, details, expectedGeneration)
+		local publication=expectedGeneration or generation
+		if not checkAltair()or publication~=generation then return end
 		for callback in pairs(observers) do
 			task.defer(function()
+				if not checkAltair()or publication~=generation or not observers[callback]then return end
 				local ok, err = pcall(callback, enabled == true, details)
 				if not ok then warn("Altair | Debug observer failed: " .. tostring(err)) end
 			end)
@@ -10707,7 +11542,8 @@ local developerTools = (function()
 	end
 
 	function controller:Observe(callback)
-		if type(callback) ~= "function" then return nil end
+		if type(callback) ~= "function"or not checkAltair()then return nil end
+		local subscription=generation
 		observers[callback] = true
 		local connection = { Connected = true }
 		function connection:Disconnect()
@@ -10716,7 +11552,7 @@ local developerTools = (function()
 			observers[callback] = nil
 		end
 		task.defer(function()
-			if connection.Connected then
+			if connection.Connected and checkAltair()and subscription==generation then
 				pcall(callback, settingValue("Debug Mode", false) == true and activeService ~= nil, { reason = "subscribe" })
 			end
 		end)
@@ -10754,17 +11590,17 @@ local developerTools = (function()
 	end
 
 	function controller:Stop(reason)
-		local service = activeService
-			or env.__ALTAIR_DEVTOOLS_SERVICE
-			or (type(env.Altair) == "table" and env.Altair.Dev)
-
+		generation+=1 -- Revoke any bootstrap and deferred publication first.
+		local service=activeService
 		activeService = nil
+		if not service then return end
 		if type(service) == "table" and type(service.Destroy) == "function" then
 			pcall(service.Destroy, service, reason or "debug-disabled")
 		end
 
-		if type(env.Altair) == "table" and env.Altair.Dev == service then
-			env.Altair.Dev = nil
+		local api=altairValues.lifecycle.api
+		if type(api)=="table"and api.Dev==service then
+			api.Dev = nil
 		end
 		if env.__ALTAIR_DEVTOOLS_SERVICE == service then
 			env.__ALTAIR_DEVTOOLS_SERVICE = nil
@@ -10772,11 +11608,16 @@ local developerTools = (function()
 	end
 
 	function controller:Start(expectedGeneration)
+		local function current()
+			return checkAltair()and expectedGeneration==generation and settingValue("Debug Mode",false)==true
+		end
+		if not current()then return false,"developer tools startup was superseded"end
 		if activeService and type(activeService.GetStatus) == "function" then
-			return true
+			return true,activeService
 		end
 
 		local chunk, compileError, sourceName = compilePackage()
+		if not current()then return false,"developer tools startup was superseded"end
 		if not chunk then
 			local title = sourceName and "Developer Tools failed to compile" or "Developer Tools unavailable"
 			local suffix = sourceName and "" or ". Place AltairDevTools.lua in Altair/Developer and try again."
@@ -10785,6 +11626,7 @@ local developerTools = (function()
 		end
 
 		local okChunk, bootstrap = pcall(chunk)
+		if not current()then return false,"developer tools startup was superseded"end
 		if not okChunk then
 			notification("Developer Tools failed to load", tostring(bootstrap), 4483345875)
 			return false, bootstrap
@@ -10799,25 +11641,26 @@ local developerTools = (function()
 			local okConfig, value = pcall(configProvider)
 			if okConfig and type(value) == "table" then initialConfig = value end
 		end
+		if not current()then return false,"developer tools startup was superseded"end
 
 		local okStart, service = pcall(bootstrap, {
-			Altair = env.Altair,
+			Altair = altairValues.lifecycle.api,
 			RootFolder = altairValues.altairFolder,
 			Version = altairValues.altairVersion,
 			Source = sourceName,
 			Config = initialConfig,
-			StateChanged = stateSink,
+			StateChanged = function(...)
+				if current()and stateSink then return stateSink(...)end
+			end,
 		})
+		if not current()then
+			-- An opaque bootstrap may return a shared/foreign singleton. Its
+			-- pre-return side effects are not proof that this run owns it.
+			return false,"developer tools startup was superseded"
+		end
 		if not okStart or type(service) ~= "table" then
 			notification("Developer Tools failed to start", tostring(service), 4483345875)
 			return false, service
-		end
-
-		if expectedGeneration ~= generation or settingValue("Debug Mode", false) ~= true then
-			if type(service.Destroy) == "function" then
-				pcall(service.Destroy, service, "stale-startup")
-			end
-			return false, "developer tools startup was superseded"
 		end
 
 		activeService = service
@@ -10825,25 +11668,29 @@ local developerTools = (function()
 	end
 
 	function controller:Sync(enabled)
+		if not checkAltair()then return false,"Altair is unloaded"end
 		if enabled == nil then
 			enabled = settingValue("Debug Mode", false) == true
 		end
 
-		generation += 1
-		local currentGeneration = generation
-
 		if enabled then
 			self:Stop("replaced")
+			if not checkAltair()then return false,"Altair is unloaded"end
+			local currentGeneration=generation
 			local ok, serviceOrError = self:Start(currentGeneration)
-			self:PublishDebugState(ok == true, { reason = ok and "enabled" or "start-failed", detail = serviceOrError })
+			if not checkAltair()or generation~=currentGeneration then return false,"developer tools startup was superseded"end
+			self:PublishDebugState(ok == true, { reason = ok and "enabled" or "start-failed", detail = serviceOrError },currentGeneration)
 			return ok, serviceOrError
 		end
 
 		self:Stop("debug-disabled")
+		if not checkAltair()then return false,"Altair is unloaded"end
 		self:PublishDebugState(false, { reason = "disabled" })
 		return true
 	end
 
+	-- start() can yield in the bootstrap before runtime() installs its cleanup.
+	altairValues.lifecycle.developerCleanup=function()controller:Stop("altair-teardown")end
 	return controller
 end)()
 
@@ -10852,11 +11699,20 @@ altairValues.lifecycle.api = altairAPI
 altairAPI.Unload = function() altairValues.lifecycle:unload() end
 altairAPI.Destroy = altairAPI.Unload
 
+-- Captured public action functions remain bound to this lifecycle. Read-only
+-- accessors and idempotent Unload keep their existing contracts.
+function altairValues.publicAction(callback)
+	return function(...)
+		if not checkAltair()then return end
+		return callback(...)
+	end
+end
+
 altairAPI.Toast = Toast
-altairAPI.notification = notification
-altairAPI.Notification = notification
-altairAPI.QueueNotification = notification
-altairAPI.Notify = notification
+altairAPI.notification = altairValues.publicAction(notification)
+altairAPI.Notification = altairAPI.notification
+altairAPI.QueueNotification = altairAPI.notification
+altairAPI.Notify = altairAPI.notification
 restoreSettings() -- Restore connection configuration before the first media poll.
 altairValues.softShadows=altairValues.interfaceBindings.SoftShadows(UI)
 UI:SetAttribute("AltairPreferredScale",settingValue("UI Size",110)/100)
@@ -10886,6 +11742,7 @@ do
  track(UI.DescendantAdded:Connect(bindIcon))
  local buttons=setmetatable({}, {__mode="k"})
  local function bindButton(button)
+  if button:IsDescendantOf(scriptSearch)then return end
   if buttons[button] or not button:IsA("GuiButton") or button.Name=="Input" or button.Name=="Interact" then return end
   if button.BackgroundTransparency==1 and not button:IsA("ImageButton") then return end
   if button:FindFirstChildOfClass("UIScale") then return end
@@ -10925,34 +11782,41 @@ do
 			local panel=UI:FindFirstChild(name)
    if name=="Home" and panel then panel=panel:FindFirstChild("Content")or panel end
 			if panel and panel:IsA("GuiObject") then
-				if not originals[panel] then originals[panel]=panel.BackgroundColor3 end
-				panel.BackgroundColor3=oled and not UI:GetAttribute("AltairThemeEnabled")and Color3.new(0,0,0)or panel:GetAttribute("AltairTheme_BackgroundColor3")or panel:GetAttribute("AltairThemeDefault_BackgroundColor3")or originals[panel]
+				if not originals[panel] then originals[panel]=altairValues.interfaceBindings.IdleBase(UI,panel,"BackgroundColor3",panel.BackgroundColor3)end
+				local color=oled and not UI:GetAttribute("AltairThemeEnabled")and Color3.new(0,0,0)or panel:GetAttribute("AltairTheme_BackgroundColor3")or panel:GetAttribute("AltairThemeDefault_BackgroundColor3")or originals[panel]
+				panel.BackgroundColor3=altairValues.interfaceBindings.IdleColor(UI,panel,"BackgroundColor3",color)
 			end
         end
         for _,panel in ipairs(homeSurfaces)do if panel.Parent then
-         panel.BackgroundColor3=oled and not UI:GetAttribute("AltairThemeEnabled")and Color3.new(0,0,0)or panel:GetAttribute("AltairTheme_BackgroundColor3")or panel:GetAttribute("AltairThemeDefault_BackgroundColor3")or Color3.fromRGB(10,11,14)
+         local color=oled and not UI:GetAttribute("AltairThemeEnabled")and Color3.new(0,0,0)or panel:GetAttribute("AltairTheme_BackgroundColor3")or panel:GetAttribute("AltairThemeDefault_BackgroundColor3")or Color3.fromRGB(10,11,14)
+         panel.BackgroundColor3=altairValues.interfaceBindings.IdleColor(UI,panel,"BackgroundColor3",color)
         end end
     end))
 end
 function altairValues.applyAppearance()
- local ok,color=pcall(Color3.fromHex,settingValue("Theme Color","5B8DEF"))
- if altairValues.theme then altairValues.theme:Apply({style=settingValue("Styles","Altair"),color=ok and color or Color3.fromRGB(91,141,239),custom=settingValue("Custom Theme",false),strength=settingValue("Theme Tint",25)/100,lightness=settingValue("Theme Lightness",0)/100})end
- if altairValues.scriptSearchColours then altairValues.scriptSearchColours(scriptSearch.SearchBox:IsFocused())end
- local alpha=1-math.clamp(tonumber(settingValue("Panel Opacity",90)) or 90,65,100)/100
+ altairValues.appearanceGeneration=(altairValues.appearanceGeneration or 0)+1
+ local generation=altairValues.appearanceGeneration
+ local alpha=1-math.clamp(tonumber(settingValue("Panel Opacity",90))or 90,0,100)/100
  UI:SetAttribute("AltairPanelTransparency",alpha)
+ if altairValues.surfaceOpacity then altairValues.surfaceOpacity:Set(alpha)end
+ local ok,color=pcall(Color3.fromHex,settingValue("Theme Color","5B8DEF"))
+ if altairValues.theme then altairValues.theme:Apply({color=ok and color or Color3.fromRGB(91,141,239),custom=settingValue("Custom Theme",false),strength=settingValue("Theme Tint",25)/100,lightness=settingValue("Theme Lightness",0)/100})end
+ if generation~=altairValues.appearanceGeneration then return end
+ if altairValues.scriptSearchColours then altairValues.scriptSearchColours(scriptSearch.Header.SearchBox:IsFocused())end
  UI:SetAttribute("AltairNotificationDuration",settingValue("Notification Duration",5))
  for _,name in ipairs({"SmartBar","Character","Scripts","Playerlist","Settings"})do
   local panel=UI:FindFirstChild(name)
-  if panel and panel.Visible and not panel:GetAttribute("AltairClosing") then panel.BackgroundTransparency=alpha end
+  if panel and panel.Visible and not panel:GetAttribute("AltairClosing")then panel.BackgroundTransparency=altairValues.surfaceTransparency(panel,alpha)end
  end
  local home=UI:FindFirstChild("Home");local content=home and home:FindFirstChild("Content")
  if content then for _,panel in ipairs(content:GetDescendants())do if panel:GetAttribute("AltairHomeSurface")then
-  local homeAlpha=math.min(.5,alpha+(panel:GetAttribute("AltairHomeGlass")and .12 or 0))
+  local homeAlpha=altairValues.surfaceTransparency(panel,alpha)
   panel:SetAttribute("AltairHomeFade_BackgroundTransparency",homeAlpha);panel:SetAttribute("AltairHomePageFade_BackgroundTransparency",homeAlpha)
   if homeOpen then panel.BackgroundTransparency=homeAlpha end
  end end end
+ altairValues.dialogMotion:RefreshOpacity()
  local capsules=altairValues.capsules
- if capsules and capsules.view then UI.TopCapsules.Surface.BackgroundTransparency=alpha end
+ if capsules and capsules.SetSurfaceOpacity then capsules:SetSurfaceOpacity(alpha)end
 end
 altairValues.resetTheme=function()
  for _,category in ipairs(altairSettings)do for _,setting in ipairs(category.categorySettings)do
@@ -10978,32 +11842,135 @@ do
 end
 -- Optional OLED idle dimming affects Altair only, never the game or monitor.
 do
- local colors=setmetatable({}, {__mode="k"});local elapsed,alpha=0,0
- altairValues.lastUIActivity=os.clock()
- local function remember(object)
-  local props={}
-  if object:IsA("GuiObject") then props[#props+1]="BackgroundColor3" end
-  if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then props[#props+1]="TextColor3" end
-  if object:IsA("ImageLabel") or object:IsA("ImageButton") then props[#props+1]="ImageColor3" end
-  if object:IsA("UIStroke") then props[#props+1]="Color" end
-  if #props>0 then local data={};for _,key in ipairs(props)do data[key]={base=object[key],last=object[key]}end;colors[object]=data end
+ local dimmer={alive=true,armed=false,ready=false,alpha=0,paintedAlpha=0,dirty=false,entries={},lookup={},generation=0,connections={}}
+ altairValues.idleDimmer=dimmer
+ local elapsed=0;local black=Color3.new(0,0,0);local startWorker
+ local function disconnect()
+  for _,connection in ipairs(dimmer.connections)do connection:Disconnect()end;table.clear(dimmer.connections)
  end
- for _,object in ipairs(UI:GetDescendants())do remember(object)end
- track(UI.DescendantAdded:Connect(remember))
- local function wake() altairValues.lastUIActivity=os.clock() end
- track(userInputService.InputBegan:Connect(wake));track(userInputService.InputChanged:Connect(wake));track(userInputService.WindowFocused:Connect(wake))
+ local function stopWorker()
+  dimmer.generation+=1;local worker=dimmer.worker;dimmer.worker=nil
+  if worker and worker~=coroutine.running()then pcall(task.cancel,worker)end
+  dimmer.queue=nil;dimmer.queued=nil;dimmer.queueAt=1;dimmer.paintPending=false
+ end
+ local function clear()
+  table.clear(dimmer.entries);table.clear(dimmer.lookup);dimmer.ready=false;dimmer.paintedAlpha=0;dimmer.dirty=false
+ end
+ local function paint(record,alpha,restore)
+  local object=record.object
+  if alpha>0 then dimmer.dirty=true end
+  for key,state in pairs(record.properties)do
+   local current=object[key]
+   if current~=state.last then state.base=current end
+   local color=alpha==0 and state.base or state.base:Lerp(black,alpha)
+   if not restore or current==state.last then state.last=color;if current~=color then object[key]=color end end
+  end
+ end
+ local function remember(object,silent)
+  if dimmer.lookup[object]then return end
+  local gui=object:IsA("GuiObject");local stroke=object:IsA("UIStroke")
+  if not gui and not stroke then return end
+  local record={object=object,properties={}}
+  local function property(key)local color=object[key];record.properties[key]={base=color,last=color}end
+  if gui then property("BackgroundColor3")end
+  if object:IsA("TextLabel")or object:IsA("TextButton")or object:IsA("TextBox")then property("TextColor3")end
+  if object:IsA("ImageLabel")or object:IsA("ImageButton")then property("ImageColor3")end
+  if stroke then property("Color")end
+  dimmer.lookup[object]=record;dimmer.entries[#dimmer.entries+1]=record
+  if not silent and dimmer.ready and dimmer.alpha>0 then paint(record,dimmer.alpha)end
+ end
+ function dimmer:BaseColor(object,key,color)
+  local record=self.lookup[object];local state=record and record.properties[key]
+  return state and color==state.last and state.base or color
+ end
+ function dimmer:ComposeColor(object,key,color)
+  if not self.alive or self.alpha==0 and not self.armed and #self.entries==0 or not object.Parent or not object:IsDescendantOf(UI)then return color end
+  remember(object,true)
+  local record=self.lookup[object];local state=record and record.properties[key]
+  if not state then return color end
+  state.base=color;state.last=self.alpha==0 and color or color:Lerp(black,self.alpha)
+  if self.alpha>0 then self.dirty=true end
+  return state.last
+ end
+ local releaseColors=altairValues.interfaceBindings.BindIdleColors(UI,dimmer)
+ local function enqueue(object)
+  if not dimmer.alive or not dimmer.armed then return end
+  if not dimmer.queue then dimmer.queue={};dimmer.queued={};dimmer.queueAt=1 end
+  if dimmer.queued[object]then return end
+  dimmer.queued[object]=true;dimmer.queue[#dimmer.queue+1]=object;startWorker()
+ end
+ startWorker=function()
+  if dimmer.worker or not dimmer.alive then return end
+  local generation=dimmer.generation
+  dimmer.worker=task.defer(function()
+   local budgetAt=os.clock()
+   local function budget()
+    if os.clock()-budgetAt<.002 then return true end
+    runService.Heartbeat:Wait();budgetAt=os.clock()
+    return dimmer.alive and generation==dimmer.generation and UI.Parent~=nil
+   end
+   while dimmer.alive and generation==dimmer.generation and UI.Parent do
+    if dimmer.queue and dimmer.queueAt<=#dimmer.queue then
+     local object=dimmer.queue[dimmer.queueAt];dimmer.queueAt+=1
+     if object==UI or object.Parent and object:IsDescendantOf(UI)then
+      remember(object)
+      for _,child in ipairs(object:GetChildren())do enqueue(child)end
+     end
+     if not budget()then return end
+    elseif dimmer.queue then
+     dimmer.queue=nil;dimmer.queued=nil;dimmer.ready=true;dimmer.paintPending=true
+    elseif dimmer.paintPending then
+     dimmer.paintPending=false;local alpha=dimmer.alpha;local dead=false
+     for index=1,#dimmer.entries do
+      local record=dimmer.entries[index]
+      if record then
+       if record.object.Parent and record.object:IsDescendantOf(UI)then paint(record,alpha)
+       else paint(record,0,true);dimmer.lookup[record.object]=nil;dimmer.entries[index]=false;dead=true end
+      end
+      if not budget()then return end
+     end
+     if dead then local entries={};for _,record in ipairs(dimmer.entries)do if record then entries[#entries+1]=record end end;dimmer.entries=entries end
+     dimmer.paintedAlpha=alpha
+     if alpha==0 then dimmer.dirty=false end
+     if not dimmer.armed and alpha==0 then clear()end
+    else break end
+   end
+   if generation==dimmer.generation then dimmer.worker=nil end
+  end)
+ end
+ local function wake()
+  if not dimmer.alive then return end
+  altairValues.lastUIActivity=os.clock()
+ end
+ local function arm()
+  stopWorker();dimmer.armed=true;dimmer.ready=false;wake()
+  dimmer.connections={UI.DescendantAdded:Connect(enqueue),userInputService.InputBegan:Connect(wake),userInputService.InputChanged:Connect(wake),userInputService.WindowFocused:Connect(wake)}
+  enqueue(UI)
+ end
+ function dimmer:Destroy()
+  if not self.alive then return end
+  self.alive=false;self.armed=false;disconnect();stopWorker()
+  releaseColors()
+  for _,record in ipairs(self.entries)do if record then paint(record,0,true)end end
+  self.alpha=0;clear()
+ end
+ -- This owner-bound signal remains alive until destruction even when the main
+ -- lifecycle has already disconnected its general runtime connections.
+ UI.Destroying:Once(function()dimmer:Destroy()end)
  track(runService.Heartbeat:Connect(function(dt)
+  if not dimmer.alive then return end
   elapsed+=dt;if elapsed<.1 then return end;local step=elapsed;elapsed=0
   local amount=math.clamp(tonumber(settingValue("OLED Idle Dim",0)) or 0,0,65)/100
-  local target=os.clock()-(altairValues.lastUIActivity or 0)>settingValue("Idle Dim Delay",45) and amount or 0
-  if alpha==0 and target==0 then return end
-  alpha=alpha+(target-alpha)*(1-math.exp(-8*step));if math.abs(alpha-target)<.001 then alpha=target end
-  for object,properties in pairs(colors)do if object.Parent then
-   for key,state in pairs(properties)do
-    local current=object[key];if current~=state.last then state.base=current end
-    local nextColor=state.base:Lerp(Color3.new(0,0,0),alpha);object[key]=nextColor;state.last=nextColor
-   end
-  end end
+  if amount>0 and not dimmer.armed then arm()
+  elseif amount==0 and dimmer.armed then
+   dimmer.armed=false;disconnect();stopWorker()
+   if dimmer.alpha==0 and dimmer.paintedAlpha==0 and not dimmer.dirty then clear();return end
+  end
+  if not dimmer.armed and #dimmer.entries==0 then return end
+  local target=dimmer.armed and dimmer.ready and os.clock()-(altairValues.lastUIActivity or 0)>settingValue("Idle Dim Delay",45)and amount or 0
+  dimmer.alpha=dimmer.alpha+(target-dimmer.alpha)*(1-math.exp(-8*step));if math.abs(dimmer.alpha-target)<.001 then dimmer.alpha=target end
+  if dimmer.alpha==0 and dimmer.paintedAlpha==0 and not dimmer.dirty and not dimmer.worker then return end
+  dimmer.paintPending=true;startWorker()
  end))
 end
 altairValues.capsules = altairValues.interfaceBindings.Capsules({Root=UI, RequireBuiltUI=true, Clock=altairValues.interfaceBindings.Clock,
@@ -11016,13 +11983,19 @@ altairValues.capsules = altairValues.interfaceBindings.Capsules({Root=UI, Requir
    dock=altairValues.smartBarLayout:getDock(),dragging=altairValues.smartBarLayout.dragging==true}
  end})
 altairAPI.Capsules = altairValues.capsules
-altairValues.rayfieldBridge=altairValues.interfaceBindings.RayfieldBridge({Root=UI,Capsules=altairValues.capsules,Notify=notification})
-altairAPI.ConnectRayfield=function(library)return altairValues.rayfieldBridge:WrapLibrary(library)end
-altairAPI.BlinkSmartBar = BlinkSmartBar
+altairValues.rayfieldBridge=altairValues.interfaceBindings.RayfieldBridge({Root=UI,Capsules=altairValues.capsules,Notify=notification,Theme=altairValues.theme})
+local sentivel=altairValues.interfaceBindings.Sentivel({Root=UI,Notify=notification,Alive=checkAltair,Session=altairValues.sessionMemory,Request=originalRequest,
+ SaveCache=function()altairValues.sessionMemory:save()end})
+altairValues.sentivel=sentivel
+altairValues.lifecycle.sentivel=sentivel
+track(UI.Destroying:Connect(function()sentivel:Destroy()end))
+altairAPI.GetServiceStatus=function()return altairValues.sentivel:GetStatus()end
+altairAPI.ConnectRayfield=altairValues.publicAction(function(library)return altairValues.rayfieldBridge:WrapLibrary(library)end)
+altairAPI.BlinkSmartBar = altairValues.publicAction(BlinkSmartBar)
 altairAPI.SupportsColoredSmartBarBlink = true
 altairAPI.SupportsQueuedSmartBarBlink = true
 altairAPI.ToastSupportsSkipBlink = true
-altairAPI.SetSmartBarPersistentColor = function(color)
+altairAPI.SetSmartBarPersistentColor = altairValues.publicAction(function(color)
 	blinkState.persistentColor = typeof(color) == "Color3" and color or nil
 	local activeColor = blinkState.color or blinkState.persistentColor
 	if not activeColor then
@@ -11037,20 +12010,21 @@ altairAPI.SetSmartBarPersistentColor = function(color)
 			if object:IsA("UIStroke") then object.Color = activeColor else object.ImageColor3 = activeColor end
 		end
 	end
-end
+end)
 
-altairAPI.OpenSmartBar = openSmartBar
-altairAPI.CloseSmartBar = closeSmartBar
-altairAPI.OpenHome = openHome
-altairAPI.CloseHome = closeHome
-altairAPI.OpenPanel = openPanel
-altairAPI.ClosePanel = closePanel
-altairAPI.OpenScriptSearch = openScriptSearch
-altairAPI.SearchScripts = searchScriptBlox
+altairAPI.OpenSmartBar = altairValues.publicAction(openSmartBar)
+altairAPI.CloseSmartBar = altairValues.publicAction(closeSmartBar)
+altairAPI.OpenHome = altairValues.publicAction(openHome)
+altairAPI.CloseHome = altairValues.publicAction(closeHome)
+altairAPI.OpenPanel = altairValues.publicAction(openPanel)
+altairAPI.ClosePanel = altairValues.publicAction(closePanel)
+altairAPI.OpenScriptSearch = altairValues.publicAction(openScriptSearch)
+altairAPI.SearchScripts = altairValues.publicAction(searchScripts)
+altairAPI.CloseScriptSearch = altairValues.publicAction(closeScriptSearch)
 
 altairAPI.Rejoin = rejoin
 altairAPI.ServerHop = serverhop
-altairAPI.CancelServerHop = function()altairValues.serverHop:cancel()end
+altairAPI.CancelServerHop = altairValues.publicAction(function()altairValues.serverHop:cancel()end)
 altairAPI.LeaveExperience = leaveExperience
 altairAPI.TeleportToPlayer = teleportTo
 altairAPI.ToggleSpectate = toggleSpectate
@@ -11099,7 +12073,7 @@ altairAPI.IsLocalPlayerName = function(value, textObject)
 	return name == randomUsername:lower() or name == randomDisplayName:lower()
 end
 altairAPI.SaveSettings = saveSettings
-altairAPI.UpdateHome = UpdateHome
+altairAPI.UpdateHome = altairValues.publicAction(UpdateHome)
 altairAPI.IsLoaded = checkAltair
 
 altairAPI.GetUI = function()
@@ -11115,18 +12089,157 @@ altairAPI.GetDetectedScript = function()
 end
 altairAPI.IsScriptRunning=function(info) return type(info)=="table" and altairValues.scriptAlreadyRunning(info) or false end
 altairAPI.RegisterScriptRunning=function(info)
+	if not checkAltair()then return false end
 	assert(type(info)=="table","Provide the custom script definition")
 	altairValues.markScriptRunning(info)
 end
 altairAPI.UnregisterScriptRunning=function(info)
+	if not checkAltair()then return false end
 	if type(info)~="table" then return false end
 	env.AltairScriptRuns[altairValues.scriptRunKey(info)]=nil;return true
 end
+-- One native utility registry replaces duplicate remote utility loaders.
+altairValues.nativeTools=altairValues.interfaceBindings.NativeUtilities({Root=UI,Notify=notification,IsAlive=checkAltair,
+ CanCamera=function()return not homeOpen and not spectating end,
+ GetControls=function()
+  local module=localPlayer:FindFirstChild('PlayerScripts');module=module and module:FindFirstChild('PlayerModule')
+  if module and module:IsA('ModuleScript')then return require(module):GetControls()end
+ end,
+})
+altairValues.nativeTools:Register({id='rejoin',name='Rejoin',description='Reconnect to this experience using Altair recovery.',icon='log-in',run=rejoin})
+altairValues.nativeTools:Register({id='serverhop',name='Find a server',description='Join a populated server with retry and cancellation.',icon='shuffle',run=serverhop})
+altairValues.nativeTools:Register({id='copylink',name='Copy game link',description='Copy the current experience link.',icon='link',run=function()
+ if not originalSetClipboard then return false,'Clipboard is unavailable in this executor'end
+ originalSetClipboard('https://www.roblox.com/games/'..tostring(game.PlaceId));Toast('Experience link copied.');return true
+end})
+altairValues.nativeTools:Register({id='copyserver',name='Copy join script',description='Copy a join script for this exact server.',icon='copy',run=function()
+ if not originalSetClipboard then return false,'Clipboard is unavailable in this executor'end
+ originalSetClipboard(string.format('game:GetService("TeleportService"):TeleportToPlaceInstance(%d, %q, game:GetService("Players").LocalPlayer)',game.PlaceId,game.JobId));Toast('Server join script copied.');return true
+end})
+altairAPI.ListNativeTools=function()return altairValues.nativeTools:List()end
+altairAPI.RunNativeTool=function(id,...)return altairValues.nativeTools:Run(id,...)end
+altairValues.nativeCatalog=(function()
+ local body=scriptsPanel.Interactions;local selection=body.Selection
+ local contentColor=scriptsPanel.Title:GetAttribute('AltairThemeDefault_TextColor3')or scriptsPanel.Title.TextColor3
+ selection.UniversalScripts.Title.Text='Built-in tools'
+ selection.UniversalScripts.Subtitle.Text='Native utilities · no extra scripts'
+ if not selection:IsA('CanvasGroup')then
+  local previous=selection;selection=Instance.new('CanvasGroup');selection.Name='Selection'
+  for _,property in ipairs({'Size','Position','AnchorPoint','Visible','ZIndex','LayoutOrder','BackgroundColor3','BackgroundTransparency','BorderSizePixel'})do selection[property]=previous[property]end
+  for _,child in ipairs(previous:GetChildren())do child.Parent=selection end
+  previous:Destroy();selection.Parent=body
+ end
+ local rest=selection.Position+UDim2.fromOffset(10,42)
+ local group=Instance.new('CanvasGroup');group.Name='NativeTools';group.BackgroundTransparency=1;group.Position=rest;group.Size=selection.Size-UDim2.fromOffset(20,52);group.Visible=false;group.GroupTransparency=1;group.Parent=body
+ local list=Instance.new('Frame');list.Name='List';list.BackgroundTransparency=1;list.Size=UDim2.new(1,0,1,-30);list.Position=UDim2.fromOffset(0,30);list.Parent=group
+ local back=Instance.new('TextButton');back.Name='Back';back.Text='‹  Scripts';back.FontFace=scriptsPanel.Title.FontFace;back.TextSize=14;back.TextXAlignment=Enum.TextXAlignment.Left;back.TextColor3=contentColor;back.BackgroundTransparency=1;back.AutoButtonColor=false;back.Size=UDim2.fromOffset(110,26);back.Parent=group
+ local status=back:Clone();status.Name='ServiceStatus';status.AnchorPoint=Vector2.new(1,0);status.Position=UDim2.fromScale(1,0);status.Size=UDim2.fromOffset(210,26);status.TextSize=11;status.TextXAlignment=Enum.TextXAlignment.Right;status.TextTransparency=.25;status.Parent=group
+ local service={opened=false,version=0,rows={}}
+ local function restoreOpacity(object,properties)
+  local animation=tweenService:Create(object,TweenInfo.new(0),properties);animation:Play();animation:Cancel()
+  for property,value in pairs(properties)do
+   if property=='BackgroundTransparency'and value<.99 then value=altairValues.interfaceBindings.MaterialAlpha(object,value)end
+   object[property]=value
+  end
+ end
+ local function paint(restore)
+  if restore then restoreOpacity(back,{TextTransparency=.25});restoreOpacity(status,{TextTransparency=.25})end
+  local health=altairValues.sentivel:GetStatus();status.Text='Services · '..(({operational='Online',unknown='Checking',outage='Outage',degraded='Degraded',maintenance='Maintenance'})[health.status]or 'Checking')
+  local items=altairValues.nativeTools:List()
+  for index,item in ipairs(items)do local row=service.rows[index];if row then
+   if restore then
+    restoreOpacity(row,{BackgroundTransparency=.16});restoreOpacity(row.Title,{TextTransparency=0});restoreOpacity(row.Description,{TextTransparency=.35});restoreOpacity(row.Icon,{ImageTransparency=0})
+    local edge=row:FindFirstChildOfClass('UIStroke');if edge then restoreOpacity(edge,{Transparency=.8})end
+   end
+   row.State.Text=item.toggle and(item.active and 'ON' or 'OFF')or '›'
+   if restore then restoreOpacity(row.State,{TextTransparency=item.active and 0 or .35})else row.State.TextTransparency=item.active and 0 or .35 end
+   row:SetAttribute('NativeToolId',item.id)
+  end end
+ end
+ local function animate(object,time,goal)return tweenService:Create(object,TweenInfo.new(time,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goal):Play()end
+ for index,item in ipairs(altairValues.nativeTools:List())do
+  local row=Instance.new('TextButton');row.Name=item.id;row.Text='';row.AutoButtonColor=false;row.BackgroundColor3=Color3.fromRGB(25,28,34);row.BackgroundTransparency=altairValues.interfaceBindings.OpacityAlpha(.16,UI:GetAttribute('AltairPanelTransparency'));row.BorderSizePixel=0;row:SetAttribute('AltairDesignRole','control');row:SetAttribute('AltairMaterialRestAlpha',.16)
+  row:SetAttribute('AltairDesignRole','control');row:SetAttribute('AltairDesignRestAlpha',.16)
+  row.Size=UDim2.new(.5,-5,1/3,-5);row.Position=UDim2.new((index-1)%2*.5,(index-1)%2*5,math.floor((index-1)/2)/3,0);row.Parent=list;service.rows[index]=row
+  local corner=Instance.new('UICorner');corner.CornerRadius=UDim.new(0,10);corner.Parent=row
+  local edge=Instance.new('UIStroke');edge.Color=Color3.fromRGB(155,165,186);edge.Thickness=.65;edge.Transparency=.8;edge.Parent=row
+  local source=selection:FindFirstChild(({'Reprompt','Library','CustomScripts','UniversalScripts','V4','CustomScripts'})[index])
+  local gradient=Instance.new('UIGradient');gradient.Rotation=28;gradient.Color=source and(source.UIGradient:GetAttribute('AltairThemeDefault_Color')or source.UIGradient.Color)or ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(165,174,193));gradient.Parent=row
+  if source then row.BackgroundColor3=Color3.new(1,1,1);edge.Color=source.UIStroke:GetAttribute('AltairThemeDefault_Color')or source.UIStroke.Color end
+  local icon=Instance.new('ImageLabel');icon.Name='Icon';icon.BackgroundTransparency=1;icon.Position=UDim2.fromOffset(11,11);icon.Size=UDim2.fromOffset(22,22);icon.ImageColor3=contentColor;icon.Parent=row;altairValues.interfaceBindings.ApplyIcon(icon,item.icon)
+  local title=Instance.new('TextLabel');title.Name='Title';title.BackgroundTransparency=1;title.Position=UDim2.fromOffset(42,8);title.Size=UDim2.new(1,-77,0,19);title.Text=item.name;title.TextXAlignment=Enum.TextXAlignment.Left;title.TextSize=14;title.FontFace=scriptsPanel.Title.FontFace;title.TextColor3=contentColor;title.Parent=row
+  local subtitle=title:Clone();subtitle.Name='Description';subtitle.Position=UDim2.fromOffset(42,25);subtitle.Size=UDim2.new(1,-54,1,-27);subtitle.Text=item.description;subtitle.TextSize=10;subtitle.TextTransparency=.35;subtitle.TextYAlignment=Enum.TextYAlignment.Top;subtitle.TextWrapped=true;subtitle.TextTruncate=Enum.TextTruncate.None;subtitle.LineHeight=1;subtitle.Parent=row
+  local state=title:Clone();state.Name='State';state.AnchorPoint=Vector2.new(1,0);state.Position=UDim2.new(1,-9,0,10);state.Size=UDim2.fromOffset(26,18);state.TextSize=11;state.TextXAlignment=Enum.TextXAlignment.Right;state.Parent=row
+  row:SetAttribute('NativeToolId',item.id)
+  row.MouseEnter:Connect(function()if service.opened then animate(edge,.14,{Transparency=.4});animate(row,.14,{BackgroundTransparency=.04})end end)
+  row.MouseLeave:Connect(function()animate(edge,.2,{Transparency=.8});animate(row,.2,{BackgroundTransparency=.16})end)
+  row.Activated:Connect(function()
+   if not service.opened or scriptsPanel:GetAttribute('AltairClosing')then return end
+   animate(row,.08,{BackgroundTransparency=.28})
+   local ok,problem=altairValues.nativeTools:Run(item.id);if not ok then notification('Built-in tools',problem or 'This tool is unavailable.')end
+   paint();animate(row,.2,{BackgroundTransparency=.16})
+  end)
+ end
+ function service:Open()
+  if self.opened or scriptsPanel:GetAttribute('AltairClosing')then return end
+  self.opened=true;self.closing=false;self.pendingReturn=nil;self.version+=1;local version=self.version;paint(true)
+  if group.Visible then selection.Visible=false;animate(group,.22,{GroupTransparency=0,Position=rest});return end
+  animate(selection,.12,{GroupTransparency=1})
+  task.delay(.12,function()if self.version~=version or not self.opened then return end
+   paint(true);selection.Visible=false;group.Position=rest+UDim2.fromOffset(18,0);group.Visible=true;group.GroupTransparency=1
+   animate(group,.22,{GroupTransparency=0,Position=rest})
+  end)
+ end
+ function service:Close(immediate,onClosed)
+  self.pendingReturn=onClosed
+  if self.closing then return end
+  if not self.opened then if onClosed then task.defer(onClosed)end;return end
+  self.opened=false;self.closing=true;self.version+=1;local version=self.version
+  animate(group,immediate and .08 or .16,{GroupTransparency=1,Position=rest+UDim2.fromOffset(18,0)})
+  task.delay(immediate and .09 or .17,function()
+   if self.version~=version then return end
+   self.closing=false;group.Visible=false;selection.Visible=true;selection.GroupTransparency=1;animate(selection,.16,{GroupTransparency=0})
+   local continuation=self.pendingReturn;self.pendingReturn=nil;if continuation then continuation()end
+  end)
+ end
+ function service:Reset()
+  -- A panel entrance always returns to its script choices. Revoke pending
+  -- catalogue callbacks before they can hide a newly opened Selection group.
+  self.version+=1;self.opened=false;self.closing=false;self.pendingReturn=nil
+  if tweenService.Freeze then
+   tweenService:Freeze(group,{GroupTransparency=group.GroupTransparency,Position=group.Position})
+   tweenService:Freeze(selection,{GroupTransparency=selection.GroupTransparency})
+  end
+  group.Visible=false;group.GroupTransparency=1;group.Position=rest
+  selection.Visible=true;selection.GroupTransparency=0
+ end
+ back.Activated:Connect(function()service:Close(false)end)
+ status.Activated:Connect(function()
+  if not service.opened then return end;altairValues.sentivel:Refresh()
+  local health=altairValues.sentivel:GetStatus();local lines={}
+  for _,component in ipairs(health.components)do lines[#lines+1]=component.name..' · '..component.status end
+  notification('Altair service status',table.concat(lines,'\n'));paint()
+ end)
+ status.MouseEnter:Connect(function()animate(status,.15,{TextTransparency=0})end);status.MouseLeave:Connect(function()animate(status,.18,{TextTransparency=.25})end)
+ back.MouseEnter:Connect(function()animate(back,.15,{TextTransparency=0})end);back.MouseLeave:Connect(function()animate(back,.18,{TextTransparency=.25})end)
+ track(scriptsPanel:GetAttributeChangedSignal('AltairClosing'):Connect(function()
+  if scriptsPanel:GetAttribute('AltairClosing')then
+   service.version+=1;service.opened=false;service.closing=false;service.pendingReturn=nil
+   -- Keep the rendered content until the parent group has finished fading.
+   -- Reset() restores the choices underneath the next entrance.
+  end
+ end))
+ return service
+end)()
+track(UI.Destroying:Connect(function()altairValues.nativeTools:Destroy()end))
+
 altairAPI.ScanCustomScripts = altairValues.scanCustomScripts
 altairAPI.OpenCustomScriptImporter = altairValues.openCustomScriptPrompt
 altairAPI.SaveCustomScriptImporter = altairValues.saveCustomScriptPrompt
 altairAPI.RepromptCustomScript = function()
+	if not checkAltair()then return false end
 	local detected = altairValues.detectedScript or altairValues.scanCustomScripts()
+	if not checkAltair()then return false end
 	if detected then
 		return altairValues.showGameDetection(detected)
 	end
@@ -11137,7 +12250,8 @@ end
 altairAPI.DebugContractVersion = 2
 
 altairAPI.DebugEnabled = function()
-	local dev = type(env.Altair) == "table" and env.Altair.Dev or nil
+	if not checkAltair()then return false end
+	local dev = altairAPI.Dev
 	return settingValue("Debug Mode", false) == true
 		and type(dev) == "table"
 		and dev._destroyed ~= true
@@ -11145,9 +12259,10 @@ end
 
 altairAPI.GetDebugClient = function(name, provider, metadata)
 	if not altairAPI.DebugEnabled() then return nil end
-	local dev = env.Altair.Dev
+	local dev = altairAPI.Dev
 	if type(dev.CreateClient) ~= "function" then return nil end
 	local ok, client = pcall(dev.CreateClient, dev, name, provider, metadata)
+	if not checkAltair()or altairAPI.Dev~=dev or not altairAPI.DebugEnabled()then return nil end
 	return ok and client or nil
 end
 
@@ -11156,9 +12271,11 @@ altairAPI.OnDebugChanged = function(callback)
 end
 
 altairAPI.RecordActivity = function(title, description)
+	if not checkAltair()then return false end
 	return altairValues.activity:record(title, description)
 end
 altairAPI.Version = altairValues.altairVersion
+requireStartup()
 env.Altair = altairAPI
 
 altairValues.continuation = { quiet = false, key = "Altair.Session.v1" }
@@ -11463,7 +12580,7 @@ local function start()
 	end)
 end
 
--- Altair Events
+-- Runtime input and player events
 
 -- Drag can be clicked to toggle the SmartBar, or dragged to reposition it.
 altairValues.smartBarLayout.openForDrag=openSmartBar
@@ -11475,7 +12592,9 @@ track(UI:GetPropertyChangedSignal("AbsolutePosition"):Connect(function() altairV
 
 
 
+requireStartup()
 local startSuccess, startError = pcall(start)
+requireStartup()
 if not startSuccess then
 	warn("Altair | Startup error: " .. tostring(startError))
 	altairValues.lifecycle:unload()
@@ -11520,49 +12639,110 @@ do
 	end
 end
 
-characterPanel.Interactions.Reset.MouseButton1Click:Connect(function()
-	resetSliders()
-
-	altairValues.interfaceBindings.BounceReset(characterPanel.Interactions.Reset)
-	Toast("Successfully reset all character panel sliders")
-end)
-
-characterPanel.Interactions.Reset.MouseEnter:Connect(function()
-	if debounce then
-		return
+do
+	local reset=characterPanel.Interactions.Reset
+	local glyph=reset:FindFirstChild("ResetGlyph")or reset
+	local native=game:GetService("TweenService")
+	local function resetAccent()
+		local ruler=altairValues.characterRuler
+		return ruler and ruler.AccentColor or altairValues.sliders[1].color
 	end
-	tweenService:Create(characterPanel.Interactions.Reset, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0 }):Play()
-end)
-characterPanel.Interactions.Reset.MouseLeave:Connect(function()
-	if debounce then
-		return
+	local scale=Instance.new("UIScale");scale.Name="ResetHoldScale";scale.Parent=reset
+	local rim=Instance.new("UIStroke");rim.Name="ResetHoldProgress";rim.Color=resetAccent();rim.Thickness=1;rim.Transparency=1;rim.Parent=reset
+	local controller={pressed=false,held=false,generation=0,suppressActivation=false,tweens={}}
+	altairValues.characterReset=controller
+	local function allowed()
+		local ruler=altairValues.characterRuler
+		return altairValues.lifecycle.alive and UI.Parent and checkAltair()and characterPanel.Visible and not characterPanel:GetAttribute("AltairClosing")and not debounce and reset.Visible and ruler and ruler.Expanded and ruler.SelectedModel~=nil
 	end
-	tweenService:Create(characterPanel.Interactions.Reset, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { ImageTransparency = 0.7 }):Play()
-end)
+	local function animate(object,duration,goal,style)
+		if controller.tweens[object]then controller.tweens[object]:Cancel()end
+		local tween=native:Create(object,TweenInfo.new(duration,style or Enum.EasingStyle.Quad,Enum.EasingDirection.Out),goal)
+		controller.tweens[object]=tween
+		tween.Completed:Once(function()if controller.tweens[object]==tween then controller.tweens[object]=nil end end)
+		tween:Play()
+	end
+	local function feedback(immediate)
+		for _,tween in pairs(controller.tweens)do tween:Cancel()end;table.clear(controller.tweens)
+		if immediate or not reset.Parent then
+			scale.Scale=1;rim.Transparency=1;rim.Thickness=1;glyph.ImageColor3=Color3.fromRGB(190,190,190)
+		else
+			animate(scale,.24,{Scale=1},Enum.EasingStyle.Back)
+			animate(rim,.18,{Transparency=1,Thickness=1})
+			animate(glyph,.18,{ImageColor3=Color3.fromRGB(190,190,190)})
+		end
+	end
+	function controller:Cancel(immediate,suppress)
+		if suppress and self.pressed then self.suppressActivation=true end
+		self.generation+=1;self.pressed=false;self.held=false;self.input=nil
+		feedback(immediate)
+	end
+	local function resetFeedback(message,color)
+		altairValues.interfaceBindings.BounceReset(reset)
+		Toast(message,color or resetAccent())
+	end
+	function controller:ResetSelected()
+		if not allowed()then return false end
+		local ruler=altairValues.characterRuler
+		local model=ruler and ruler.SelectedModel or altairValues.sliders[1]
+		if not model then return false end
+		if ruler then ruler:KeepExpanded()end
+		if ruler then ruler.Ruler:Cancel(true)end
+		updateSlider(model,model.default,true)
+		resetFeedback((model.name:gsub("^%l",string.upper)).." reset")
+		return true
+	end
+	function controller:ResetAll()
+		if not allowed()then return false end
+		local color=resetAccent()
+		if altairValues.characterRuler then altairValues.characterRuler:KeepExpanded();altairValues.characterRuler.Ruler:Cancel(true)end
+		resetSliders()
+		resetFeedback("All character sliders reset",color)
+		return true
+	end
+	track(reset.InputBegan:Connect(function(input)
+		local kind=input.UserInputType
+		if(kind~=Enum.UserInputType.MouseButton1 and kind~=Enum.UserInputType.Touch)or controller.pressed or not allowed()then return end
+		controller:Cancel(true);controller.suppressActivation=false;controller.pressed=true;controller.input=input
+		local generation=controller.generation
+		rim.Color=resetAccent()
+		animate(scale,.65,{Scale=1.08});animate(rim,.65,{Transparency=.12,Thickness=1.5});animate(glyph,.65,{ImageColor3=resetAccent()})
+		task.delay(.65,function()
+			if controller.generation~=generation or not controller.pressed or not allowed()then return end
+			controller.held=true;controller.suppressActivation=true
+			if controller:ResetAll()then feedback(false)end
+		end)
+	end))
+	track(reset.Activated:Connect(function()
+		if controller.suppressActivation then controller.suppressActivation=false;return end
+		controller:ResetSelected()
+	end))
+	track(userInputService.InputEnded:Connect(function(input)
+		if not controller.pressed then return end
+		local active=controller.input
+		if input==active or(active and active.UserInputType==Enum.UserInputType.MouseButton1 and input.UserInputType==Enum.UserInputType.MouseButton1)then controller:Cancel(false)end
+	end))
+	track(userInputService.InputChanged:Connect(function(input)
+		if not controller.pressed or input~=controller.input or input.UserInputType~=Enum.UserInputType.Touch then return end
+		local point=input.Position;local position=reset.AbsolutePosition;local size=reset.AbsoluteSize
+		if point.X<position.X or point.X>position.X+size.X or point.Y<position.Y or point.Y>position.Y+size.Y then controller:Cancel(false,true)end
+	end))
+	track(reset.MouseLeave:Connect(function()if controller.pressed then controller:Cancel(false,true)end end))
+	track(userInputService.WindowFocusReleased:Connect(function()controller:Cancel(false,true)end))
+	track(characterPanel:GetPropertyChangedSignal("Visible"):Connect(function()if not characterPanel.Visible then controller:Cancel(true,true)end end))
+	track(characterPanel:GetAttributeChangedSignal("AltairClosing"):Connect(function()if characterPanel:GetAttribute("AltairClosing")then controller:Cancel(true,true)end end))
+	track(characterPanel:GetAttributeChangedSignal("AltairRulerExpanded"):Connect(function()if not characterPanel:GetAttribute("AltairRulerExpanded")then controller:Cancel(true,true)end end))
+	track(UI.Destroying:Connect(function()controller:Cancel(true,true)end))
+end
 
 playerSearch:GetPropertyChangedSignal("Text"):Connect(function()
 	local query = string.lower(playerSearch.Text)
+	searchingForPlayer = query ~= ""
 
 	for _, player in ipairs(playerlistPanel.Interactions.List:GetChildren()) do
 		if player:IsA("GuiObject") and player:GetAttribute("AltairRuntimePlayer") == true then
-			local displayName = player:FindFirstChild("DisplayName", true)
-			local displayText = displayName and string.lower(displayName.Text) or ""
-			local username = string.lower(tostring(player:GetAttribute("AltairUsername") or ""))
-			player.Visible =
-				string.find(username, query, 1, true) ~= nil
-				or string.find(displayText, query, 1, true) ~= nil
+			altairValues.playerlistUI:filterRuntimePlayer(player, query)
 		end
-	end
-
-	if #playerSearch.Text == 0 then
-		searchingForPlayer = false
-		for _, player in ipairs(playerlistPanel.Interactions.List:GetChildren()) do
-			if player:IsA("GuiObject") and player:GetAttribute("AltairRuntimePlayer") == true then
-				player.Visible = true
-			end
-		end
-	else
-		searchingForPlayer = true
 	end
 end)
 
@@ -11611,11 +12791,13 @@ characterPanel.Interactions.Serverhop.Interact.MouseButton1Click:Connect(serverh
 
 for _, button in ipairs(scriptsPanel.Interactions.Selection:GetChildren()) do
 	local origsize = button.Size
+	local function restSize()return button:GetAttribute("AltairScriptRestSize")or origsize end
 
 	button.MouseEnter:Connect(function()
 		if not debounce then
+			local size=restSize()
 			tweenService:Create(button, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-			tweenService:Create(button, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Size = UDim2.new(0, button.Size.X.Offset - 5, 0, button.Size.Y.Offset - 3) }):Play()
+			tweenService:Create(button, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Size = size-UDim2.fromOffset(5,3) }):Play()
 			tweenService:Create(button.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Transparency = 1 }):Play()
 			tweenService:Create(button.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.1 }):Play()
 		end
@@ -11624,21 +12806,23 @@ for _, button in ipairs(scriptsPanel.Interactions.Selection:GetChildren()) do
 	button.MouseLeave:Connect(function()
 		if not debounce then
 			tweenService:Create(button, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-			tweenService:Create(button, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Size = origsize }):Play()
+			tweenService:Create(button, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Size = restSize() }):Play()
 			tweenService:Create(button.UIStroke, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { Transparency = 0 }):Play()
 			tweenService:Create(button.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
 		end
 	end)
 
 	button.Interact.MouseButton1Click:Connect(function()
-		tweenService:Create(button, TweenInfo.new(0.4, Enum.EasingStyle.Quint), { Size = UDim2.new(0, origsize.X.Offset - 9, 0, origsize.Y.Offset - 6) }):Play()
+		tweenService:Create(button, TweenInfo.new(0.4, Enum.EasingStyle.Quint), { Size = restSize()-UDim2.fromOffset(9,6) }):Play()
 		task.wait(0.1)
-		tweenService:Create(button, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { Size = origsize }):Play()
+		tweenService:Create(button, TweenInfo.new(0.25, Enum.EasingStyle.Quint), { Size = restSize() }):Play()
 
 		if button.Name == "Library" then
 			if not scriptSearch.Visible and not debounce then
 				openScriptSearch()
 			end
+		elseif button.Name == "UniversalScripts" then
+			altairValues.nativeCatalog:Open()
 		elseif button.Name == "CustomScripts" then
 			altairValues.openCustomScriptPrompt()
 		elseif button.Name == "Reprompt" then
@@ -11653,9 +12837,6 @@ for _, button in ipairs(scriptsPanel.Interactions.Selection:GetChildren()) do
 end
 
 smartBar.Back.Buttons.Home.Interact.MouseButton1Click:Connect(function()
-	if debounce then
-		return
-	end
 	if homeOpen then
 		closeHome()
 	else
@@ -11664,7 +12845,7 @@ smartBar.Back.Buttons.Home.Interact.MouseButton1Click:Connect(function()
 end)
 
 smartBar.Back.Buttons.Settings.Interact.MouseButton1Click:Connect(function()
-	if settingsPanel.Visible and not settingsPanel:GetAttribute("AltairDeckSource")then
+	if settingsPanel.Visible and not settingsPanel:GetAttribute("AltairClosing")and not settingsPanel:GetAttribute("AltairDeckSource")then
 		closeSettings()
 	else
 		openSettings()
@@ -11703,7 +12884,8 @@ for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 		button.Icon:SetAttribute("AltairHoverRestPosition",iconRestPosition)
 		button.MouseEnter:Connect(function()
    if not smartBarOpen then return end
-   tweenService:Create(button.Icon,TweenInfo.new(.18),{Position=iconRestPosition+UDim2.fromOffset(0,UI:GetAttribute("AltairReduceMotion")and 0 or -1)}):Play()
+   local rest=button.Icon:GetAttribute("AltairHoverRestPosition")or iconRestPosition
+   tweenService:Create(button.Icon,TweenInfo.new(.18),{Position=rest+UDim2.fromOffset(0,UI:GetAttribute("AltairReduceMotion")and 0 or -1)}):Play()
 			tweenService:Create(button.UIGradient, TweenInfo.new(.2, Enum.EasingStyle.Quint), { Rotation = 75 }):Play()
 			tweenService:Create(button.UIStroke.UIGradient, TweenInfo.new(.2, Enum.EasingStyle.Quint), { Rotation = 75 }):Play()
 			tweenService:Create(button.UIStroke, TweenInfo.new(.18, Enum.EasingStyle.Quint), { Transparency = .65 }):Play()
@@ -11713,7 +12895,8 @@ for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 
 		button.MouseLeave:Connect(function()
    if not smartBarOpen then return end
-   tweenService:Create(button.Icon,TweenInfo.new(.2),{Position=iconRestPosition}):Play()
+   local rest=button.Icon:GetAttribute("AltairHoverRestPosition")or iconRestPosition
+   tweenService:Create(button.Icon,TweenInfo.new(.2),{Position=rest}):Play()
 			tweenService:Create(button.UIStroke.UIGradient, TweenInfo.new(.22, Enum.EasingStyle.Quint), { Rotation = 50 }):Play()
 			tweenService:Create(button.UIGradient, TweenInfo.new(.22, Enum.EasingStyle.Quint), { Rotation = 50 }):Play()
 			tweenService:Create(button.UIStroke, TweenInfo.new(0.6, Enum.EasingStyle.Quint), { Transparency = .82 }):Play()
@@ -11817,70 +13000,6 @@ track(userInputService.InputBegan:Connect(function(input, processed)
 	end
 end))
 
-track(userInputService.InputEnded:Connect(function(input)
-	if not checkAltair() then
-		return
-	end
-
-	-- Touch releases end a drag too; MouseButton1 alone left sliders stuck active on mobile
-	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-		for _, slider in pairs(altairValues.sliders) do
-			slider.active = false
-
-			if characterPanel.Visible and not debounce and slider.object and checkAltair() then
-				tweenService:Create(slider.object, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { BackgroundTransparency = 1 }):Play()
-				tweenService:Create(slider.object.UIStroke, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { Transparency = 1 }):Play()
-				tweenService:Create(slider.object.Information, TweenInfo.new(0.4, Enum.EasingStyle.Exponential), { TextTransparency = 0 }):Play()
-			end
-		end
-	end
-end))
-
-track(camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
-	task.wait(0.5)
-	updateSliderPadding()
-end))
-
-scriptSearch.SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
-	if #scriptSearch.SearchBox.Text > 0 then
-		altairValues.scriptSearchColours(true)
-	else
-		altairValues.scriptSearchColours(false)
-	end
-end)
-
-scriptSearch.SearchBox.FocusLost:Connect(function(enterPressed)
-	-- ReleaseFocus during close must not start another close coroutine.
-	if altairValues.scriptSearchState.phase ~= "open" or not scriptSearch.Visible then return end
-	altairValues.scriptSearchColours(false)
-
-	if #scriptSearch.SearchBox.Text > 0 then
-		if enterPressed then
-			pcall(searchScriptBlox, scriptSearch.SearchBox.Text)
-		end
-	else
-		closeScriptSearch()
-	end
-end)
-
-scriptSearch.SearchBox.Focused:Connect(function()
-	if #scriptSearch.SearchBox.Text > 0 then
-		altairValues.scriptSearchColours(true)
-	end
-end)
-
-track(userInputService.InputChanged:Connect(function(input)
-	if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
-		return
-	end
-
-	for _, slider in pairs(altairValues.sliders) do
-		if slider.active then
-			updateSlider(slider, nil, nil, input.Position.X)
-		end
-	end
-end))
-
 track(userInputService.WindowFocusReleased:Connect(function()
 	windowFocusChanged(false)
 end))
@@ -11896,7 +13015,7 @@ if not legacyChatActive then
 
 		local player = players:GetPlayerByUserId(chatMessage.TextSource.UserId)
 		if player then
-			altairValues.chatModeration:observe(player, chatMessage.Text)
+			altairValues.chatModeration:observe(player, chatMessage.Text, {source="modern",id=chatMessage.MessageId})
 		end
 	end))
 end
@@ -11961,6 +13080,7 @@ track(players.PlayerAdded:Connect(function(player)
 end))
 
 track(players.PlayerRemoving:Connect(function(player)
+	if not altairValues.lifecycle.alive then return end
 	altairValues.activity:record("Player left", player.DisplayName)
 	disconnectPlayerConnections(player)
 	altairValues.chatModeration.users[player.UserId] = nil
@@ -11995,7 +13115,7 @@ end))
 
 task.spawn(function()
 	while checkAltair() do
-		if settingValue("Suspicious Player Detection", true) then
+		if altairValues.playerAnomaly:HasEnabledChecks() then
 			altairValues.playerAnomaly:sampleAll()
 			task.wait(altairValues.playerAnomaly.sampleRate)
 		else
@@ -12034,27 +13154,36 @@ local function runtime()
 	local characterParts = {}
 	local characterPartConnections = {}
 
+	local function restoreNoclipPart(part)
+		local ownership = noclipDefaults[part]
+		noclipDefaults[part] = nil
+		if not ownership then return end
+		pcall(function()
+			-- Only undo a value Altair actually wrote, and preserve a later
+			-- observable game change instead of restoring a load-time snapshot.
+			if part.CanCollide == ownership.applied then part.CanCollide = ownership.baseline end
+		end)
+	end
+
 	local function clearCharacterPartTracking()
 		for _, connection in ipairs(characterPartConnections) do
 			connection:Disconnect()
 		end
 		table.clear(characterPartConnections)
+		for part in pairs(noclipDefaults) do restoreNoclipPart(part) end
 		table.clear(characterParts)
 		table.clear(noclipDefaults)
 	end
 
 	local function trackCharacterParts(character)
 		clearCharacterPartTracking()
-		if not character then
+		if not checkAltair() or not character then
 			return
 		end
 
 		local function add(part)
-			if part:IsA("BasePart") then
+			if checkAltair() and part:IsA("BasePart") then
 				characterParts[part] = true
-				if noclipDefaults[part] == nil then
-					noclipDefaults[part] = part.CanCollide
-				end
 			end
 		end
 
@@ -12066,39 +13195,79 @@ local function runtime()
 		table.insert(
 			characterPartConnections,
 			character.DescendantRemoving:Connect(function(part)
+				restoreNoclipPart(part)
 				characterParts[part] = nil
-				noclipDefaults[part] = nil
 			end)
 		)
 	end
 
 	local function spatialShieldWanted()
-		return Pro and settingValue("Spatial Shield") == true
+		return checkAltair() and Pro and settingValue("Spatial Shield") == true
 	end
 
 	local function anonymousWanted()
 		return settingValue("Anonymous Client") == true
 	end
 
-	local function registerSound(instance)
-		local suppression = suppressedSounds[instance.SoundId]
-		if suppression then
-			instance.Volume = (suppression == "S" and 0.5) or (suppression == "S2" and 0.1) or 0
-			return
-		end
+	local function restoreSpatialSound(sound)
+		local ownership = spatialSoundVolumes[sound]
+		spatialSoundVolumes[sound] = nil
+		if not ownership then return end
+		pcall(function()
+			-- Restore only our last write; leave a later game/user volume intact.
+			if sound.Volume == ownership.applied then sound.Volume = ownership.baseline end
+		end)
+	end
 
-		if not spatialShieldWanted() then
+	local function clearSpatialShield()
+		for sound in pairs(spatialSoundVolumes) do restoreSpatialSound(sound) end
+		table.clear(suppressedSounds)
+		table.clear(soundInstances)
+		table.clear(trackedSounds)
+		soundSuppressionNotificationCooldown = 0
+	end
+	local spatialSetting = checkSetting("Spatial Shield")
+	local previousSpatialChanged = spatialSetting and spatialSetting.onChanged
+	local spatialChangedHandler
+
+	local function unregisterSound(sound)
+		if not trackedSounds[sound] and not spatialSoundVolumes[sound] then return end
+		restoreSpatialSound(sound)
+		trackedSounds[sound] = nil
+		for index = #soundInstances, 1, -1 do
+			if soundInstances[index] == sound then table.remove(soundInstances, index) end
+		end
+	end
+
+	local function suppressSound(sound, limit)
+		if not spatialShieldWanted() then return false end
+		local volume = sound.Volume
+		local target = math.min(volume, limit)
+		if target == volume then return false end -- Never amplify a quieter instance.
+		local ownership = spatialSoundVolumes[sound]
+		if not ownership or volume ~= ownership.applied then
+			-- A game/user change supersedes the earlier baseline before we write again.
+			ownership = { baseline = volume }
+			spatialSoundVolumes[sound] = ownership
+		end
+		ownership.applied = target
+		sound.Volume = target
+		return true
+	end
+
+	local function registerSound(instance)
+		if not spatialShieldWanted() or not instance:IsDescendantOf(game) then
 			return
 		end
 		if trackedSounds[instance] then
 			return
 		end
 
-		if not cachedIds[instance.SoundId] then
-			cachedIds[instance.SoundId] = true
-			trackedSounds[instance] = true
-			table.insert(soundInstances, instance)
-		end
+		-- Track each instance: several sounds may share an ID and different volumes.
+		trackedSounds[instance] = true
+		table.insert(soundInstances, instance)
+		local suppression = suppressedSounds[instance.SoundId]
+		if suppression ~= nil then suppressSound(instance, suppression) end
 	end
 
 	local function anonymousReplacement(raw, objectName)
@@ -12201,6 +13370,10 @@ local function runtime()
 	local function teardown()
 		if altairValues.runtimeCleaned then return end
 		altairValues.runtimeCleaned = true
+		clearSpatialShield()
+		if spatialSetting and spatialSetting.onChanged == spatialChangedHandler then
+			spatialSetting.onChanged = previousSpatialChanged
+		end
 		-- Stop character forces before disconnecting their update callbacks.
 		for _, index in {2,6} do
 			local action=altairValues.actions[index]
@@ -12239,15 +13412,6 @@ local function runtime()
 		end
 		table.clear(connections)
 
-		pcall(function()
-			for part in pairs(characterParts) do
-				if part.Parent then
-					local default = noclipDefaults[part]
-					part.CanCollide = if default == nil then true else default
-				end
-			end
-		end)
-
 		clearCharacterPartTracking()
 		undoAnonymousChanges()
 		table.clear(originalTextValues)
@@ -12264,7 +13428,7 @@ local function runtime()
 			pcall(function() gameSettings.MasterVolume = oldVolume end)
 		end
 		pcall(function()
-			camera.FieldOfView = baseFieldOfView
+			cameraState:RestoreAll()
 		end)
 
 		for _, coreUI in ipairs(altairValues.cachedCoreUI or {}) do
@@ -12301,10 +13465,14 @@ local function runtime()
 		for part in pairs(characterParts) do
 			if part.Parent then
 				if noclipActive then
-					part.CanCollide = false
+					if part.CanCollide ~= false then
+						if not noclipDefaults[part] then
+							noclipDefaults[part] = { baseline = part.CanCollide, applied = false }
+						end
+						part.CanCollide = false
+					end
 				else
-					local default = noclipDefaults[part]
-					part.CanCollide = if default == nil then true else default
+					restoreNoclipPart(part)
 				end
 			end
 		end
@@ -12350,8 +13518,9 @@ local function runtime()
 
 		bodyAngularVelocity.Parent = flingActive and primaryPart or nil
 
-		if flightActive then
-			local camCFrame = camera.CFrame
+		local activeCamera = flightActive and syncCamera() or nil
+		if flightActive and activeCamera then
+			local camCFrame = activeCamera.CFrame
 			local velocity = Vector3.zero
 			local rotation = camCFrame.Rotation
 
@@ -12407,30 +13576,27 @@ local function runtime()
 			return
 		end
 		spatialAccumulator += dt
-		if Pro and spatialAccumulator >= SPATIAL_INTERVAL then
+		if not spatialShieldWanted() then
+			if next(spatialSoundVolumes) or next(suppressedSounds) or #soundInstances > 0 then clearSpatialShield() end
+			spatialAccumulator = 0
+		elseif spatialAccumulator >= SPATIAL_INTERVAL then
 			spatialAccumulator %= SPATIAL_INTERVAL
 			if settingValue("Spatial Shield") and tonumber(settingValue("Spatial Shield Threshold")) then
 				local threshold = tonumber(settingValue("Spatial Shield Threshold"))
 				for i = #soundInstances, 1, -1 do
 					local sound = soundInstances[i]
-					if not sound then
+					if not sound or not sound:IsDescendantOf(game) then
+						if sound then restoreSpatialSound(sound); trackedSounds[sound] = nil end
 						table.remove(soundInstances, i)
 					elseif (gameSettings and gameSettings.MasterVolume or oldVolume) * sound.PlaybackLoudness * sound.Volume >= threshold then
-						if sound.Volume > 0.55 then
-							suppressedSounds[sound.SoundId] = "S"
-							sound.Volume = 0.5
-						elseif sound.Volume > 0.2 and sound.Volume < 0.55 then
-							suppressedSounds[sound.SoundId] = "S2"
-							sound.Volume = 0.1
-						elseif sound.Volume < 0.2 then
-							suppressedSounds[sound.SoundId] = "Mute"
-							sound.Volume = 0
-						end
-						if soundSuppressionNotificationCooldown == 0 then
+						local limit = sound.Volume >= 0.55 and 0.5 or sound.Volume >= 0.2 and 0.1 or 0
+						suppressedSounds[sound.SoundId] = limit
+						local changed = suppressSound(sound, limit)
+						if changed and soundSuppressionNotificationCooldown == 0 then
 							notification("Spatial Shield", "A high-volume audio is being played (" .. sound.Name .. ") and it has been suppressed.", 4483362458)
 							soundSuppressionNotificationCooldown = 15
 						end
-						table.remove(soundInstances, i)
+						-- Keep monitoring: playback and game-controlled volume can change.
 					end
 				end
 			end
@@ -12469,7 +13635,7 @@ local function runtime()
 	end))
 
 	local function descendantTrackingWanted()
-		return spatialShieldWanted() or anonymousWanted() or next(suppressedSounds) ~= nil
+		return spatialShieldWanted() or anonymousWanted()
 	end
 
 	local function updateDescendantWatcher()
@@ -12487,7 +13653,7 @@ local function runtime()
 
 		if wanted and not descendantRemovingConn then
 			descendantRemovingConn = game.DescendantRemoving:Connect(function(instance)
-				trackedSounds[instance] = nil
+				unregisterSound(instance)
 				trackedText[instance] = nil
 				altairValues.anonymousMaskedText[instance] = nil
 				originalTextValues[instance] = nil
@@ -12496,6 +13662,18 @@ local function runtime()
 			descendantRemovingConn:Disconnect()
 			descendantRemovingConn = nil
 		end
+	end
+
+	if spatialSetting then
+		spatialChangedHandler = function(...)
+			if checkAltair() then
+				if not spatialShieldWanted() then clearSpatialShield() end
+				updateDescendantWatcher()
+				if spatialShieldWanted() then refreshDescendantTracking() end
+			end
+			if type(previousSpatialChanged) == "function" then previousSpatialChanged(...) end
+		end
+		spatialSetting.onChanged = spatialChangedHandler
 	end
 
 	track(UI.DescendantAdded:Connect(function(instance)
@@ -12536,15 +13714,7 @@ local function runtime()
 				local antiIdle = settingValue("Anti Idle")
 				if antiIdle ~= lastAntiIdle then
 					lastAntiIdle = antiIdle
-					pcall(function()
-						for _, connection in getConnectionsFor(localPlayer.Idled) do
-							if antiIdle then
-								connection:Disable()
-							else
-								connection:Enable()
-							end
-						end
-					end)
+					altairValues.antiIdle:Set(antiIdle)
 				end
 			end
 
@@ -12569,48 +13739,32 @@ local function runtime()
 				disconnectedPrompt.Parent=promptGui
 				if altairValues.disconnectAction then altairValues.disconnectAction:Disconnect()end
 
-				wipeTransparency(disconnectedPrompt, 1, true)
-				disconnectedPrompt.Visible = true
 
 				if disconnectType == "ban" then
 					disconnectedPrompt.Content.Text = "You've been banned, would you like to leave this server?"
 					disconnectedPrompt.Action.Text = "Leave"
-					disconnectedPrompt.Action.Size = UDim2.new(0, 77, 0, 36) -- use textbounds
 
-					disconnectedPrompt.UIGradient.Color = ColorSequence.new({
-						ColorSequenceKeypoint.new(0, Color3.new(0, 0, 0)),
-						ColorSequenceKeypoint.new(1, Color3.new(0.819608, 0.164706, 0.164706)),
-					})
+
+					altairValues.dialogMotion:Accent(disconnectedPrompt,Color3.new(0.819608, 0.164706, 0.164706))
 				elseif disconnectType == "kick" then
 					disconnectedPrompt.Content.Text = "You've been kicked, would you like to serverhop?"
 					disconnectedPrompt.Action.Text = "Serverhop"
-					disconnectedPrompt.Action.Size = UDim2.new(0, 114, 0, 36)
 
-					disconnectedPrompt.UIGradient.Color = ColorSequence.new({
-						ColorSequenceKeypoint.new(0, Color3.new(0, 0, 0)),
-						ColorSequenceKeypoint.new(1, Color3.new(0.0862745, 0.596078, 0.835294)),
-					})
+
+					altairValues.dialogMotion:Accent(disconnectedPrompt,Color3.new(0.0862745, 0.596078, 0.835294))
 				elseif disconnectType == "network" then
 					disconnectedPrompt.Content.Text = "You've lost connection, would you like to rejoin?"
 					disconnectedPrompt.Action.Text = "Rejoin"
-					disconnectedPrompt.Action.Size = UDim2.new(0, 82, 0, 36)
 
-					disconnectedPrompt.UIGradient.Color = ColorSequence.new({
-						ColorSequenceKeypoint.new(0, Color3.new(0, 0, 0)),
-						ColorSequenceKeypoint.new(1, Color3.new(0.862745, 0.501961, 0.0862745)),
-					})
+
+					altairValues.dialogMotion:Accent(disconnectedPrompt,Color3.new(0.862745, 0.501961, 0.0862745))
 				end
 
 				if disconnectType=="unknown"then
 					disconnectedPrompt.Content.Text="Roblox reported a connection error. You can retry or dismiss this message."
 					disconnectedPrompt.Action.Text="Rejoin"
 				end
-				tweenService:Create(disconnectedPrompt, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0 }):Play()
-				tweenService:Create(disconnectedPrompt.Title, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-				tweenService:Create(disconnectedPrompt.Content, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0.3 }):Play()
-				tweenService:Create(disconnectedPrompt.Action, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { BackgroundTransparency = 0.7 }):Play()
-				tweenService:Create(disconnectedPrompt.Action, TweenInfo.new(0.5, Enum.EasingStyle.Quint), { TextTransparency = 0 }):Play()
-				tweenService:Create(disconnectedPrompt.Dismiss,TweenInfo.new(.2),{TextTransparency=0}):Play()
+    altairValues.dialogMotion:Open(disconnectedPrompt)
 
 				altairValues.disconnectAction=track(disconnectedPrompt.Action.MouseButton1Click:Connect(function()
 					if disconnectType == "ban" then
@@ -12679,6 +13833,17 @@ task.spawn(runtime);
 if not altairValues.continuation.quiet then
 	BlinkSmartBar(2)
 	task.wait(2)
+	requireStartup()
 	Toast("Welcome back. Nice to see you, "..lowerDisplayName)
 end
---[[]]
+requireStartup()
+startupClaim.ready=true
+end
+
+local startupSuccess,startupError=pcall(initialise)
+startupClaim.predecessorCleanup=false
+if not startupSuccess then
+	local report=ownsStartup()
+	startupClaim:Cancel()
+	if report then warn("Altair | Startup error: "..tostring(startupError))end
+elseif not startupClaim.ready then startupClaim:Cancel()end

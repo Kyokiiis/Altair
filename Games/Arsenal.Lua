@@ -49,8 +49,84 @@ local plr    = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
 local ENV = getgenv()
+do
+	local previous = ENV.__ARSENAL_RUNTIME
+	if type(previous) == "table" and type(previous.Unload) == "function" then pcall(previous.Unload, previous) end
+	local pending = ENV.__ARSENAL_INPUT_TRANSACTION
+	if type(pending) == "table" and pending.owner ~= previous and type(pending.owner) == "table" and type(pending.owner.Unload) == "function" then
+		pcall(pending.owner.Unload, pending.owner)
+	end
+	if ENV.__ARSENAL_INPUT_TRANSACTION or (type(previous) == "table" and previous.heldInput) then
+		warn("Arsenal | Reload paused: an input press/release is still pending. Retry unloading after the pending call returns.")
+		return
+	end
+end
 local GEN = (ENV.__ARSENAL or 0) + 1
 ENV.__ARSENAL = GEN
+local runtime = { alive = true, connections = {}, cleanups = {},
+	bindings = { aim = "SeluxArsenalAim-" .. GEN, esp = "SeluxArsenalESP-" .. GEN } }
+ENV.__ARSENAL_RUNTIME = runtime
+function runtime:current()
+	return self.alive and ENV.__ARSENAL_RUNTIME == self and ENV.__ARSENAL == GEN
+end
+function runtime:track(connection)
+	if not connection then return connection end
+	if self.alive then table.insert(self.connections, connection)
+	else pcall(function() connection:Disconnect() end) end
+	return connection
+end
+function runtime:releaseHeld(expected)
+	local held = self.heldInput
+	if not held or held.owner ~= self or (expected and expected ~= held) then return false end
+	held.cancelled = true
+	-- Never send UP against a different owner's transaction, or race an in-flight
+	-- DOWN/UP. The original call completes this transaction when it returns.
+	if ENV.__ARSENAL_INPUT_TRANSACTION ~= held then return false end
+	if held.phase == "pressing" or held.phase == "releasing" then return false end
+	held.phase = "releasing"
+	local ok, released = pcall(held.release)
+	if ok and released == true then
+		held.phase = "released"
+		if self.heldInput == held then self.heldInput = nil end
+		if ENV.__ARSENAL_INPUT_TRANSACTION == held then ENV.__ARSENAL_INPUT_TRANSACTION = nil end
+		if not self.alive and ENV.__ARSENAL_RUNTIME == self and not self.heldInput then ENV.__ARSENAL_RUNTIME = nil end
+		self.releaseWarning = nil
+		return true
+	end
+	-- Keep both ownership references after failed UP. New actions/reloads stay
+	-- blocked; an explicit Unload/reload may retry once, with no background loop.
+	held.phase = "releasePending"
+	if not self.releaseWarning then
+		self.releaseWarning = true
+		warn("Arsenal | Input release failed; new input is blocked. Unload or reload can retry once.")
+	end
+	return false
+end
+function runtime:Unload()
+	if not self.alive then
+		self:releaseHeld()
+		if not self.heldInput and ENV.__ARSENAL_RUNTIME == self then ENV.__ARSENAL_RUNTIME = nil end
+		return not self.heldInput
+	end
+	local ownsGeneration = self:current()
+	self.alive = false
+	if ownsGeneration then
+		ENV.__ARSENAL = GEN + 1
+		ENV.__ARSENAL_RUNTIME = self.heldInput and self or nil
+	end
+	-- Names belong to this execution, so stale cleanup cannot unbind a newer run.
+	for _, name in pairs(self.bindings) do pcall(RunService.UnbindFromRenderStep, RunService, name) end
+	self:releaseHeld()
+	if self.heldInput and not self.releaseWarning then
+		self.releaseWarning = true
+		warn("Arsenal | Input release is pending; reload remains blocked until it succeeds.")
+	end
+	for _, connection in ipairs(self.connections) do pcall(function() connection:Disconnect() end) end
+	table.clear(self.connections)
+	for _, cleanup in ipairs(self.cleanups) do pcall(cleanup) end
+	table.clear(self.cleanups)
+	return not self.heldInput
+end
 
 --------------------------------------------------------------------------------
 -- Altair integration
@@ -595,6 +671,12 @@ if _G.__ARSENAL_POOL then
 	for _, obj in ipairs(_G.__ARSENAL_POOL) do pcall(function() obj:Remove() end) end
 end
 _G.__ARSENAL_POOL = pool
+table.insert(runtime.cleanups, function()
+	for _, object in ipairs(pool) do pcall(function() object:Remove() end) end
+	table.clear(pool)
+	table.clear(drawn)
+	if _G.__ARSENAL_POOL == pool then _G.__ARSENAL_POOL = nil end
+end)
 
 local function make(kind, props)
 	local obj = Drawing.new(kind)
@@ -664,6 +746,22 @@ local function hideAll()
 	for _, set in pairs(drawn) do hideSet(set) end
 end
 
+local function removePlayerDrawings(player)
+	local set = drawn[player]
+	if not set then return end
+	drawn[player] = nil
+	local removed = {}
+	for key, object in pairs(set) do
+		if key == "bones" then
+			for _, line in ipairs(object) do removed[line] = true end
+		else removed[object] = true end
+	end
+	for object in pairs(removed) do pcall(function() object:Remove() end) end
+	for index = #pool, 1, -1 do
+		if removed[pool[index]] then table.remove(pool, index) end
+	end
+end
+
 --------------------------------------------------------------------------------
 -- chams
 --------------------------------------------------------------------------------
@@ -674,6 +772,7 @@ end
 local hlRoot
 pcall(function() hlRoot = gethui and gethui() end)
 hlRoot = hlRoot or CoreGui or plr:WaitForChild("PlayerGui", 10)
+if not runtime:current() then return end
 local chamsFolder = hlRoot:FindFirstChild("SeluxArsenalChams")
 if chamsFolder then pcall(function() chamsFolder:Destroy() end) end
 chamsFolder = Instance.new("Folder")
@@ -681,6 +780,10 @@ chamsFolder.Name = "SeluxArsenalChams"
 chamsFolder.Parent = hlRoot
 
 local highlights = {}
+table.insert(runtime.cleanups, function()
+	pcall(function() chamsFolder:Destroy() end)
+	table.clear(highlights)
+end)
 
 local CHAM_STYLES = {
 	["Fill"]         = { fill = 0.35, out = 0,    depth = "AlwaysOnTop" },
@@ -1061,16 +1164,18 @@ end
 
 local capturing = nil
 local armedGuard = false
+table.insert(runtime.cleanups, function() capturing = nil; armedGuard = false end)
 
 local function arm(fn)
 	capturing = fn
 	armedGuard = true
 	task.spawn(function()
-		while UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) do
+		while runtime:current() and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) do
 			task.wait()
 		end
+		if not runtime:current() then return end
 		task.wait(0.06)
-		armedGuard = false
+		if runtime:current() then armedGuard = false end
 	end)
 end
 
@@ -1083,7 +1188,7 @@ local function capture(name)
 	fn(name)
 end
 
-UserInputService.InputBegan:Connect(function(input, typing)
+runtime:track(UserInputService.InputBegan:Connect(function(input, typing)
 	if ENV.__ARSENAL ~= GEN then return end
 	if capturing and not armedGuard
 		and input.UserInputType == Enum.UserInputType.Keyboard then
@@ -1104,14 +1209,14 @@ UserInputService.InputBegan:Connect(function(input, typing)
 			altairNotify("Arsenal safety", "Panic enabled - aim, trigger and recoil are off.")
 		end
 	end
-end)
+end))
 
-UserInputService.InputEnded:Connect(function(input)
+runtime:track(UserInputService.InputEnded:Connect(function(input)
 	if ENV.__ARSENAL ~= GEN or not capturing or armedGuard then return end
 	local name = input.UserInputType.Name
 	if name:sub(1, 11) ~= "MouseButton" then return end
 	capture(name)
-end)
+end))
 
 --------------------------------------------------------------------------------
 -- a client with no mouse and no keyboard
@@ -1166,15 +1271,15 @@ local function screenHeld()
 	return n > 0
 end
 
-UserInputService.InputBegan:Connect(function(input)
+runtime:track(UserInputService.InputBegan:Connect(function(input)
 	if ENV.__ARSENAL ~= GEN then return end
 	if input.UserInputType == Enum.UserInputType.Touch then touches[input] = true end
-end)
+end))
 
-UserInputService.InputEnded:Connect(function(input)
+runtime:track(UserInputService.InputEnded:Connect(function(input)
 	if ENV.__ARSENAL ~= GEN then return end
 	if input.UserInputType == Enum.UserInputType.Touch then touches[input] = nil end
-end)
+end))
 
 -- Set by pullTrigger. It is the only thing a touch client can know for certain
 -- about shooting, and the shot counter and the recoil pass need exactly that.
@@ -1610,7 +1715,7 @@ end
 -- on recoil at all and no camera-side compensation can work.
 
 local mouseDX, mouseDY = 0, 0
-UserInputService.InputChanged:Connect(function(input)
+runtime:track(UserInputService.InputChanged:Connect(function(input)
 	if ENV.__ARSENAL ~= GEN then return end
 	local kind = input.UserInputType
 	-- A touch client never sends MouseMovement; the camera drag arrives as Touch.
@@ -1621,7 +1726,7 @@ UserInputService.InputChanged:Connect(function(input)
 		mouseDX = mouseDX + input.Delta.X
 		mouseDY = mouseDY + input.Delta.Y
 	end
-end)
+end))
 
 local lastYaw, lastPitch = nil, nil
 local sensYaw, sensPitch = 0, 0
@@ -1746,14 +1851,15 @@ end)
 
 local function tryInput(fn, ...)
 	if type(fn) ~= "function" then return false end
-	return pcall(fn, ...)
+	local ok, result = pcall(fn, ...)
+	return ok and result ~= false
 end
 
 local function vimButton(down)
 	if not VIM then return false end
 	local vp = camera.ViewportSize
-	return pcall(function()
-		VIM:SendMouseButtonEvent(
+	return tryInput(function()
+		return VIM:SendMouseButtonEvent(
 			math.floor(vp.X / 2),
 			math.floor(vp.Y / 2),
 			0,
@@ -1777,46 +1883,66 @@ function STATE.waitForTriggerHold(seconds)
 	until os.clock() >= deadline
 end
 
+local function heldInput(down, up, seconds)
+	if runtime.heldInput or ENV.__ARSENAL_INPUT_TRANSACTION or not STATE.triggerCanRun() then return false end
+	-- Reserve ownership before DOWN: executor calls may yield or re-enter unload.
+	local held = { owner = runtime, release = up, phase = "pressing", cancelled = false }
+	runtime.heldInput = held
+	ENV.__ARSENAL_INPUT_TRANSACTION = held
+	local ok, pressed = pcall(down)
+	if runtime.heldInput ~= held or ENV.__ARSENAL_INPUT_TRANSACTION ~= held then return false end
+	held.downSucceeded = ok and pressed == true
+	held.phase = "held"
+	if not held.downSucceeded or held.cancelled or not runtime:current() then
+		-- A failed DOWN may have partially submitted input. Finish its own UP
+		-- before allowing a fallback; stale completion cannot release a new owner.
+		runtime:releaseHeld(held)
+		return false
+	end
+	local waited = pcall(STATE.waitForTriggerHold, seconds)
+	if runtime.heldInput ~= held or ENV.__ARSENAL_INPUT_TRANSACTION ~= held then return false end
+	local released = runtime:releaseHeld(held)
+	return waited and released and runtime:current()
+end
+
 local function pullTrigger()
 	if not STATE.triggerCanRun() then return false end
+	if runtime.heldInput or ENV.__ARSENAL_INPUT_TRANSACTION then
+		STATE.clickHow = "release pending"
+		return false
+	end
 	local hold = CONFIG.trigMode == "Hold"
 	local fired = false
 
 	-- Hold mode prefers a real press/release pair.
 	if hold and type(press) == "function" and type(release) == "function" then
-		if tryInput(press) then
-			STATE.waitForTriggerHold(CONFIG.trigHoldMs / 1000)
-			fired = tryInput(release)
-			if fired then STATE.clickHow = "mouse1press" end
-		end
+		fired = heldInput(function() return tryInput(press) end,
+			function() return tryInput(release) end, CONFIG.trigHoldMs / 1000)
+		if fired then STATE.clickHow = "mouse1press" end
 	end
 
 	-- Click mode uses Volt's mouse1click first.
-	if not fired and STATE.triggerCanRun() and not hold and type(click) == "function" then
+	if not fired and not runtime.heldInput and not ENV.__ARSENAL_INPUT_TRANSACTION and STATE.triggerCanRun() and not hold and type(click) == "function" then
 		fired = tryInput(click)
 		if fired then STATE.clickHow = "mouse1click" end
 	end
 
 	-- If mouse1click exists but fails at runtime, fall back instead of killing
 	-- this trigger pass.
-	if not fired and STATE.triggerCanRun() and type(press) == "function" and type(release) == "function" then
-		if tryInput(press) then
-			STATE.waitForTriggerHold(hold and (CONFIG.trigHoldMs / 1000) or 0.02)
-			fired = tryInput(release)
-			if fired then STATE.clickHow = "mouse1press" end
-		end
+	if not fired and not runtime.heldInput and not ENV.__ARSENAL_INPUT_TRANSACTION and STATE.triggerCanRun() and type(press) == "function" and type(release) == "function" then
+		fired = heldInput(function() return tryInput(press) end,
+			function() return tryInput(release) end, hold and (CONFIG.trigHoldMs / 1000) or 0.02)
+		if fired then STATE.clickHow = "mouse1press" end
 	end
 
-	if not fired and STATE.triggerCanRun() and VIM then
-		if vimButton(true) then
-			STATE.waitForTriggerHold(hold and (CONFIG.trigHoldMs / 1000) or 0.02)
-			fired = vimButton(false)
-			if fired then STATE.clickHow = "VirtualInputManager" end
-		end
+	if not fired and not runtime.heldInput and not ENV.__ARSENAL_INPUT_TRANSACTION and STATE.triggerCanRun() and VIM then
+		fired = heldInput(function() return vimButton(true) end,
+			function() return vimButton(false) end, hold and (CONFIG.trigHoldMs / 1000) or 0.02)
+		if fired then STATE.clickHow = "VirtualInputManager" end
 	end
 
 	if not fired then
-		STATE.clickHow = "none"
+		STATE.clickHow = (runtime.heldInput or ENV.__ARSENAL_INPUT_TRANSACTION) and "release pending" or "none"
 		return false
 	end
 
@@ -1995,22 +2121,40 @@ local HB_LIST = { "Hitbox", "HeadHB", "Head", "Hitbox + HeadHB" }
 
 -- The original size and transparency of everything ever touched, keyed by the
 -- part itself so a respawned character simply never matches an old entry.
-local hbSaved = _G.__ARSENAL_HBSAVED or {}
+-- Drain a legacy execution's records before this execution takes fresh ownership.
+do
+	local previous = _G.__ARSENAL_HBSAVED
+	if type(previous) == "table" then
+		for part, old in pairs(previous) do
+			pcall(function()
+				if part and part.Parent then
+					part.Size, part.Transparency, part.CanCollide = old.size, old.trans, old.collide
+				end
+			end)
+		end
+		table.clear(previous)
+	end
+end
+local hbSaved = {}
 _G.__ARSENAL_HBSAVED = hbSaved
 
 local function hbRestoreAll()
 	for part, old in pairs(hbSaved) do
 		pcall(function()
 			if part and part.Parent then
-				part.Size = old.size
-				part.Transparency = old.trans
-				part.CanCollide = old.collide
+				if not old.applied or part.Size == old.applied.size then part.Size = old.size end
+				if not old.applied or part.Transparency == old.applied.trans then part.Transparency = old.trans end
+				if not old.applied or part.CanCollide == old.applied.collide then part.CanCollide = old.collide end
 			end
 		end)
 		hbSaved[part] = nil
 	end
 	STATE.hbCount = 0
 end
+table.insert(runtime.cleanups, function()
+	hbRestoreAll()
+	if _G.__ARSENAL_HBSAVED == hbSaved then _G.__ARSENAL_HBSAVED = nil end
+end)
 
 local function hbApply()
 	local names = HB_PARTS[CONFIG.hbPart] or HB_PARTS["Hitbox"]
@@ -2034,6 +2178,7 @@ local function hbApply()
 					part.CanCollide = false
 					part.Size = Vector3.new(size, size, size)
 					part.Transparency = CONFIG.hbTrans / 100
+					hbSaved[part].applied = { size = part.Size, trans = part.Transparency, collide = part.CanCollide }
 					count = count + 1
 				end
 			end
@@ -2060,12 +2205,12 @@ task.spawn(function()
 	pcall(hbRestoreAll)
 end)
 
-Players.PlayerRemoving:Connect(function(p)
-	local set = drawn[p]
-	if set then hideSet(set) end
+runtime:track(Players.PlayerRemoving:Connect(function(p)
+	if not runtime:current() then return end
+	removePlayerDrawings(p)
 	local hl = highlights[p]
 	if hl then pcall(function() hl:Destroy() end) highlights[p] = nil end
-end)
+end))
 
 --------------------------------------------------------------------------------
 -- the frame bindings
@@ -2075,10 +2220,10 @@ for _, name in ipairs({ "SeluxArsenalAim", "SeluxArsenalESP" }) do
 	pcall(function() RunService:UnbindFromRenderStep(name) end)
 end
 
-RunService:BindToRenderStep("SeluxArsenalAim", Enum.RenderPriority.Camera.Value + 1,
+RunService:BindToRenderStep(runtime.bindings.aim, Enum.RenderPriority.Camera.Value + 1,
 	function(dt)
 		if ENV.__ARSENAL ~= GEN then
-			pcall(function() RunService:UnbindFromRenderStep("SeluxArsenalAim") end)
+			pcall(function() RunService:UnbindFromRenderStep(runtime.bindings.aim) end)
 			return
 		end
 		local ok, err = pcall(function()
@@ -2090,11 +2235,10 @@ RunService:BindToRenderStep("SeluxArsenalAim", Enum.RenderPriority.Camera.Value 
 		if not ok then note("aim: " .. tostring(err)) end
 	end)
 
-RunService:BindToRenderStep("SeluxArsenalESP", Enum.RenderPriority.Camera.Value + 2,
+RunService:BindToRenderStep(runtime.bindings.esp, Enum.RenderPriority.Camera.Value + 2,
 	function()
 		if ENV.__ARSENAL ~= GEN then
-			pcall(function() RunService:UnbindFromRenderStep("SeluxArsenalESP") end)
-			hideAll()
+			pcall(function() RunService:UnbindFromRenderStep(runtime.bindings.esp) end)
 			return
 		end
 		local ok, err = pcall(renderPass)
@@ -2130,7 +2274,20 @@ if ENV.__ARSENAL_WIN then
 	ENV.__ARSENAL_WIN = nil
 end
 
-local Arsenal = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
+local Arsenal
+do
+	-- Rayfield's supported SIA opt-out; preserve an existing shared value.
+	-- Keep the default across yielding loaders; do not disable asset requests.
+	if ENV.RAYFIELD_ANALYTICS == nil then ENV.RAYFIELD_ANALYTICS = false end
+	local ok, library = pcall(function()
+		local source = game:HttpGet("https://sirius.menu/gen2")
+		if not runtime:current() then return nil end
+		return assert(loadstring(source))()
+	end)
+	if not ok then runtime:Unload(); error(library) end
+	if not runtime:current() then return end
+	Arsenal = library
+end
 
 -- Arsenal Gen2 compatibility layer. The rest of the script keeps using the
 -- same page/card calls so no gameplay code has to change for the UI swap.
@@ -2280,6 +2437,10 @@ function UI.Window(options)
 			customFolder = "Arsenal",
 		},
 	})
+	if not runtime:current() then
+		pcall(function() ray:Unload() end)
+		return nil
+	end
 
 	STATE.menuWindow = ray
 	STATE.menuIsOpen()
@@ -2294,6 +2455,16 @@ function UI.Window(options)
 		statusText = nil,
 		toggleConnection = nil,
 	}
+	table.insert(runtime.cleanups, function()
+		wrapper.toggleConnection = nil
+		pcall(function() if not ray.unloaded then ray:Unload() end end)
+		if STATE.menuWindow == ray then STATE.menuWindow = nil end
+		if ENV.__ARSENAL_WIN == wrapper then ENV.__ARSENAL_WIN = nil end
+		if ENV.__ARSENAL_RAY_WINDOW == ray then ENV.__ARSENAL_RAY_WINDOW = nil end
+	end)
+	if ray.screenGui then
+		runtime:track(ray.screenGui.Destroying:Connect(function() runtime:Unload() end))
+	end
 
 	local function updateStatus()
 		local page = wrapper.pages.MATCH
@@ -2501,32 +2672,16 @@ function UI.Window(options)
 	end
 
 	function wrapper:Destroy()
-		if self.toggleConnection then
-			self.toggleConnection:Disconnect()
-			self.toggleConnection = nil
-		end
-
-		pcall(function()
-			if not ray.unloaded then
-				ray:Unload()
-			end
-		end)
-
-		if ENV.__ARSENAL_WIN == self then
-			ENV.__ARSENAL_WIN = nil
-		end
-		if ENV.__ARSENAL_RAY_WINDOW == ray then
-			ENV.__ARSENAL_RAY_WINDOW = nil
-		end
+		runtime:Unload()
 	end
 
-	wrapper.toggleConnection = UserInputService.InputBegan:Connect(function(input, typing)
+	wrapper.toggleConnection = runtime:track(UserInputService.InputBegan:Connect(function(input, typing)
 		if typing or ENV.__ARSENAL ~= GEN then return end
 		if input.KeyCode == Enum.KeyCode.RightShift then
 			ray:ToggleHide()
 			wrapper.root.Visible = STATE.menuIsOpen()
 		end
-	end)
+	end))
 
 	return wrapper
 end
@@ -2542,6 +2697,7 @@ local win = UI.Window({
 	width = 940,
 	height = 590,
 })
+if not runtime:current() or not win then return end
 ENV.__ARSENAL_WIN = win
 ENV.__ARSENAL_RAY_WINDOW = win.ray
 
@@ -3249,7 +3405,9 @@ end)
 --------------------------------------------------------------------------------
 
 do
-	local winnerGui = plr.PlayerGui.GUI.Winner
+	local playerGui = plr:FindFirstChild("PlayerGui")
+	local gameGui = playerGui and playerGui:FindFirstChild("GUI")
+	local winnerGui = gameGui and gameGui:FindFirstChild("Winner")
 	local lastName, lastToast = nil, 0
 
 	local function getWinnerText(obj)
@@ -3268,6 +3426,7 @@ do
 
 	local function checkWinner(frame)
 		task.wait(0.2)
+		if not runtime:current() or not frame.Parent or not frame:IsDescendantOf(winnerGui) then return end
 
 		-- Persistent winner frame first.
 		local name, nameObject = getWinnerText(frame:FindFirstChild("PlayerName", true))
@@ -3283,6 +3442,7 @@ do
 		local won = normalized == plr.Name:lower() or normalized == plr.DisplayName:lower()
 		local matched, isLocal = altairCall("IsLocalPlayerName", name, nameObject)
 		if matched and type(isLocal) == "boolean" then won = isLocal end
+		if not runtime:current() then return end
 
 		-- Alias changes during one result must not award a second session win.
 		local winnerKey = won and ("user:" .. tostring(plr.UserId)) or normalized
@@ -3299,9 +3459,11 @@ do
 		end
 	end
 
-	winnerGui.ChildAdded:Connect(function(child)
-		task.spawn(checkWinner, child)
-	end)
+	if winnerGui then
+		runtime:track(winnerGui.ChildAdded:Connect(function(child)
+			if runtime:current() then task.spawn(checkWinner, child) end
+		end))
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -3312,6 +3474,7 @@ task.spawn(function()
 	local previousVisible
 
 	while ENV.__ARSENAL == GEN do
+		if win.ray.unloaded then runtime:Unload(); break end
 		local visible = STATE.menuIsOpen()
 		win.root.Visible = visible
 
@@ -3335,9 +3498,10 @@ end)
 -- The camera reference is replaced on every respawn, so a cached one silently
 -- stops updating after the first death - which looks exactly like "the ESP broke
 -- when I died".
-workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+runtime:track(workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	if not runtime:current() then return end
 	if workspace.CurrentCamera then camera = workspace.CurrentCamera end
-end)
+end))
 
 pcall(function() win:Home() end)
 win:Refresh()
@@ -3363,6 +3527,10 @@ ENV.__ARSENAL_DBG = {
 	TOUCH = TOUCH, screenHeld = screenHeld, reachable = reachable,
 	hotkeyHeld = hotkeyHeld, aimActive = aimActive, trigActive = trigActive,
 }
+runtime.debugExport = ENV.__ARSENAL_DBG
+table.insert(runtime.cleanups, function()
+	if ENV.__ARSENAL_DBG == runtime.debugExport then ENV.__ARSENAL_DBG = nil end
+end)
 
 --[[
 Cloudz Softworks / Arsenal -> Altair native debug integration
@@ -3379,10 +3547,10 @@ Architecture:
     recorder samples providers, and transitions are emitted from that sample.
 ]]
 
-(function()
+;(function()
 	local previousDebugConnection = rawget(ENV, "__ARSENAL_ALTAIR_DEBUG_CONNECTION")
-	if type(previousDebugConnection) == "table" and type(previousDebugConnection.Disconnect) == "function" then
-		pcall(previousDebugConnection.Disconnect, previousDebugConnection)
+	if previousDebugConnection then
+		pcall(function() previousDebugConnection:Disconnect() end)
 	end
 	ENV.__ARSENAL_ALTAIR_DEBUG_CONNECTION = nil
 
@@ -3677,7 +3845,7 @@ Architecture:
 	end
 
 	local function setDebugStatus(attached, reason)
-		local export = ENV.__ARSENAL_DBG
+		local export = runtime.debugExport
 		if type(export) == "table" then
 			export.__ALT_DEBUG_STATUS = {
 				attached = attached == true,
@@ -3698,6 +3866,7 @@ Architecture:
 		lastAuditAt = -math.huge
 		setDebugStatus(false, reason or "debug-disabled")
 	end
+	table.insert(runtime.cleanups, function() detachDebugClient("arsenal-unloaded") end)
 
 	local function attachDebugClient()
 		if ENV.__ARSENAL ~= GEN then return false, "arsenal-reloaded" end
@@ -3731,6 +3900,10 @@ Architecture:
 			generation = GEN,
 			placeId = game.PlaceId,
 		})
+		if not runtime:current() then
+			if client then pcall(client.Detach, client, "arsenal-unloaded") end
+			return false, "arsenal-unloaded"
+		end
 		activeDebugClient = client
 		debugAttachError = attachError
 		if not activeDebugClient then
@@ -3766,14 +3939,17 @@ Architecture:
 
 	local altair = ENV.Altair
 	if type(altair) == "table" and type(altair.OnDebugChanged) == "function" then
-		local connection = altair.OnDebugChanged(function(enabled)
+		local connection = runtime:track(altair.OnDebugChanged(function(enabled)
 			if ENV.__ARSENAL ~= GEN then
 				detachDebugClient("arsenal-reloaded")
 				return
 			end
 			if enabled then attachDebugClient() else detachDebugClient("debug-disabled") end
-		end)
+		end))
 		ENV.__ARSENAL_ALTAIR_DEBUG_CONNECTION = connection
+		table.insert(runtime.cleanups, function()
+			if ENV.__ARSENAL_ALTAIR_DEBUG_CONNECTION == connection then ENV.__ARSENAL_ALTAIR_DEBUG_CONNECTION = nil end
+		end)
 	end
 
 	-- Do not depend on the asynchronous debug-state notification for the initial

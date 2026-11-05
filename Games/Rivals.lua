@@ -2,7 +2,7 @@
 -- The readable source below is passed to itself to resume across match teleports.
 local source = [======[
 -- Altair Rivals | Rayfield Gen2
--- Original implementation. Research and validation: Rivals_RESEARCH.md.
+-- Standalone runtime; research and validation references are maintained privately.
 -- RIVALS: universe 6035872082, root place 17625359962.
 -- Runtime assumptions are exposed in Diagnostics; no third-party gameplay loader.
 
@@ -14,7 +14,6 @@ if game.GameId ~= 6035872082 and game.PlaceId ~= 17625359962 then
 end
 
 local moduleSource, queuedResume = ...
-if not game:IsLoaded() then game.Loaded:Wait() end
 local env = type(getgenv) == "function" and getgenv() or _G
 local Teleport = game:GetService("TeleportService")
 local resumeKey = "Altair.Rivals.v1"
@@ -133,6 +132,9 @@ local function reportError(message)
 end
 
 -- Only the requested, official UI library is downloaded and executed.
+-- Rayfield's supported SIA opt-out; preserve an existing shared value.
+-- Keep the default across yielding loaders; do not disable asset requests.
+if env.RAYFIELD_ANALYTICS == nil then env.RAYFIELD_ANALYTICS = false end
 local loaded, library = pcall(function()
 	local source = game:HttpGet("https://sirius.menu/gen2")
 	local chunk, err = loadstring(source)
@@ -1034,6 +1036,9 @@ RunService:BindToRenderStep("AltairRivals", Enum.RenderPriority.Camera.Value + 1
 			state.crosshair.Visible = cfg.crosshair and reason == nil
 			state.crosshair.Position = UDim2.fromOffset(centre.X, centre.Y)
 			state.crosshair.TextColor3 = cfg.targetColor
+		else
+			state.circle.Visible = false
+			state.crosshair.Visible = false
 		end
 		if espElapsed >= 1 / cfg.espRate then espElapsed = 0; espStep() end
 		if statusElapsed >= .5 then

@@ -142,8 +142,15 @@ _G.SendWebhook = false -- Set to true to enable notifications
 _G.Webhook = "YOUR-WEBHOOK-URL-HERE" 
 
 -- [[ INITIALIZE LIBRARY ]]
-local TDS = (function()
+local TDS, ADS_EMBEDDED_SESSION = (function()
 local Globals = getgenv()
+-- These repaired workers have one owner across future executions of this build.
+local previousAutomationSession = Globals.ADS_AutomationSession
+if type(previousAutomationSession) == "table" and type(previousAutomationSession.Stop) == "function" then
+    pcall(previousAutomationSession.Stop)
+end
+local AutomationSession = {}
+Globals.ADS_AutomationSession = AutomationSession
 
 -- Never return a stale TDSTable here. Re-executing the script must rebuild the
 -- current Rayfield UI instead of silently reusing an older library instance.
@@ -350,6 +357,19 @@ local IsCurrentlyLoading = false
 local LastLoadTime = 0
 local IsEquippingLoadout = false
 
+-- Scoped ownership for these manually enabled UI workers. An inactive slot is
+-- retained until its worker drains; OFF -> ON cannot revive it or overlap an
+-- already-issued request with a same-execution replacement.
+local ScopedAutomationWorkers = {}
+-- A body fault is not permission for the supervisor to retry. Only a real
+-- setting change clears this per-execution latch for an explicit OFF -> ON retry.
+local ScopedAutomationFaults = {}
+local ScopedAutomationKeys = {AutoSkip = true, AutoChain = true, AutoDJ = true, AutoMercenary = true}
+local function OwnsScopedAutomation(name, worker)
+    return worker.active and ScopedAutomationWorkers[name] == worker
+        and Globals.ADS_AutomationSession == AutomationSession and Globals[name]
+end
+
 local MaxPathDistance = 300 -- default
 local MilMarker = nil
 local MercMarker = nil
@@ -361,6 +381,16 @@ local SelectedTower = nil
 local StackSphere = nil
 
 local AutoMedicRunning = false
+local AutoMedicModule = nil
+local AutoMedicGeneration = 0
+function AutomationSession.Stop()
+    if Globals.ADS_AutomationSession == AutomationSession then Globals.ADS_AutomationSession = nil end
+    if type(AutomationSession.CancelRecorderLoad) == "function" then pcall(AutomationSession.CancelRecorderLoad) end
+    AutoMedicGeneration += 1
+    if AutoMedicModule and type(AutoMedicModule.State) == "table" then
+        AutoMedicModule.State.Running = false
+    end
+end
 local _AutoTrialsRunning = false
 
 local AllModifiers = {
@@ -599,6 +629,14 @@ end
 
 local function SetSetting(name, value)
     if DefaultSettings[name] ~= nil then
+        if ScopedAutomationKeys[name] then
+            if Globals.ADS_AutomationSession ~= AutomationSession then return end
+            if Globals[name] ~= value then
+                ScopedAutomationFaults[name] = nil
+                local worker = ScopedAutomationWorkers[name]
+                if worker then worker.active = false end
+            end
+        end
         if name == "TimeScaleValue" then
             value = CoerceTimeScaleValue(value, Globals.TimeScaleValue or 2)
         end
@@ -1289,32 +1327,59 @@ local function StartAutoOpenCrates()
 end
 
 -- // voting & map selection
-local function RunVoteSkip()
-    while true do
+local function RunVoteSkip(shouldContinue)
+    local deadline = os.clock() + 10
+    while os.clock() < deadline and (not shouldContinue or shouldContinue()) do
         local success = pcall(function()
             RemoteFunc:InvokeServer("Voting", "Skip")
         end)
-        if success then break end
+        if success then return true end
         task.wait(0.1)
     end
+    return false
 end
 
-AutoReadyRunning = false
+local AutoReadyRunning = false
+local AutoReadyGeneration = 0
 
 local function StartAutoReady()
-    if AutoReadyRunning or not Globals.AutoReady or GameState ~= "GAME" then return end
+    if Globals.ADS_AutomationSession ~= AutomationSession or AutoReadyRunning or not Globals.AutoReady or GameState ~= "GAME" then return end
     AutoReadyRunning = true
+    local generation = AutoReadyGeneration
+    local function current()
+        return Globals.ADS_AutomationSession == AutomationSession
+            and generation == AutoReadyGeneration and Globals.AutoReady and GameState == "GAME"
+    end
 
     task.spawn(function()
-        local voteReplicator = ReplicatedStorage:WaitForChild("StateReplicators"):WaitForChild("VoteReplicator")
-        
-        repeat task.wait(0.1) until voteReplicator:GetAttribute("Enabled") == true and voteReplicator:GetAttribute("Title") == "Ready?"
-        
-        RunVoteSkip()
-        
-        repeat task.wait(0.1) until voteReplicator:GetAttribute("Enabled") == false
-        
-        AutoReadyRunning = false
+        local ok, problem = pcall(function()
+            local voteReplicator
+            repeat
+                if not current() then return end
+                local replicators = ReplicatedStorage:FindFirstChild("StateReplicators")
+                voteReplicator = replicators and replicators:FindFirstChild("VoteReplicator")
+                if not voteReplicator then task.wait(0.1) end
+            until voteReplicator
+
+            local function ready()
+                return current() and voteReplicator.Parent ~= nil
+                    and voteReplicator:GetAttribute("Enabled") == true
+                    and voteReplicator:GetAttribute("Title") == "Ready?"
+            end
+            repeat
+                if not current() or not voteReplicator.Parent then return end
+                task.wait(0.1)
+            until ready()
+
+            RunVoteSkip(ready)
+
+            while current() and voteReplicator.Parent and voteReplicator:GetAttribute("Enabled") == true do
+                task.wait(0.1)
+            end
+        end)
+        -- An older OFF -> ON worker must not clear the newer worker's lock.
+        if generation == AutoReadyGeneration then AutoReadyRunning = false end
+        if not ok then AltairWarn("Auto Ready stopped: " .. tostring(problem)) end
     end)
 end
 
@@ -1926,6 +1991,9 @@ end
 -- // ui - Rayfield Gen2 compatibility layer
 pcall(CalcLength) -- seed dynamic path ranges before creating Rayfield sliders
 
+-- Rayfield's supported SIA opt-out; preserve an existing shared value.
+-- Keep the default across yielding loaders; do not disable asset requests.
+if Globals.RAYFIELD_ANALYTICS == nil then Globals.RAYFIELD_ANALYTICS = false end
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 
 local function NormalizeRayfieldIcon(icon)
@@ -2531,6 +2599,8 @@ local Automation = Window:Tab({Title = "Automation", Icon = "bot"}) do
     Desc = "Automatically readies up when starting a match",
     Value = Globals.AutoReady,
     Callback = function(v)
+        AutoReadyGeneration += 1
+        AutoReadyRunning = false
         Globals.AutoReady = v
         SetSetting("AutoReady", v)
         if v then StartAutoReady() end
@@ -2573,7 +2643,11 @@ local Automation = Window:Tab({Title = "Automation", Icon = "bot"}) do
         Desc = "Chains Medic Ability",
         Value = Globals.AutoMedic,
         Callback = function(v)
+            AutoMedicGeneration += 1
             SetSetting("AutoMedic", v)
+            if not v and AutoMedicModule and type(AutoMedicModule.State) == "table" then
+                AutoMedicModule.State.Running = false
+            end
         end
     })
 
@@ -3627,15 +3701,90 @@ end
 
 Window:Line()
 
-local RecorderInit = loadstring(game:HttpGet("https://raw.githubusercontent.com/DuxiiT/auto-strat/refs/heads/main/Sources/Recorder.lua"))()
-RecorderInit({
-    Window = Window,
-    ReplicatedStorage = ReplicatedStorage,
-    LocalPlayer = LocalPlayer,
-    HttpService = HttpService,
-    GameState = GameState,
-    workspace = workspace
-})
+-- Recorder code is optional: ordinary startup never fetches or executes it.
+do
+    local tools = Window:Tab({Title = "Recorder Tools", Icon = "camera"})
+    local state = { generation = 0, busy = false, loaded = false, executed = false }
+    local function sessionCurrent()
+        return Globals.ADS_AutomationSession == AutomationSession
+            and ADS_BOOTSTRAP_ENV.ADS_RayfieldWindow == RayWindow and not RayWindow.unloaded
+    end
+    AutomationSession.CancelRecorderLoad = function()
+        state.generation += 1
+        local thread = state.thread
+        state.thread = nil
+        state.busy = false
+        if state.destroying then state.destroying:Disconnect(); state.destroying = nil end
+        if thread and thread ~= coroutine.running() then pcall(task.cancel, thread) end
+        -- No cleanup API is assumed for already initialized third-party code.
+    end
+    if RayWindow.screenGui then
+        state.destroying = RayWindow.screenGui.Destroying:Once(AutomationSession.CancelRecorderLoad)
+    end
+    tools:Button({
+        Title = "Load Recorder",
+        Desc = "Open optional recorder controls for this session. Recording starts from their START button.",
+        Callback = function()
+            if not sessionCurrent() then return end
+            if Globals.record_strat then
+                AltairWarn("Stop the existing Recorder before loading another one.", "Recorder")
+                return
+            end
+            if state.loaded then
+                AltairNotify({Title = "Recorder", Desc = "Recorder controls are already loaded.", Time = 3})
+                return
+            end
+            if state.busy then return end
+            if state.executed then
+                AltairWarn("The previous Recorder initialization did not finish. Loading again is disabled for this session to avoid duplicate callbacks.", "Recorder")
+                return
+            end
+            state.busy = true
+            state.generation += 1
+            local generation = state.generation
+            local thread
+            thread = task.defer(function()
+                local function current()
+                    return sessionCurrent() and generation == state.generation and state.thread == thread
+                end
+                local ok, problem = pcall(function()
+                    if not current() or Globals.record_strat then return end
+                    local source = game:HttpGet("https://raw.githubusercontent.com/DuxiiT/auto-strat/refs/heads/main/Sources/Recorder.lua")
+                    if not current() then return end
+                    assert(not Globals.record_strat, "Stop the existing Recorder before loading another one.")
+                    assert(type(source) == "string" and #source > 0 and #source <= 2 * 1024 * 1024, "Recorder source is missing or too large.")
+                    local chunk, compileProblem = loadstring(source, "ADS Recorder")
+                    assert(type(chunk) == "function", tostring(compileProblem or "Recorder source did not compile."))
+                    if not current() then return end
+                    assert(not Globals.record_strat, "Stop the existing Recorder before loading another one.")
+                    state.executed = true
+                    local initialize = chunk()
+                    if not current() then return end
+                    assert(not Globals.record_strat, "Stop the existing Recorder before loading another one.")
+                    assert(type(initialize) == "function", "Recorder module did not return an initializer.")
+                    -- Recorder expects Notify, which the local Window adapter lacks.
+                    local recorderWindow = {
+                        Tab = function(_, props)
+                            assert(sessionCurrent(), "Recorder session is no longer active.")
+                            return Window:Tab(props)
+                        end,
+                        Notify = function(_, props)
+                            if sessionCurrent() then return AltairNotify(props) end
+                        end,
+                    }
+                    initialize({Window = recorderWindow, ReplicatedStorage = ReplicatedStorage,
+                        LocalPlayer = LocalPlayer, HttpService = HttpService, GameState = GameState, workspace = workspace})
+                    if current() then state.loaded = true end
+                end)
+                if state.thread == thread then state.thread = nil; state.busy = false end
+                if not ok and sessionCurrent() and generation == state.generation then
+                    AltairWarn("Recorder could not load: " .. tostring(problem), "Recorder")
+                end
+            end)
+            state.thread = thread
+        end
+    })
+end
 
 Window:Line()
 
@@ -4509,7 +4658,7 @@ local function DoSetOption(TObj, OptName, OptVal, ReqWave)
     end
 end
 
-local function DoActivateAbility(TObj, AbName, AbData, IsLooping)
+local function DoActivateAbility(TObj, AbName, AbData, IsLooping, ShouldContinue)
     if type(AbData) == "boolean" then
         IsLooping = AbData
         AbData = nil
@@ -4525,8 +4674,14 @@ local function DoActivateAbility(TObj, AbName, AbData, IsLooping)
     local CloneIdx = AbData and AbData.towerToClone
     local TargetIdx = AbData and AbData.towerTarget
 
+    local active = true
+    local function ownsAbility()
+        return active and Globals.ADS_AutomationSession == AutomationSession
+            and (not ShouldContinue or ShouldContinue())
+    end
+
     local function attempt()
-        while true do
+        while ownsAbility() do
             local ok, res = pcall(function()
                 local data
 
@@ -4546,6 +4701,7 @@ local function DoActivateAbility(TObj, AbName, AbData, IsLooping)
                     end
                 end
 
+                if not ownsAbility() then return false end
                 return RemoteFunc:InvokeServer(
                     "Troops",
                     "Abilities",
@@ -4558,18 +4714,19 @@ local function DoActivateAbility(TObj, AbName, AbData, IsLooping)
                 )
             end)
 
+            if not ownsAbility() then return false end
             if ok and CheckResOk(res) then
                 return true
             end
 
             task.wait(0.25)
         end
+        return false
     end
 
     if IsLooping then
-        local active = true
         task.spawn(function()
-            while active do
+            while ownsAbility() do
                 attempt()
                 task.wait(1)
             end
@@ -5000,13 +5157,15 @@ function TDS:AutoChain(...)
 
     task.spawn(function()
         local i = 1
-        while running do
+        while running and Globals.ADS_AutomationSession == AutomationSession do
             local idx = TowerIndices[i]
             local tower = TDS.PlacedTowers[idx]
 
             if tower then
-                DoActivateAbility(tower, "Call Of Arms")
+                DoActivateAbility(tower, "Call Of Arms", nil, false, function() return running end)
             end
+
+            if not running or Globals.ADS_AutomationSession ~= AutomationSession then break end
 
             local hotbar = PlayerGui.ReactUniversalHotbar.Frame
             local timescale = hotbar:FindFirstChild("timescale")
@@ -5310,25 +5469,36 @@ local function StartAutoPickups()
 end
 
 local function StartAutoSkip()
-    if AutoSkipRunning or not Globals.AutoSkip then return end
+    if Globals.ADS_AutomationSession ~= AutomationSession or AutoSkipRunning or ScopedAutomationFaults.AutoSkip or not Globals.AutoSkip then return end
+    local worker = {active = true}
+    ScopedAutomationWorkers.AutoSkip = worker
+    local function owned() return OwnsScopedAutomation("AutoSkip", worker) end
     AutoSkipRunning = true
 
     task.spawn(function()
-        while Globals.AutoSkip do
+        local ok, problem = pcall(function()
+        while owned() do
             local SkipVisible =
                 PlayerGui:FindFirstChild("ReactOverridesVote")
                 and PlayerGui.ReactOverridesVote:FindFirstChild("Frame")
                 and PlayerGui.ReactOverridesVote.Frame:FindFirstChild("votes")
                 and PlayerGui.ReactOverridesVote.Frame.votes:FindFirstChild("vote")
 
-            if SkipVisible and SkipVisible.Position == UDim2.new(0.5, 0, 0.5, 0) then
-                RunVoteSkip()
+            if SkipVisible and SkipVisible.Position == UDim2.new(0.5, 0, 0.5, 0) and owned() then
+                RunVoteSkip(owned)
+                if not owned() then break end
             end
 
             task.wait(0.1)
         end
 
-        AutoSkipRunning = false
+        end)
+        if not ok and owned() then ScopedAutomationFaults.AutoSkip = true end
+        if ScopedAutomationWorkers.AutoSkip == worker then
+            ScopedAutomationWorkers.AutoSkip = nil
+            AutoSkipRunning = false
+        end
+        if not ok then error(problem, 0) end
     end)
 end
 
@@ -5488,13 +5658,17 @@ local function StartAntiLag()
 end
 
 local function StartAutoChain()
-    if AutoChainRunning or not Globals.AutoChain then return end
+    if Globals.ADS_AutomationSession ~= AutomationSession or AutoChainRunning or ScopedAutomationFaults.AutoChain or not Globals.AutoChain then return end
+    local worker = {active = true}
+    ScopedAutomationWorkers.AutoChain = worker
+    local function owned() return OwnsScopedAutomation("AutoChain", worker) end
     AutoChainRunning = true
 
     task.spawn(function()
+        local ok, problem = pcall(function()
         local idx = 1
 
-        while Globals.AutoChain do
+        while owned() do
             local commander = {}
             local TowersFolder = workspace:FindFirstChild("Towers")
 
@@ -5516,6 +5690,7 @@ local function StartAutoChain()
                 local replicator = CurrentCommander:FindFirstChild("TowerReplicator")
                 local UpgradeLevel = replicator and replicator:GetAttribute("Upgrade") or 0
 
+                if not owned() then break end
                 if UpgradeLevel >= 4 and Globals.SupportCaravan then
                     RemoteFunc:InvokeServer(
                         "Troops",
@@ -5523,9 +5698,12 @@ local function StartAutoChain()
                         "Activate",
                         { Troop = CurrentCommander, Name = "Support Caravan", Data = {} }
                     )
-                    task.wait(0.1) 
+                    if not owned() then break end
+                    task.wait(0.1)
+                    if not owned() then break end
                 end
 
+                if not owned() then break end
                 local response = RemoteFunc:InvokeServer(
                     "Troops",
                     "Abilities",
@@ -5533,6 +5711,7 @@ local function StartAutoChain()
                     { Troop = CurrentCommander, Name = "Call Of Arms", Data = {} }
                 )
 
+                if not owned() then break end
                 if response then
                     idx += 1
 
@@ -5556,16 +5735,26 @@ local function StartAutoChain()
             end
         end
 
-        AutoChainRunning = false
+        end)
+        if not ok and owned() then ScopedAutomationFaults.AutoChain = true end
+        if ScopedAutomationWorkers.AutoChain == worker then
+            ScopedAutomationWorkers.AutoChain = nil
+            AutoChainRunning = false
+        end
+        if not ok then error(problem, 0) end
     end)
 end
 
 local function StartAutoDjBooth()
-    if AutoDjRunning or not Globals.AutoDJ then return end
+    if Globals.ADS_AutomationSession ~= AutomationSession or AutoDjRunning or ScopedAutomationFaults.AutoDJ or not Globals.AutoDJ then return end
+    local worker = {active = true}
+    ScopedAutomationWorkers.AutoDJ = worker
+    local function owned() return OwnsScopedAutomation("AutoDJ", worker) end
     AutoDjRunning = true
 
     task.spawn(function()
-        while Globals.AutoDJ do
+        local ok, problem = pcall(function()
+        while owned() do
             local DJ = nil
             local TowersFolder = workspace:FindFirstChild("Towers")
 
@@ -5580,19 +5769,26 @@ local function StartAutoDjBooth()
                 end
             end
 
-            if DJ then
+            if DJ and owned() then
                 RemoteFunc:InvokeServer(
                     "Troops",
                     "Abilities",
                     "Activate",
                     { Troop = DJ, Name = "Drop The Beat", Data = {} }
                 )
+                if not owned() then break end
             end
 
             task.wait(1)
         end
 
-        AutoDjRunning = false
+        end)
+        if not ok and owned() then ScopedAutomationFaults.AutoDJ = true end
+        if ScopedAutomationWorkers.AutoDJ == worker then
+            ScopedAutomationWorkers.AutoDJ = nil
+            AutoDjRunning = false
+        end
+        if not ok then error(problem, 0) end
     end)
 end
 
@@ -5724,17 +5920,23 @@ local function StartAutoNecro()
 end
 
 local function StartAutoMercenary()
-    if not Globals.AutoMercenary and not Globals.AutoMilitary then return end
+    if Globals.ADS_AutomationSession ~= AutomationSession or (not Globals.AutoMercenary and not Globals.AutoMilitary) then return end
 
     if AutoMercenaryBaseRunning then return end
+    if ScopedAutomationFaults.AutoMercenary then return end
+    local worker = {active = true}
+    ScopedAutomationWorkers.AutoMercenary = worker
+    local function owned() return OwnsScopedAutomation("AutoMercenary", worker) end
     AutoMercenaryBaseRunning = true
 
     task.spawn(function()
-        while Globals.AutoMercenary do
+        local ok, problem = pcall(function()
+        while owned() do
             local TowersFolder = workspace:FindFirstChild("Towers")
 
             if TowersFolder then
                 for _, towers in ipairs(TowersFolder:GetDescendants()) do
+                    if not owned() then break end
                     if towers:IsA("Folder") and towers.Name == "TowerReplicator"
                     and towers:GetAttribute("Name") == "Mercenary Base"
                     and towers:GetAttribute("OwnerId") == game.Players.LocalPlayer.UserId
@@ -5755,17 +5957,25 @@ local function StartAutoMercenary()
                             }
                         )
 
+                        if not owned() then break end
                         task.wait(0.5)
 
-                        if not Globals.AutoMercenary then break end
+                        if not owned() then break end
                     end
                 end
             end
 
+            if not owned() then break end
             task.wait(0.5)
         end
 
-        AutoMercenaryBaseRunning = false
+        end)
+        if not ok and owned() then ScopedAutomationFaults.AutoMercenary = true end
+        if ScopedAutomationWorkers.AutoMercenary == worker then
+            ScopedAutomationWorkers.AutoMercenary = nil
+            AutoMercenaryBaseRunning = false
+        end
+        if not ok then error(problem, 0) end
     end)
 end
 
@@ -5849,100 +6059,107 @@ local function StartSellFarm()
     end)
 end
 
-local AutoMedicModule = nil
-
 local function StartMedicChain()
-    if Globals.AutoMedic then
-        if AutoMedicModule and AutoMedicModule.State and AutoMedicModule.State.Running then 
-            return 
-        end
+    if Globals.ADS_AutomationSession ~= AutomationSession or AutoMedicRunning or not Globals.AutoMedic then return end
+    if AutoMedicModule and (type(AutoMedicModule.State) ~= "table"
+        or AutoMedicModule.State.Running or AutoMedicModule.State.ActiveThread ~= nil) then
+        -- OFF requests a cooperative stop. Do not revive that same worker's
+        -- Running flag until its selection cleanup has released the thread.
+        return
+    end
+    AutoMedicRunning = true
+    local generation = AutoMedicGeneration
+    local ok, problem = pcall(function()
         if not AutoMedicModule then
-            local success, loadedLib = pcall(function()
-                local url = "https://raw.githubusercontent.com/AmonguszzZ/ModdedAether/refs/heads/main/AutoAbilities/AutoMedicNew.lua"
-                return loadstring(game:HttpGet(url))()
-            end)
-            if success and loadedLib then
-                AutoMedicModule = loadedLib
-            end
+            local url = "https://raw.githubusercontent.com/AmonguszzZ/ModdedAether/refs/heads/main/AutoAbilities/AutoMedicNew.lua"
+            local source = game:HttpGet(url)
+            if Globals.ADS_AutomationSession ~= AutomationSession or generation ~= AutoMedicGeneration or not Globals.AutoMedic then return end
+            local loadedLib = assert(loadstring(source))()
+            assert(type(loadedLib) == "table" and type(loadedLib.Chaining) == "function"
+                and type(loadedLib.State) == "table" and type(loadedLib.State.Running) == "boolean",
+                "Auto Medic module does not expose the required cooperative stop state.")
+            AutoMedicModule = loadedLib
         end
-        if AutoMedicModule then
-            AutoMedicModule.Chaining()
-        end
-    else
-        if AutoMedicModule and AutoMedicModule.State then
+        -- Fetching/initializing the dependency can yield while OFF -> ON occurs.
+        if Globals.ADS_AutomationSession ~= AutomationSession or generation ~= AutoMedicGeneration or not Globals.AutoMedic then return end
+        if AutoMedicModule.State.Running or AutoMedicModule.State.ActiveThread ~= nil then return end
+        AutoMedicModule.Chaining()
+        if (Globals.ADS_AutomationSession ~= AutomationSession or generation ~= AutoMedicGeneration or not Globals.AutoMedic) and type(AutoMedicModule.State) == "table" then
             AutoMedicModule.State.Running = false
         end
-    end
+    end)
+    AutoMedicRunning = false
+    if not ok then AltairWarn("Auto Medic stopped: " .. tostring(problem)) end
 end
 
 task.spawn(function()
     task.wait(2)
-    while true do
-        if Globals.AutoPickups and not AutoPickupsRunning then
+    while Globals.ADS_AutomationSession == AutomationSession do
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoPickups and not AutoPickupsRunning) then
             StartAutoPickups()
         end
 
-        if Globals.AutoSkip and not AutoSkipRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoSkip and not AutoSkipRunning) then
             StartAutoSkip()
         end
 
-        if Globals.TimeScaleEnabled and not TimeScaleRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.TimeScaleEnabled and not TimeScaleRunning) then
             StartTimeScale()
         end
 
-        if Globals.AutoChain and not AutoChainRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoChain and not AutoChainRunning) then
             StartAutoChain()
         end
 
-        if Globals.AutoDJ and not AutoDjRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoDJ and not AutoDjRunning) then
             StartAutoDjBooth()
         end
 
-        if Globals.AutoNecro and not AutoNecroRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoNecro and not AutoNecroRunning) then
             StartAutoNecro()
         end
 
-        if Globals.AutoMercenary and not AutoMercenaryBaseRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoMercenary and not AutoMercenaryBaseRunning) then
             StartAutoMercenary()
         end
 
-        if Globals.AutoMilitary and not AutoMilitaryBaseRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoMilitary and not AutoMilitaryBaseRunning) then
             StartAutoMilitary()
         end
 
-        if Globals.SellFarms and not SellFarmsRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.SellFarms and not SellFarmsRunning) then
             StartSellFarm()
         end
 
-        if Globals.AntiLag and not AntiLagRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AntiLag and not AntiLagRunning) then
             StartAntiLag()
         end
 
-        if (Globals.AutoRejoin or Globals.AutoRestart) and not BackToLobbyRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and ((Globals.AutoRejoin or Globals.AutoRestart) and not BackToLobbyRunning) then
             StartBackToLobby()
         end
 
-        if Globals.AutoGatling and not AutoGatlingRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoGatling and not AutoGatlingRunning) then
             StartAutoGatling()
         end
 
-        if Globals.Gatlify and not GatlifyRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.Gatlify and not GatlifyRunning) then
             StartGatlify()
         end
 
-        if Globals.AutoOpenCrates and not AutoOpenRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoOpenCrates and not AutoOpenRunning) then
             StartAutoOpenCrates()
         end
 
-        if Globals.AutoReady and not AutoReadyRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoReady and not AutoReadyRunning) then
             StartAutoReady()
         end
 
-        if Globals.Easy and not EasyModeRunning then
+        if Globals.ADS_AutomationSession == AutomationSession and (Globals.Easy and not EasyModeRunning) then
             StartEasyMode()
         end
 
-         if Globals.AutoMedic and not AutoMedicRunning then
+         if Globals.ADS_AutomationSession == AutomationSession and (Globals.AutoMedic and not AutoMedicRunning) then
             StartMedicChain()
         end
 
@@ -5956,11 +6173,52 @@ end
 
 MissionsUIFix()
 
-return TDS
+return TDS, AutomationSession
 end)()
 
 -- [[ EMBEDDED STRATEGY - MANUAL START ]]
 local ADS_EMBEDDED_THREAD_KEY = "ADS_EmbeddedStrategyThread"
+local embeddedRun
+local EMBEDDED_CANCELLED = {}
+
+local function OwnsEmbeddedRun(run)
+    return run.active and embeddedRun == run
+        and getgenv().ADS_AutomationSession == ADS_EMBEDDED_SESSION
+end
+
+local function ReleaseEmbeddedRun(run, cancelThread)
+    if not run then return end
+    run.active = false
+    local stops = run.stops
+    run.stops = {}
+    for stop in pairs(stops) do pcall(stop) end
+    local env = getgenv()
+    if run.thread and env[ADS_EMBEDDED_THREAD_KEY] == run.thread then
+        env[ADS_EMBEDDED_THREAD_KEY] = nil
+    end
+    if embeddedRun == run then embeddedRun = nil end
+    if cancelThread and run.thread then pcall(task.cancel, run.thread) end
+end
+
+local function EmbeddedTDS(run)
+    return setmetatable({}, {__index = function(_, key)
+        local value = TDS[key]
+        if type(value) ~= "function" then return value end
+        return function(_, ...)
+            if not OwnsEmbeddedRun(run) then error(EMBEDDED_CANCELLED, 0) end
+            local results = table.pack(value(TDS, ...))
+            if (key == "Ability" or key == "AutoChain") and type(results[1]) == "function" then
+                if OwnsEmbeddedRun(run) then
+                    run.stops[results[1]] = true
+                else
+                    pcall(results[1])
+                end
+            end
+            if not OwnsEmbeddedRun(run) then error(EMBEDDED_CANCELLED, 0) end
+            return table.unpack(results, 1, results.n)
+        end
+    end})
+end
 
 local function IsEmbeddedStrategyInGame()
     local player = game:GetService("Players").LocalPlayer
@@ -5970,13 +6228,23 @@ end
 
 local function StartEmbeddedStrategy()
     local env = getgenv()
+    if env.ADS_AutomationSession ~= ADS_EMBEDDED_SESSION then return false end
     local running = env[ADS_EMBEDDED_THREAD_KEY]
     if running then
         return false
     end
 
+    -- A completed parent can still own looping abilities. A new explicit run
+    -- drains only those closures; existing tower-index restart policy is unchanged.
+    ReleaseEmbeddedRun(embeddedRun, true)
+    if env.ADS_AutomationSession ~= ADS_EMBEDDED_SESSION or env[ADS_EMBEDDED_THREAD_KEY] then return false end
+    local run = {active = true, stops = {}}
+    embeddedRun = run
+    local TDS = EmbeddedTDS(run)
+
     local thread
     thread = task.defer(function()
+        if not OwnsEmbeddedRun(run) then ReleaseEmbeddedRun(run, false); return end
         local ok, err = pcall(function()
         TDS:Loadout("Scout", "Accelerator", "Mercenary Base", "Hacker", "Warlock")
         TDS:Mode("Frost")
@@ -6196,24 +6464,24 @@ local function StartEmbeddedStrategy()
         TDS:SetOption(21, "Unit 3", "Riot Guard", 40)
         end)
 
-        env[ADS_EMBEDDED_THREAD_KEY] = nil
+        if env[ADS_EMBEDDED_THREAD_KEY] == thread then env[ADS_EMBEDDED_THREAD_KEY] = nil end
 
         if not ok then
-            AltairWarn("Embedded strategy error: " .. tostring(err), "Strategy Error")
+            local wasOwned = OwnsEmbeddedRun(run)
+            ReleaseEmbeddedRun(run, false)
+            if wasOwned and err ~= EMBEDDED_CANCELLED then
+                AltairWarn("Embedded strategy error: " .. tostring(err), "Strategy Error")
+            end
         end
     end)
 
+    run.thread = thread
     env[ADS_EMBEDDED_THREAD_KEY] = thread
     return true
 end
 
 local function StopEmbeddedStrategy()
-    local env = getgenv()
-    local thread = env[ADS_EMBEDDED_THREAD_KEY]
-    if thread then
-        pcall(task.cancel, thread)
-        env[ADS_EMBEDDED_THREAD_KEY] = nil
-    end
+    ReleaseEmbeddedRun(embeddedRun, true)
 end
 
 getgenv().ADS_StartEmbeddedStrategy = StartEmbeddedStrategy

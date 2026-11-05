@@ -123,8 +123,8 @@ stop play. Overnight stability is not established.
 
 ## Verification
 
-Run luau Tests/LastStand.spec.luau for planner checks and luau-compile on
-Games/Last Stand.lua for syntax.
+Planner and syntax validation tools are maintained privately and are not
+included in this release.
 
 Live solo checks confirmed zero automatic placement before a player-started
 rescue, then repeated both the original evac site and original roof, rescuing

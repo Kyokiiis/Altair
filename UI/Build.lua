@@ -1,3 +1,111 @@
+-- Altair UI is one self-contained factory; its return value is at the end.
+-- Navigation (search by symbol):
+-- Clock / motionService                  Runtime foundations
+-- propertyNames / Molto                 Embedded interface and icon data
+-- bindDock / bindRayfieldBridge          Desktop layout and integrations
+-- RayfieldOdometer / RayfieldStatistic / RayfieldColorPicker  Licensed controls
+-- buildRuler / bindTheme / styleHome      Altair controls and appearance
+-- bindCapsules / buildDiscovery          Media, activities and script browser
+-- bindings                              Internal helper contract and factory
+
+-- Shared visual vocabulary. These are authored defaults; Theme still owns
+-- user tint/lightness, and the existing motion controllers own transitions.
+local Design={
+ Surface=Color3.fromRGB(16,16,16),Raised=Color3.fromRGB(28,28,28),Well=Color3.fromRGB(38,38,38),
+ Ink=Color3.fromRGB(246,246,246),Muted=Color3.fromRGB(164,164,164),Edge=Color3.fromRGB(166,166,166),
+ Font=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium),
+ Heading=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Bold),
+}
+function Design.corner(object,radius)
+ local corner=object:FindFirstChildOfClass("UICorner")or Instance.new("UICorner")
+ corner.CornerRadius=typeof(radius)=="UDim"and radius or UDim.new(0,radius or 12);corner.Parent=object
+ return corner
+end
+function Design.edge(object,alpha)
+ local edge=object:FindFirstChildOfClass("UIStroke")or Instance.new("UIStroke")
+ edge.Color=Design.Edge;edge.Thickness=.6;edge.Transparency=alpha or .88;edge:SetAttribute("AltairDesignStrokeAlpha",edge.Transparency)
+ edge.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;edge.BorderStrokePosition=Enum.BorderStrokePosition.Inner;edge.Parent=object
+ return edge
+end
+function Design.divider(parent,name,position,size)
+ local line=parent:FindFirstChild(name)or Instance.new("Frame");line.Name=name
+ line.BorderSizePixel=0;line.BackgroundColor3=Design.Edge;line.BackgroundTransparency=.87
+ line.Position=position;line.Size=size;line.ZIndex=parent.ZIndex+1;line.Active=false;line.Interactable=false
+ line:SetAttribute("AltairDesignRole","divider");line.Parent=parent;return line
+end
+function Design.text(object,heading)
+ if object:GetAttribute("AltairIcon")then return end
+ object.FontFace=heading and Design.Heading or Design.Font;object.TextStrokeTransparency=1
+end
+function Design.control(object,alpha)
+ object.BorderSizePixel=0;object.BackgroundColor3=Design.Well;object.BackgroundTransparency=alpha or .28
+ object:SetAttribute("AltairMaterialRestAlpha",object.BackgroundTransparency)
+ object:SetAttribute("AltairDesignRole","control");Design.corner(object,9);Design.edge(object,.91)
+end
+-- Only authored material backgrounds participate in the user's opacity setting.
+-- Content groups, artwork, shadows and transparent text/icon hitboxes keep
+-- their independent animation channels.
+function Design.isMaterial(object)
+ if not object:IsA("GuiObject")or object:GetAttribute("AltairInsetMaterial")or object:GetAttribute("AltairArtworkForeground")then return false end
+ local role=object:GetAttribute("AltairDesignRole")
+ if role~="surface"and role~="inset"and role~="control"and not object:GetAttribute("AltairSurface")and not object:GetAttribute("AltairInsetSurface")and not object:GetAttribute("AltairHomeSurface")then return false end
+ local rest=object:GetAttribute("AltairMaterialRestAlpha")or object:GetAttribute("AltairDesignRestAlpha")
+ return object.BackgroundTransparency<.999 or type(rest)=="number"and rest<.999 or object:GetAttribute("AltairSolidMaterial")==true
+end
+function Design.isSolid(object)
+ if object:GetAttribute("AltairSolidMaterial")==true then return true end
+ local root=object:FindFirstAncestorOfClass("ScreenGui")
+ return root~=nil and root:GetAttribute("AltairSolidSurfaces")==true
+end
+-- The authored finish is calibrated at the default 90% opacity. Interpolate
+-- from that finish to either endpoint, so 0% and 100% have literal meanings.
+function Design.opacityAlpha(authored,transparency)
+ authored=math.clamp(tonumber(authored)or .1,0,1)
+ transparency=math.clamp(tonumber(transparency)or .1,0,1)
+ if transparency<=0 then return 0 elseif transparency>=1 then return 1 end
+ if transparency<.1 then return authored*transparency/.1 end
+ return authored+(1-authored)*(transparency-.1)/.9
+end
+function Design.surfaceAlpha(object,transparency)
+ local authored=object:GetAttribute("AltairDesignFixedTransparency")
+ if type(authored)~="number"then authored=.1+(object:GetAttribute("AltairDesignTransparencyOffset")or 0)end
+ return Design.opacityAlpha(authored,transparency)
+end
+function Design.materialAlpha(object,alpha)
+ if alpha>=.99 or not Design.isMaterial(object)then return alpha end
+ if object:GetAttribute("AltairMaterialRestAlpha")==nil then object:SetAttribute("AltairMaterialRestAlpha",alpha)end
+ local root=object:FindFirstAncestorOfClass("ScreenGui")
+ local preference=root and root:GetAttribute("AltairPanelTransparency")
+ if type(preference)~="number"then return Design.isSolid(object)and 0 or alpha end
+ if preference<=0 then return 0 elseif preference>=1 then return 1 end
+ if object:GetAttribute("AltairDesignFixedTransparency")~=nil or object:GetAttribute("AltairDesignTransparencyOffset")~=nil then return Design.surfaceAlpha(object,preference)end
+ return Design.opacityAlpha(alpha,preference)
+end
+-- Theme keeps undimmed palette targets; one root owner composes only Color3
+-- outputs. Gradient ramps are not dimmed again through their multipliers.
+Design.idleColorOwners=setmetatable({},{__mode="k"})
+function Design.idleColor(root,object,property,color)
+ local owner=Design.idleColorOwners[root]
+ return owner and typeof(color)=="Color3"and owner:ComposeColor(object,property,color)or color
+end
+function Design.idleBase(root,object,property,color)
+ local owner=Design.idleColorOwners[root]
+ return owner and typeof(color)=="Color3"and owner:BaseColor(object,property,color)or color
+end
+function Design.bindIdleColors(root,owner)
+ assert(type(owner)=="table"and type(owner.ComposeColor)=="function"and type(owner.BaseColor)=="function","Invalid idle color owner")
+ Design.idleColorOwners[root]=owner
+ return function()if Design.idleColorOwners[root]==owner then Design.idleColorOwners[root]=nil end end
+end
+Design.opacityOwners=setmetatable({},{__mode="k"})
+Design.opacityTargets=setmetatable({},{__mode="k"})
+function Design.freezeMaterial(object)
+ local old=Design.opacityOwners[object];Design.opacityOwners[object]=nil;Design.opacityTargets[object]=nil
+ if old then
+  if type(old)=="table"and old.CancelProperty then old:CancelProperty("BackgroundTransparency")else old:Cancel()end
+ end
+end
+
 -- CLOCK MODEL BEGIN
 local Clock=(function()
 -- Monotonic timer/stopwatch model. No rendering, yields, or Roblox dependencies.
@@ -94,7 +202,7 @@ end)()
 -- CLOCK MODEL END
 
 -- One interruptible owner per animated property across all UI surfaces.
-local motionStats={requested=0,created=0,reused=0,skipped=0}
+local motionStats={requested=0,created=0,reused=0,skipped=0,nativeCreated=0}
 -- A completed animation needs no engine Tween/Instance when nothing can change.
 local function completedMotion(apply)
  local listeners={};local signal={};local animation={PlaybackState=Enum.PlaybackState.Begin,Completed=signal}
@@ -112,7 +220,9 @@ local function completedMotion(apply)
 end
 local function opacityOffscreen(object)
  if not object:IsA("GuiObject")and not object:IsA("UIComponent")then return false end
- local visual=object:IsA("GuiObject")and object or object.Parent
+ local visual=object
+ while visual and not visual:IsA("GuiObject")and not visual:IsA("ScreenGui")do visual=visual.Parent end
+ if not visual then return false end
  local screen=visual and(visual:IsA("ScreenGui")and visual or visual:FindFirstAncestorOfClass("ScreenGui"))
  if screen and not screen.Enabled then return true end
  local parent=visual
@@ -129,11 +239,75 @@ local function opacityOffscreen(object)
  end
  return false
 end
+-- Native tracks stay independent: changing hover Size must not cancel the
+-- Position track of the same transition. Single-property motions keep the
+-- engine's direct fast path; aggregates only coordinate completion events.
+local function propertyMotion(native,object,info,goal)
+ local count=0;for _ in pairs(goal)do count+=1 end
+ if count<=1 then motionStats.nativeCreated+=1;return native:Create(object,info,goal)end
+ local done=Instance.new("BindableEvent")
+ local group={PlaybackState=Enum.PlaybackState.Begin,Completed=done.Event}
+ local tracks={};local remaining=count;local cancelled=false;local finished=false
+ local function finish()
+  if finished or remaining>0 then return end;finished=true
+  group.PlaybackState=cancelled and Enum.PlaybackState.Cancelled or Enum.PlaybackState.Completed
+  done:Fire(group.PlaybackState);task.defer(function()done:Destroy()end)
+ end
+ local function retire(track,state)
+  if track.done then return end;track.done=true;remaining-=1
+  if state==Enum.PlaybackState.Cancelled then cancelled=true end
+  if track.connection then track.connection:Disconnect();track.connection=nil end
+  finish()
+ end
+ for key,value in pairs(goal)do
+  local track={};tracks[key]=track;motionStats.nativeCreated+=1
+  track.tween=native:Create(object,info,{[key]=value})
+  track.connection=track.tween.Completed:Connect(function(state)retire(track,state)end)
+ end
+ function group:Play()
+  if finished or self.PlaybackState==Enum.PlaybackState.Playing then return end
+  self.PlaybackState=Enum.PlaybackState.Playing
+  for _,track in pairs(tracks)do if not track.done then track.tween:Play()end end
+ end
+ function group:CancelProperty(key)
+  local track=tracks[key];if not track or track.done then return end
+  track.tween:Cancel();retire(track,Enum.PlaybackState.Cancelled)
+ end
+ function group:Cancel()
+  if finished then return end
+  for key in pairs(tracks)do self:CancelProperty(key)end
+ end
+ function group:Pause()
+  if finished or self.PlaybackState~=Enum.PlaybackState.Playing then return end
+  for _,track in pairs(tracks)do if not track.done then track.tween:Pause()end end
+  self.PlaybackState=Enum.PlaybackState.Paused
+ end
+ function group:Destroy()
+  self:Cancel();for _,track in pairs(tracks)do track.tween:Destroy()end
+ end
+ return group
+end
 local function motionService(reduced,preserveTiming)
  local native=game:GetService("TweenService")
  local owners=setmetatable({}, {__mode="k"});local targets=setmetatable({}, {__mode="k"})
- return {Create=function(_,object,info,goal)
+ return {Freeze=function(_,object,properties)
+  local current=owners[object];if not current then return 0 end
+  if type(properties)=="string"then properties={properties}end
+  local cancelled={};local count=0
+  for key,value in pairs(properties or current)do
+   local property=type(key)=="number"and value or key;local old=current[property]
+   if old then
+    if type(old)=="table"and old.CancelProperty then old:CancelProperty(property)
+    elseif not cancelled[old]then cancelled[old]=true;old:Cancel()end
+    current[property]=nil;if targets[object]then targets[object][property]=nil end;count+=1
+   end
+  end
+  return count
+ end,Create=function(_,object,info,goal,options)
   motionStats.requested+=1
+  -- Captured visual snapshots already contain the resolved transparency.
+  -- Keep ownership, cancellation and closing concealment in this same path.
+  local resolvedTransparency=type(options)=="table"and options.ResolvedTransparency==true
   local root=object:FindFirstAncestorOfClass("ScreenGui")
   local bar=root and root:FindFirstChild("SmartBar");local handle=root and root:FindFirstChild("Drag")
   local transient=root and root:GetAttribute("AltairThemePulse")and((bar and(object==bar or object:IsDescendantOf(bar)))or(handle and(object==handle or object:IsDescendantOf(handle))))
@@ -145,9 +319,12 @@ local function motionService(reduced,preserveTiming)
   end
   if object:GetAttribute("AltairInsetMaterial") and goal.BackgroundTransparency~=nil then goal=table.clone(goal);goal.BackgroundTransparency=1 end
   if object:GetAttribute("AltairInsetOutline")and goal.Transparency~=nil then goal=table.clone(goal);goal.Transparency=1 end
-  if object:GetAttribute("AltairSurfaceOutline")and goal.Transparency and goal.Transparency<.99 and not transient then goal=table.clone(goal);goal.Transparency=.65 end
-  if object:GetAttribute("AltairGlowCap")and goal.ImageTransparency then goal=table.clone(goal);goal.ImageTransparency=1-(1-goal.ImageTransparency)*object:GetAttribute("AltairGlowCap")end
+  if not resolvedTransparency and object:GetAttribute("AltairSurfaceOutline")and goal.Transparency and goal.Transparency<.99 and not transient then goal=table.clone(goal);goal.Transparency=object:GetAttribute("AltairDesignStrokeAlpha")or .86 end
+  if not resolvedTransparency and object:GetAttribute("AltairGlowCap")and goal.ImageTransparency then goal=table.clone(goal);goal.ImageTransparency=1-(1-goal.ImageTransparency)*object:GetAttribute("AltairGlowCap")end
   if object:GetAttribute("AltairSharedSwitch") and goal.BackgroundTransparency~=nil then goal=table.clone(goal);goal.BackgroundTransparency=1 end
+  if not resolvedTransparency and not closing and goal.BackgroundTransparency~=nil and goal.BackgroundTransparency<.99 and Design.isMaterial(object)then
+   goal=table.clone(goal);goal.BackgroundTransparency=Design.materialAlpha(object,goal.BackgroundTransparency)
+  end
   if object:IsA("UIStroke") and object.Parent and object.Parent:GetAttribute("AltairSharedSwitch") and goal.Transparency~=nil then
    object.Parent:SetAttribute("AltairSharedStroke",goal.Transparency);goal=table.clone(goal);goal.Transparency=1
   end
@@ -181,27 +358,32 @@ local function motionService(reduced,preserveTiming)
    local hidden=opacity and not unchanged and(opacityOffscreen(object)or slide)
    if unchanged or hidden then
     local cancelled={}
-    for property in pairs(goal)do local old=current[property];if old and not cancelled[old]then cancelled[old]=true;old:Cancel()end;current[property]=nil;target[property]=nil end
+    for property in pairs(goal)do local old=current[property];if old then if type(old)=="table"and old.CancelProperty then old:CancelProperty(property)elseif not cancelled[old]then cancelled[old]=true;old:Cancel()end end;current[property]=nil;target[property]=nil end
     motionStats.skipped+=1
     return completedMotion(hidden and function()if object.Parent then for property,value in pairs(goal)do object[property]=value end end end or nil)
    end
   end
   local cancelled={}
-  for property in pairs(goal) do local old=current[property];if old and not cancelled[old] then cancelled[old]=true;old:Cancel() end end
+  for property in pairs(goal)do local old=current[property];if old then if type(old)=="table"and old.CancelProperty then old:CancelProperty(property)elseif not cancelled[old]then cancelled[old]=true;old:Cancel()end end end
   local visual=object:IsA("GuiObject") or object:IsA("UIStroke") or object:IsA("UIScale") or object:IsA("UIGradient")
   if visual and not preserveTiming and info.Time>0 and info.RepeatCount==0 and not info.Reverses then
    local layout=goal.Position or goal.Size or goal.Scale or goal.CanvasPosition
    local duration=layout and math.clamp(info.Time,.1,.38) or math.min(info.Time,.22)
    if closing and not layout then duration=math.min(duration,.06) end
    if reduced and reduced() then duration=math.min(duration,.08) end
-   info=TweenInfo.new(duration,layout and Enum.EasingStyle.Quint or Enum.EasingStyle.Sine,Enum.EasingDirection.Out,0,false,info.DelayTime)
+   local expressive=info.EasingStyle==Enum.EasingStyle.Back or info.EasingStyle==Enum.EasingStyle.Elastic or info.EasingStyle==Enum.EasingStyle.Bounce
+   info=TweenInfo.new(duration,layout and(expressive and info.EasingStyle or Enum.EasingStyle.Quint)or Enum.EasingStyle.Sine,Enum.EasingDirection.Out,0,false,info.DelayTime)
   end
   if preserveTiming and info.Time>0 then
    local time=closing and math.min(info.Time,.06)or root and root:GetAttribute("AltairReduceMotion")and math.min(info.Time,.08)or info.Time
    if time~=info.Time then info=TweenInfo.new(time,info.EasingStyle,info.EasingDirection,info.RepeatCount,info.Reverses,info.DelayTime)end
   end
   motionStats.created+=1
-  local animation=native:Create(object,info,goal)
+  local animation=propertyMotion(native,object,info,goal)
+  if goal.BackgroundTransparency~=nil then
+   Design.opacityOwners[object]=animation;Design.opacityTargets[object]=goal.BackgroundTransparency
+   animation.Completed:Once(function()if Design.opacityOwners[object]==animation then Design.opacityOwners[object]=nil;Design.opacityTargets[object]=nil end end)
+  end
   for property,value in pairs(goal) do current[property]=animation;target[property]=value end
   animation.Completed:Once(function() for property in pairs(goal) do if current[property]==animation then current[property]=nil;target[property]=nil end end end)
   return animation
@@ -210,7 +392,7 @@ end
 
 -- NOTIFICATIONS BEGIN
 local buildNotifications=(function()
--- Reference: 300px black capsules; 20px corners, 8px stack spacing, content-sized height.
+-- Compact activity cards share Altair's inset material and content-sized stack.
 return function(context)
 	local root=context.Root
 	local tweenService=motionService(function() return root:GetAttribute("AltairReduceMotion")==true end)
@@ -219,8 +401,14 @@ return function(context)
 	local builtHost=root:FindFirstChild("NotificationCapsules")
 	local template=builtHost and builtHost:FindFirstChild("CardTemplate")
 	if context.RequireBuiltUI then assert(template,"Build.lua is missing the notification card template") end
-	local font = template and template.Description.FontFace or Font.new("rbxasset://fonts/families/GothamSSm.json")
-	local titleFont=template and template.Title.FontFace or Font.new(font.Family,Enum.FontWeight.Medium)
+	local font,titleFont=Design.Font,Design.Heading
+	local function logicalWidth()return 300 end
+	local function typefaces()return font,titleFont end
+	local function boundedText(value,limit)
+		value=tostring(value)
+		if #value>limit then value=value:sub(1,limit);while #value>0 and utf8.len(value)==nil do value=value:sub(1,-2)end end
+		return value
+	end
 	local host = builtHost or Instance.new("Frame")
 	host.Name, host.BackgroundTransparency, host.Size, host.ZIndex = "NotificationCapsules", 1, UDim2.fromScale(1, 1), 350
 	host.Parent = root
@@ -244,8 +432,9 @@ return function(context)
 		object.Parent = parent; return object
 	end
 	local function dimensions(title, description, icon, width, measured)
-		local left = icon and 58 or 20
-		local available = width - left - 20
+		local left=icon and 58 or 18
+		local right=28
+		local available = width - left - right
 		local titleHeight,descriptionHeight
 		if measured and measured.width==width then titleHeight,descriptionHeight=measured.title,measured.body
 		else
@@ -253,14 +442,14 @@ return function(context)
 			descriptionHeight=description~="" and math.max(16,textService:GetTextSize(description,13,Enum.Font.Gotham,Vector2.new(available,1000)).Y) or 0
 		end
 		titleHeight=math.min(titleHeight,34);descriptionHeight=math.min(descriptionHeight,112)
-		return descriptionHeight==0 and math.max(44,27+titleHeight) or 28+titleHeight+descriptionHeight+3, left, titleHeight, descriptionHeight
+		return descriptionHeight==0 and math.max(48,29+titleHeight) or 34+titleHeight+descriptionHeight, left, titleHeight, descriptionHeight
 	end
 	function controller:Layout(instant)
         if #self.active==0 then return end
 		if not self.alive or #self.active==0 then return end
 		local viewport,origin=root.AbsoluteSize,root.AbsolutePosition
 		local factor=root:GetAttribute("AltairDisplayScale") or 1
-		local width=math.min(300*factor,math.max(160,viewport.X-40))
+		local width=math.min(logicalWidth()*factor,math.max(160,viewport.X-40))
 		local x=math.max(20,viewport.X-width-24)
 		local obstacles={}
 		local function add(object)
@@ -276,19 +465,25 @@ return function(context)
 		for _,name in {'SmartBar','Drag','Character','Scripts','Playerlist','Settings','Home','ScriptSearch','CustomScriptPrompt','ModeratorDetectionPrompt'} do add(root:FindFirstChild(name)) end
 		local capsules=root:FindFirstChild('TopCapsules')
 		if capsules and capsules.Visible then
-			local expanded=capsules:FindFirstChild('Surface')
-			add(expanded and expanded.Visible and expanded or capsules:FindFirstChild('Compact'))
+			local expanded
+   for _,child in ipairs(capsules:GetChildren())do if child:GetAttribute('AltairActiveCapsule')then expanded=child;break end end
+			add(expanded or capsules:FindFirstChild('Compact'))
 		end
+  add(root:FindFirstChild('CapsuleActivities'))
 		local toasts=root:FindFirstChild('Toasts')
 		if toasts and toasts.Visible then for _,v in toasts:GetChildren() do if v.Name~='Template' then add(v) end end end
 		local total=0
 		for _,record in ipairs(self.active) do
-			local height,left,titleHeight,descriptionHeight=dimensions(record.title,record.description,record.icon,width/factor,record.measured)
+			local height,left,titleHeight,descriptionHeight,right=dimensions(record.title,record.description,record.icon,width/factor,record.measured)
+			right=right or 28
 			local scale=record.group:FindFirstChild("AltairDisplayScale") or Instance.new("UIScale");scale.Name="AltairDisplayScale";scale.Scale=factor;scale.Parent=record.group
 			record.height=height*factor;record.group.Size=UDim2.fromOffset(width/factor,height)
-			record.titleLabel.Position,record.titleLabel.Size=UDim2.fromOffset(left,14),UDim2.new(1,-left-20,0,titleHeight)
-			record.body.Position,record.body.Size=UDim2.fromOffset(left,17+titleHeight),UDim2.new(1,-left-20,0,descriptionHeight)
+			record.titleLabel.Position,record.titleLabel.Size=UDim2.fromOffset(left,12),UDim2.new(1,-left-right,0,titleHeight)
+			record.body.Position,record.body.Size=UDim2.fromOffset(left,20+titleHeight),UDim2.new(1,-left-right,0,descriptionHeight)
+			local icon=record.iconLabel;local well=record.iconWell
+			if icon then icon.Position=UDim2.new(0,30,.5,0);if well then well.Position=icon.Position end end
 			record.body.Visible=descriptionHeight>0
+			local rule=record.group:FindFirstChild("ContentRule");if rule then rule.Visible=descriptionHeight>0;rule.Position=UDim2.fromOffset(left,16+titleHeight);rule.Size=UDim2.new(1,-left-18,0,1)end
 			total+=height*factor+8
 		end
 		total-=8
@@ -355,34 +550,37 @@ return function(context)
 		group.Name="Notification_"..item.id
 		if not template then group.BackgroundColor3,group.BorderSizePixel=Color3.fromRGB(17,17,17),0 end
 		group.Size, group.GroupTransparency, group.ZIndex = UDim2.fromOffset(300, 64), 1, 350
-		if not template then
-			local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(0,20);corner.Parent=group
-			local gradient=Instance.new("UIGradient");gradient.Rotation=90
-			gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(115,115,115));gradient.Parent=group
-		end
+		group:SetAttribute("AltairDesignRole","notification");Design.corner(group,14)
         -- CanvasGroup gradients tint the composited text too. Material belongs on its own layer.
-        local background=Instance.new("Frame");background.Name="CardBackground";background.Size=UDim2.fromScale(1,1);background.BackgroundColor3=group:GetAttribute("AltairThemeDefault_BackgroundColor3")or Color3.fromRGB(17,17,17);background.BackgroundTransparency=root:GetAttribute("AltairPanelTransparency")or .12;background.BorderSizePixel=0;background.ZIndex=350;background:SetAttribute("AltairSurface",true);background.Parent=group
+        local background=Instance.new("Frame");background.Name="CardBackground";background.Size=UDim2.fromScale(1,1);background.BackgroundColor3=Design.Surface;local alpha=root:GetAttribute("AltairPanelTransparency")or .1;background.BackgroundTransparency=Design.opacityAlpha(.14,alpha);background.BorderSizePixel=0;background.ZIndex=350;background:SetAttribute("AltairSurface",true);background:SetAttribute("AltairDesignTransparencyOffset",.04);background.Parent=group
         local round=group:FindFirstChildOfClass("UICorner");if round then round:Clone().Parent=background end
         local gradient=group:FindFirstChildOfClass("UIGradient");if gradient then gradient.Parent=background end
         local outline=group:FindFirstChildOfClass("UIStroke");if outline then outline.Parent=background end
+        Design.corner(background,14);Design.edge(background,.88)
+        if gradient then gradient.Rotation=110;gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(224,224,224)) end
         group.BackgroundTransparency=1;group:SetAttribute("AltairNotificationCard",true)
 		item.group,item.generation,item.connections=group,0,{};item.fresh=true
 		item.titleLabel=group:FindFirstChild("Title") or label(group,"Title",item.title,14,Color3.new(1,1,1))
 		item.titleLabel.TextColor3=Color3.new(1,1,1);item.titleLabel.Text=item.title;item.titleLabel.FontFace=titleFont
 		item.body=group:FindFirstChild("Description") or label(group,"Description",item.description,13,Color3.new(1,1,1));item.body.TextColor3=Color3.new(1,1,1)
-		item.body.Text=item.description
+		item.body.Text=item.description;item.body.FontFace=font;item.body.TextTransparency=.24
+		for _,entry in ipairs({{item.titleLabel,titleFont},{item.body,font}})do
+			local object,face=entry[1],entry[2]
+			if not object:GetAttribute("AltairStyleBase_FontFaceFamily")then object:SetAttribute("AltairStyleBase_FontFaceFamily",face.Family);object:SetAttribute("AltairStyleBase_FontFaceWeight",face.Weight.Name);object:SetAttribute("AltairStyleBase_FontFaceStyle",face.Style.Name)end
+		end
+		local rule=Design.divider(group,"ContentRule",UDim2.new(),UDim2.new());rule.ZIndex=351;rule.BackgroundTransparency=.93
 		local icon=group:FindFirstChild("Icon")
 		if not icon then
 			icon=Instance.new("ImageLabel");icon.Name="Icon";icon.BackgroundTransparency=1
-			icon.Size,icon.Position,icon.AnchorPoint=UDim2.fromOffset(22,22),UDim2.new(0,20,.5,0),Vector2.new(0,.5)
+			icon.Size,icon.Position,icon.AnchorPoint=UDim2.fromOffset(20,20),UDim2.new(0,30,.5,0),Vector2.new(.5,.5)
 			icon.ImageColor3,icon.ZIndex,icon.Parent=Color3.new(1,1,1),351,group
 		end
 		local friend,staff=group:FindFirstChild("FriendIcon"),group:FindFirstChild("StaffIcon")
-		local friendIcon=friend and item.icon and item.icon:find("4370335364",1,true)~=nil
-		local staffIcon=staff and item.icon and item.icon:find("3944670656",1,true)~=nil
-		if friend then friend.Visible=friendIcon==true end
-		if staff then staff.Visible=staffIcon==true end
-		icon.Visible=item.icon~=nil and not friendIcon and not staffIcon;icon.Image=item.icon or ""
+		if friend then friend.Visible=false end
+		if staff then staff.Visible=false end
+		icon.Visible=item.icon~=nil;icon.Image=item.icon or "";icon.Size=UDim2.fromOffset(20,20);icon.Position=UDim2.new(0,30,.5,0);icon.AnchorPoint=Vector2.new(.5,.5)
+		local well=Instance.new("Frame");well.Name="IconWell";well.Size=UDim2.fromOffset(32,32);well.AnchorPoint=Vector2.new(.5,.5);well.Position=icon.Position;well.BackgroundColor3=Design.Well;well.BackgroundTransparency=.22;well.BorderSizePixel=0;well.ZIndex=350;well.Visible=icon.Visible;well.Parent=group;Design.corner(well,10)
+		item.iconLabel,item.iconWell=icon,well
 		local button=group:FindFirstChild("Dismiss")
 		if not button then
 			button=Instance.new("TextButton");button.Name="Dismiss";button.Text="";button.BackgroundTransparency=1
@@ -402,20 +600,53 @@ return function(context)
 	end
 	pump = function()
 		if not controller.alive then return end
+		local factor=root:GetAttribute("AltairDisplayScale")or 1
+		local width=math.min(logicalWidth()*factor,math.max(160,root.AbsoluteSize.X-40))/factor
 		local used=0
 		for _,record in ipairs(controller.active) do used+=record.height+8 end
 		while #controller.pending>0 and #controller.active<5 do
 			local item=controller.pending[1]
 			if not item.ready then break end
-			local height=dimensions(item.title,item.description,item.icon,math.min(300,math.max(160,root.AbsoluteSize.X-40)),item.measured)
+			local height=dimensions(item.title,item.description,item.icon,width,item.measured)*factor
 			if #controller.active>0 and used+height>root.AbsoluteSize.Y-48 then break end
 			spawnRecord(table.remove(controller.pending,1));used+=height+8
 		end
 	end
+	local function measure(item)
+		item.measureGeneration=(item.measureGeneration or 0)+1;local generation=item.measureGeneration
+		task.spawn(function()
+			local factor=root:GetAttribute("AltairDisplayScale")or 1;local width=math.min(logicalWidth()*factor,math.max(160,root.AbsoluteSize.X-40))/factor
+			local bodyFace,headingFace=typefaces();local left=item.icon and 58 or 18;local right=28
+			local params=Instance.new("GetTextBoundsParams");params.Width=math.max(1,width-left-right);params.RichText=false
+			local ok,measured=pcall(function()
+				params.Font=headingFace;params.Size=14;params.Text=item.title
+				local titleHeight=math.max(17,math.ceil(textService:GetTextBoundsAsync(params).Y))
+				params.Font=bodyFace;params.Size=13;params.Text=item.description
+				return{width=width,title=titleHeight,body=item.description~=""and math.max(16,math.ceil(textService:GetTextBoundsAsync(params).Y))or 0}
+			end);params:Destroy()
+			if not controller.alive or item.closing or generation~=item.measureGeneration then return end
+			if ok then item.measured=measured end;item.ready=true
+			if item.group then controller:Layout()end;pump()
+		end)
+	end
+	local function removePending(item)
+		local pending=table.find(controller.pending,item)
+		if pending then
+			item.closing=true;item.measureGeneration=(item.measureGeneration or 0)+1
+			table.remove(controller.pending,pending)
+			return true
+		end
+		return false
+	end
+	local function dismissItem(item)
+		if not controller.alive then return end
+		if removePending(item) then pump()
+		elseif item.group then controller:Dismiss(item) end
+	end
 	function controller:Notify(title, description, icon, options)
 		if not self.alive then return nil end
 		options = type(options) == "table" and options or {}
-		title, description = tostring(title or "Altair"):sub(1,160), tostring(description or ""):sub(1,1200)
+		title, description = boundedText(title or "Altair",160), boundedText(description or "",1200)
 		if icon ~= nil and icon ~= false and icon ~= "" then
 			icon = tonumber(icon) and ("rbxassetid://" .. tostring(icon)) or tostring(icon)
 		else icon = nil end
@@ -429,8 +660,7 @@ return function(context)
 						if record.hovered then record.remaining=duration else expiry(record,duration) end
 					end
 					return {Dismiss=function()
-						local pending=table.find(self.pending,record)
-						if pending then table.remove(self.pending,pending) elseif record.group then self:Dismiss(record) end
+						dismissItem(record)
 					end}
 				end
 			end end
@@ -438,27 +668,12 @@ return function(context)
 		self.nextId += 1
 		local item = {id=self.nextId,title=title,description=description,icon=icon,key=key,
 			duration=duration}
-		if #self.pending >= 24 then table.remove(self.pending,1) end
+		local evicted=#self.pending>=24 and removePending(self.pending[1])
 		self.pending[#self.pending+1] = item
-		task.spawn(function()
-			-- Measure the actual FontFace once, outside layout/render loops.
-			local width=math.min(300,math.max(160,root.AbsoluteSize.X-40))
-			local params=Instance.new("GetTextBoundsParams")
-			params.Width=width-(icon and 58 or 20)-20;params.RichText=false
-			local ok,measured=pcall(function()
-				params.Font=titleFont;params.Size=14;params.Text=title
-				local titleHeight=math.max(17,math.ceil(textService:GetTextBoundsAsync(params).Y))
-				params.Font=font;params.Size=13;params.Text=description
-				return {width=width,title=titleHeight,body=description~="" and math.max(16,math.ceil(textService:GetTextBoundsAsync(params).Y)) or 0}
-			end)
-			params:Destroy()
-			if not self.alive then return end
-			if ok then item.measured=measured end
-			item.ready=true;pump()
-		end)
+		measure(item)
+		if evicted then pump()end
 		return {Dismiss=function()
-			local pending = table.find(self.pending,item)
-			if pending then table.remove(self.pending,pending) elseif item.group then self:Dismiss(item) end
+			dismissItem(item)
 		end}
 	end
 	function controller:GetObstacles()
@@ -484,6 +699,14 @@ return function(context)
 		if layoutElapsed>=.1 then layoutElapsed=0;controller:Layout() end
 	end)
 	connect(root:GetPropertyChangedSignal("AbsoluteSize"), function() controller:Layout(); pump() end)
+	connect(root:GetAttributeChangedSignal("AltairPanelTransparency"),function()
+        local alpha=root:GetAttribute("AltairPanelTransparency")or .1
+        local target=Design.opacityAlpha(.14,alpha)
+		for _,record in ipairs(controller.active)do
+			local background=record.group and record.group:FindFirstChild("CardBackground")
+			if background and not record.closing then tween(background,.18,{BackgroundTransparency=target})end
+		end
+	end)
 	connect(root.Destroying, function() controller:Destroy() end)
 	return controller
 end
@@ -931,6 +1154,7 @@ local legacyIcons={
 }
 local function refreshIcon(object)
  if not (object:IsA("ImageLabel") or object:IsA("ImageButton")) then return end
+ if object:GetAttribute("AltairPreserveSourceIcon")==true then return end
  local id=object.Image:match("^rbxassetid://(%d+)$")
  local name=id and legacyIcons[id]
  if id=="3926305904" then name=object.Name=="Back" and "arrow-left" or object.Name=="Toggle" and "chevron-down" or "x" end
@@ -953,28 +1177,46 @@ local function resizeInterface(root)
   local panel=root:FindFirstChild(name)
   if panel and panel:IsA("GuiObject") then
    local scale=panel:FindFirstChild("AltairDisplayScale") or Instance.new("UIScale")
-   scale.Name="AltairDisplayScale";scale.Scale=factor;scale.Parent=panel
+   scale.Name="AltairDisplayScale"
+   scale.Scale=factor*(tonumber(panel:GetAttribute("AltairDialogDensity"))or 1)
+   if panel:GetAttribute("ReferenceScriptSearch")then panel:SetAttribute("AltairSurfaceScale",factor)end
+   scale.Parent=panel
   end
  end
  return factor
 end
 
 -- A single SmartBar shell reflows without rotating its text or button icons.
+
+
 local function bindDock(root)
  local bar,drag=root.SmartBar,root.Drag
- local back=bar.Back;local buttons=back.Buttons;local clock=back.Time
+ local back=bar.Back;local buttons=back.Buttons;local clock=back.Time;local clockRule=clock:FindFirstChild("ClockDivider")
  local layout=buttons:FindFirstChildOfClass("UIListLayout")
- local motion=motionService();local animations={};local view={mode=nil,vertical=false,generation=0}
+ local motion=motionService();local animations={};local view={mode=nil,vertical=false,generation=0};local sizeLimit
  local base={backPosition=back.Position,backSize=back.Size,backAnchor=back.AnchorPoint,
   buttonsPosition=buttons.Position,buttonsSize=buttons.Size,buttonsAnchor=buttons.AnchorPoint,
   timePosition=clock.Position,timeSize=clock.Size,timeAnchor=clock.AnchorPoint,timeAlign=clock.TextXAlignment,
   ampmPosition=clock.AMPM.Position,ampmSize=clock.AMPM.Size,ampmAnchor=clock.AMPM.AnchorPoint,ampmAlign=clock.AMPM.TextXAlignment}
+ local basePadding=layout and layout.Padding or UDim.new(0,5)
+ local dockProfile={width=300,height=60,cell=34,
+   backAnchor=base.backAnchor,backPosition=base.backPosition,backSize=base.backSize,
+   buttonsAnchor=base.buttonsAnchor,buttonsPosition=base.buttonsPosition,buttonsSize=base.buttonsSize,
+   timeAnchor=base.timeAnchor,timePosition=base.timePosition,timeSize=base.timeSize,timeAlign=base.timeAlign,
+   ampmAnchor=base.ampmAnchor,ampmPosition=base.ampmPosition,ampmSize=base.ampmSize,ampmAlign=base.ampmAlign,
+ }
+ local function profile()return dockProfile end
  local horizontal={};local names={"Home","Character","Scripts","Playerlist","Settings"}
  local function mirrorPosition(position,size,pivot)
   local shift=2*pivot.X-1
   return UDim2.new(1-position.X.Scale+size.X.Scale*shift,-position.X.Offset+size.X.Offset*shift,position.Y.Scale,position.Y.Offset)
  end
  local function pixel(p,size)return Vector2.new(p.X.Scale*size.X+p.X.Offset,p.Y.Scale*size.Y+p.Y.Offset)end
+ -- Moving offsets are integer-valued in the engine. Scale coordinates retain
+ -- the fractional phase at every UI scale, including interrupted transitions.
+ local function units(point,parentSize)
+  return UDim2.new(parentSize.X>0 and point.X/parentSize.X or 0,parentSize.X>0 and 0 or point.X,parentSize.Y>0 and point.Y/parentSize.Y or 0,parentSize.Y>0 and 0 or point.Y)
+ end
  local function anchor(object,nextAnchor)
   local delta=nextAnchor-object.AnchorPoint
   object.Position+=UDim2.new(object.Size.X.Scale*delta.X,object.Size.X.Offset*delta.X,object.Size.Y.Scale*delta.Y,object.Size.Y.Offset*delta.Y)
@@ -988,109 +1230,146 @@ local function bindDock(root)
  -- Exact native layout fallback for a saved side dock before its first render.
  local items={};for i,o in ipairs(buttons:GetChildren())do if o:IsA("GuiObject")then items[#items+1]={object=o,index=i}end end
  table.sort(items,function(a,b)return a.object.LayoutOrder==b.object.LayoutOrder and a.index<b.index or a.object.LayoutOrder<b.object.LayoutOrder end)
+ local canonicalSize=Vector2.new(300,60)
+ local canonicalBackSize=pixel(base.backSize,canonicalSize)
+ local canonicalButtonsSize=pixel(base.buttonsSize,canonicalBackSize)
+ local canonicalButtonsTop=pixel(base.buttonsPosition,canonicalBackSize)-canonicalButtonsSize*base.buttonsAnchor
  local total=0;local padding=layout and layout.Padding.Offset or 5
  for _,item in ipairs(items)do total+=item.object.Size.X.Offset end;total+=math.max(0,#items-1)*padding
- local cursor=(base.backSize.X.Offset-total)/2
- for _,item in ipairs(items)do local o=item.object;horizontal[o]=Vector2.new(cursor+o.Size.X.Offset*o.AnchorPoint.X,base.backSize.Y.Offset/2);cursor+=o.Size.X.Offset+padding end
- local scales={};for _,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then local scale=Instance.new("UIScale");scale.Name="DockTransitionScale";scale.Parent=o;scales[o]=scale end end
- function view:BarSize()return self.vertical and UDim2.fromOffset(60,300)or UDim2.fromOffset(300,60)end
+ local cursor=(canonicalButtonsSize.X-total)/2
+ for _,item in ipairs(items)do local o=item.object;horizontal[o]=canonicalButtonsTop+Vector2.new(cursor+o.Size.X.Offset*o.AnchorPoint.X,canonicalButtonsSize.Y*.5);cursor+=o.Size.X.Offset+padding end
+ local scales={};for _,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then local scale=o:FindFirstChildOfClass("UIScale")or Instance.new("UIScale");scale.Name="DockTransitionScale";scale.Parent=o;scales[o]=scale end end
+ function view:BarSize()local p=profile();return self.vertical and UDim2.fromOffset(p.height,p.width)or UDim2.fromOffset(p.width,p.height)end
+ function view:ButtonSize(closed)local size=profile().cell-(closed and 4 or 0);return UDim2.fromOffset(size,size)end
  function view:DragSize(length,thickness)return self.vertical and UDim2.fromOffset(thickness,length)or UDim2.fromOffset(length,thickness)end
  function view:Mirror(mirrored,animate,force)
   if self.vertical then return end
   if self.mirrored==mirrored and not force then return end
-  self.mirrored=mirrored;if self.morphActive then return end
-  anchor(back,base.backAnchor);anchor(buttons,base.buttonsAnchor);anchor(clock,base.timeAnchor);anchor(clock.AMPM,base.ampmAnchor)
-  clock.TextXAlignment=base.timeAlign;clock.AMPM.TextXAlignment=base.ampmAlign
-  set(back,{Position=mirrored and mirrorPosition(base.backPosition,base.backSize,base.backAnchor)or base.backPosition,Size=base.backSize},animate)
-  set(buttons,{Position=base.buttonsPosition,Size=base.buttonsSize},animate)
-  set(clock,{Position=mirrored and mirrorPosition(base.timePosition,base.timeSize,base.timeAnchor)or base.timePosition,Size=base.timeSize},animate)
-  set(clock.AMPM,{Position=base.ampmPosition,Size=base.ampmSize},animate)
+  self.mirrored=mirrored
+  -- Main resolves orientation before the horizontal clock side. Reuse the
+  -- current rendered geometry when that second decision arrives mid-morph.
+  if not force then self:Apply(self.mode or "bottom",animate,true);return end
+  local p=profile()
+  anchor(back,p.backAnchor);anchor(buttons,p.buttonsAnchor);anchor(clock,p.timeAnchor);anchor(clock.AMPM,p.ampmAnchor)
+  clock.TextXAlignment=p.timeAlign;clock.AMPM.TextXAlignment=p.ampmAlign
+  back.BackgroundTransparency=.45;back.UIStroke.Enabled=true;if clockRule then clockRule.Visible=true end
+  set(back,{Position=mirrored and mirrorPosition(p.backPosition,p.backSize,p.backAnchor)or p.backPosition,Size=p.backSize},animate)
+  set(buttons,{Position=p.buttonsPosition,Size=p.buttonsSize},animate)
+  set(clock,{Position=mirrored and mirrorPosition(p.timePosition,p.timeSize,p.timeAnchor)or p.timePosition,Size=p.timeSize},animate)
+  set(clock.AMPM,{Position=p.ampmPosition,Size=p.ampmSize},animate)
+  if clockRule then set(clockRule,{Position=UDim2.new(mirrored and 0 or 1,mirrored and -3 or 2,0,1),Size=UDim2.fromOffset(1,p.height==72 and 32 or 26)},animate)end
  end
- function view:Apply(mode,animate)
-  if self.mode==mode then return end
+ function view:Apply(mode,animate,retarget)
+  local p=dockProfile
+  if self.mode==mode and not retarget then return end
   local vertical=mode=="left"or mode=="right";local changed=self.vertical~=vertical;local initial=self.mode==nil
-  self.mode=mode;root:SetAttribute("AltairDock",mode)
-  if not changed and not initial then return end
+  self.mode=mode;root:SetAttribute("AltairDock",mode);root:SetAttribute("AltairDockButtonSize",p.cell)
+  if not changed and not initial and not retarget then return end
   self.generation+=1;local generation=self.generation
   if self.progressTween then self.progressTween:Cancel()end
   if self.progressConnection then self.progressConnection:Disconnect();self.progressConnection=nil end
   if self.progress then self.progress:Destroy();self.progress=nil end
   for _,t in pairs(animations)do t:Cancel()end;table.clear(animations)
   local factor=root:GetAttribute("AltairDisplayScale")or 1
-  if vertical and not self.vertical and layout and layout.Parent then
-   for _,button in ipairs(buttons:GetChildren())do if button:IsA("GuiObject")and button.AbsoluteSize.X>0 then
-    horizontal[button]=(button.AbsolutePosition-back.AbsolutePosition+button.AbsoluteSize*button.AnchorPoint)/factor
-   end end
-  end
   local rendered={}
   for _,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then rendered[o]=(o.AbsolutePosition+o.AbsoluteSize*o.AnchorPoint-bar.AbsolutePosition)/factor end end
   if layout then layout.Parent=nil end
   self.vertical=vertical;bar:SetAttribute("AltairVertical",vertical);drag:SetAttribute("AltairVertical",vertical)
   if initial and not vertical then if layout then layout.Parent=buttons end;return end
-  local startSize=Vector2.new(bar.Size.X.Offset,bar.Size.Y.Offset)
-  local targetSize=vertical and Vector2.new(60,300)or Vector2.new(300,60)
+  local startSize=bar.AbsoluteSize.X>0 and bar.AbsoluteSize/factor or pixel(bar.Size,root.AbsoluteSize)
+  local targetSize=vertical and Vector2.new(p.height,p.width)or Vector2.new(p.width,p.height)
   local starts,targets={},{ }
-  local targetBackSize=pixel(base.backSize,targetSize)
-  local targetBackAnchor=pixel(self.mirrored and mirrorPosition(base.backPosition,base.backSize,base.backAnchor)or base.backPosition,targetSize)
-  local targetBackTop=targetBackAnchor-targetBackSize*base.backAnchor
+  local targetBackSize=pixel(p.backSize,targetSize)
+  local targetBackAnchor=pixel(self.mirrored and mirrorPosition(p.backPosition,p.backSize,p.backAnchor)or p.backPosition,targetSize)
+  local targetBackTop=targetBackAnchor-targetBackSize*p.backAnchor
   for o,point in pairs(rendered)do starts[o]=point end
   local startBackSize=back.AbsoluteSize/factor
   local startBackCenter=(back.AbsolutePosition+back.AbsoluteSize/2-bar.AbsolutePosition)/factor
   local startClock=(clock.AbsolutePosition+clock.AbsoluteSize*.5-bar.AbsolutePosition)/factor
-  local startTimeSize=Vector2.new(clock.Size.X.Offset,clock.Size.Y.Offset)
-  local startAMPM=pixel(clock.AMPM.Position,startTimeSize)-pixel(clock.AMPM.Size,startTimeSize)*clock.AMPM.AnchorPoint;local startAMPMSize=Vector2.new(clock.AMPM.Size.X.Offset,clock.AMPM.Size.Y.Offset)
-  for i,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then targets[o]=vertical and Vector2.new(30,100+(i-1)*40)or targetBackTop+(horizontal[o]or Vector2.new(27+(i-1)*39,25))end end
+  local startTimeSize=clock.AbsoluteSize.X>0 and clock.AbsoluteSize/factor or pixel(clock.Size,startBackSize)
+  local startAMPM=pixel(clock.AMPM.Position,startTimeSize)-pixel(clock.AMPM.Size,startTimeSize)*clock.AMPM.AnchorPoint;local startAMPMSize=pixel(clock.AMPM.Size,startTimeSize)
+  local startScales={};for o,value in pairs(scales)do startScales[o]=value.Scale end
+  local startCells={};local targetCell=Vector2.new(p.cell,p.cell)
+  for _,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then
+   startCells[o]=pixel(o.Size,buttons.AbsoluteSize/factor)
+   -- The prior Main entrance may still own Size. Retire that track before
+   -- this finite layout morph becomes the geometry owner.
+   motion:Create(o,TweenInfo.new(0),{Size=o.Size}):Play()
+  end end
+  local ruleStart=clockRule and clockRule.Position;local ruleSize=clockRule and clockRule.Size
+  local ruleTarget=vertical and UDim2.fromOffset(10,35)or UDim2.new(self.mirrored and 0 or 1,self.mirrored and -3 or 2,0,1)
+  local ruleTargetSize=vertical and UDim2.fromOffset(34,1)or UDim2.fromOffset(1,26)
+  local horizontalTargets={}
+  for i,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then
+   horizontalTargets[o]=horizontal[o]or Vector2.new(27+(i-1)*39,25)
+   targets[o]=vertical and Vector2.new(30,100+(i-1)*40)or targetBackTop+horizontalTargets[o]
+  end end
   local endBackSize=vertical and Vector2.new(50,214)or targetBackSize
   local endBackCenter=vertical and Vector2.new(30,180)or targetBackTop+targetBackSize/2
-  local targetClock=vertical and Vector2.new(30,28)or targetBackTop+pixel(self.mirrored and mirrorPosition(base.timePosition,base.timeSize,base.timeAnchor)or base.timePosition,targetBackSize)
-  local targetTimeSize=vertical and Vector2.new(54,19)or pixel(base.timeSize,targetBackSize)
-  if not vertical then targetClock+=targetTimeSize*(Vector2.new(.5,.5)-base.timeAnchor)end
-  local targetAMPM=vertical and Vector2.new(7,19)or pixel(base.ampmPosition,targetTimeSize)
-  local targetAMPMSize=vertical and Vector2.new(40,11)or pixel(base.ampmSize,targetTimeSize)
-  if not vertical then targetAMPM-=targetAMPMSize*base.ampmAnchor end
+  local targetClock=vertical and Vector2.new(30,28)or targetBackTop+pixel(self.mirrored and mirrorPosition(p.timePosition,p.timeSize,p.timeAnchor)or p.timePosition,targetBackSize)
+  local targetTimeSize=vertical and Vector2.new(54,19)or pixel(p.timeSize,targetBackSize)
+  if not vertical then targetClock+=targetTimeSize*(Vector2.new(.5,.5)-p.timeAnchor)end
+  local targetAMPM=vertical and Vector2.new(7,19)or pixel(p.ampmPosition,targetTimeSize)
+  local targetAMPMSize=vertical and Vector2.new(40,11)or pixel(p.ampmSize,targetTimeSize)
+  if not vertical then targetAMPM-=targetAMPMSize*p.ampmAnchor end
   anchor(back,Vector2.new(.5,.5));anchor(buttons,Vector2.new(.5,.5));anchor(clock,Vector2.new(.5,.5));anchor(clock.AMPM,Vector2.zero)
   buttons.Position=UDim2.fromScale(.5,.5);buttons.Size=UDim2.fromScale(1,1)
   self.morphActive=true
-  local function ease(t)t=math.clamp(t,0,1);return 1-(1-t)^3 end
+  local function ease(t)t=math.clamp(t,0,1);return t*t*t*(t*(t*6-15)+10)end
   local function draw(t)
-   local shrink=ease(t/.8);local expand=ease(math.max(0,t-.06)/.94)
-   local size=Vector2.new(startSize.X+(targetSize.X-startSize.X)*(vertical and shrink or expand),startSize.Y+(targetSize.Y-startSize.Y)*(vertical and expand or shrink))
-   bar.Size=UDim2.fromOffset(size.X,size.Y)
-   local points={};local lo=Vector2.new(math.huge,math.huge);local hi=Vector2.new(-math.huge,-math.huge)
-   local fan=ease(t/.9)
+   local fan=ease(t)
+   local size=startSize:Lerp(targetSize,fan)
+   self.currentSize=size
+   bar.Size=units(size,root:IsDescendantOf(game)and root.AbsoluteSize or Vector2.zero)
+   if sizeLimit then sizeLimit.MinSize=size;sizeLimit.MaxSize=size end
+   local points,cells={},{}
    for o,target in pairs(targets)do
-    local source=starts[o];local from=Vector2.new(source.X/math.max(1,startSize.X),source.Y/math.max(1,startSize.Y));local to=Vector2.new(target.X/targetSize.X,target.Y/targetSize.Y)
-    local normalized=from:Lerp(to,fan);local point=Vector2.new(math.clamp(normalized.X*size.X,24,math.max(24,size.X-24)),math.clamp(normalized.Y*size.Y,24,math.max(24,size.Y-24)))
-    points[o]=point;lo=Vector2.new(math.min(lo.X,point.X),math.min(lo.Y,point.Y));hi=Vector2.new(math.max(hi.X,point.X),math.max(hi.Y,point.Y))
-    scales[o].Scale=1-.14*math.sin(math.pi*t)
+    local point=starts[o]:Lerp(target,fan)
+    points[o]=point;cells[o]=startCells[o]:Lerp(targetCell,fan)
    end
-   local fromSize=Vector2.new(startBackSize.X/math.max(1,startSize.X),startBackSize.Y/math.max(1,startSize.Y))
-   local toSize=Vector2.new(endBackSize.X/targetSize.X,endBackSize.Y/targetSize.Y)
-   local fromCenter=Vector2.new(startBackCenter.X/math.max(1,startSize.X),startBackCenter.Y/math.max(1,startSize.Y))
-   local toCenter=Vector2.new(endBackCenter.X/targetSize.X,endBackCenter.Y/targetSize.Y)
-   local proportion=fromSize:Lerp(toSize,fan);local center=fromCenter:Lerp(toCenter,fan)
-   local rawSize=Vector2.new(proportion.X*size.X,proportion.Y*size.Y);local rawCenter=Vector2.new(center.X*size.X,center.Y*size.Y)
+   -- Upright square icons need a little more room on a diagonal than their
+   -- centre-line spacing. Bound the shared scale by actual pairwise spacing.
+   local cap=1;local seen={}
+   for o,point in pairs(points)do
+    for _,other in ipairs(seen)do
+     local delta=point-points[other];local combined=(cells[o]+cells[other])*.5
+     cap=math.min(cap,math.max((math.abs(delta.X)-1)/math.max(1,combined.X),(math.abs(delta.Y)-1)/math.max(1,combined.Y)))
+    end
+    seen[#seen+1]=o
+   end
+   for o,value in pairs(scales)do value.Scale=math.min(math.max(.05,cap),startScales[o]+(1-startScales[o])*fan)end
+   local rawSize=startBackSize:Lerp(endBackSize,fan);local rawCenter=startBackCenter:Lerp(endBackCenter,fan)
    local left=math.max(5,rawCenter.X-rawSize.X/2);local right=math.min(size.X-5,rawCenter.X+rawSize.X/2)
    local top=math.max(5,rawCenter.Y-rawSize.Y/2);local bottom=math.min(size.Y-5,rawCenter.Y+rawSize.Y/2)
    local backTop=Vector2.new(left,top);local backSize=Vector2.new(math.max(1,right-left),math.max(1,bottom-top));local backCenter=backTop+backSize/2
-   back.Position=UDim2.fromOffset(backCenter.X,backCenter.Y);back.Size=UDim2.fromOffset(backSize.X,backSize.Y)
-   for o,point in pairs(points)do local p=point-backTop;o.Position=UDim2.fromOffset(p.X,p.Y)end
-   local normalized=Vector2.new(startClock.X/math.max(1,startSize.X),startClock.Y/math.max(1,startSize.Y)):Lerp(Vector2.new(targetClock.X/targetSize.X,targetClock.Y/targetSize.Y),fan)
-   local cp=Vector2.new(normalized.X*size.X,normalized.Y*size.Y)-backTop
-   clock.Position=UDim2.fromOffset(cp.X,cp.Y)
-   local ts=startTimeSize:Lerp(targetTimeSize,fan);clock.Size=UDim2.fromOffset(ts.X,ts.Y)
-   local ap=startAMPM:Lerp(targetAMPM,fan);local az=startAMPMSize:Lerp(targetAMPMSize,fan);clock.AMPM.Position=UDim2.fromOffset(ap.X,ap.Y);clock.AMPM.Size=UDim2.fromOffset(az.X,az.Y)
+   back.Position=units(backCenter,size);back.Size=units(backSize,size)
+   for o,point in pairs(points)do local pointInBack=point-backTop;o.Position=units(pointInBack,backSize);o.Size=units(cells[o],backSize)end
+   local cp=startClock:Lerp(targetClock,fan)-backTop
+   clock.Position=units(cp,backSize)
+   local ts=startTimeSize:Lerp(targetTimeSize,fan);clock.Size=units(ts,backSize)
+   local ap=startAMPM:Lerp(targetAMPM,fan);local az=startAMPMSize:Lerp(targetAMPMSize,fan);clock.AMPM.Position=units(ap,ts);clock.AMPM.Size=units(az,ts)
+   if clockRule then clockRule.Position=ruleStart:Lerp(ruleTarget,fan);clockRule.Size=ruleSize:Lerp(ruleTargetSize,fan)end
   end
   local function complete()
    if generation~=self.generation then return end
    draw(1);self.morphActive=false
+   -- Endpoints are authored integer logical dimensions. Keep them in offsets:
+   -- a settled bar must not inherit a previous viewport's normalization ratio.
+   bar.Size=UDim2.fromOffset(targetSize.X,targetSize.Y)
+   if sizeLimit then sizeLimit:Destroy();sizeLimit=nil end
    if not vertical then
     self:Mirror(self.mirrored==true,false,true)
-    for o,position in pairs(horizontal)do if o.Parent then o.Position=UDim2.fromOffset(position.X,position.Y)end end
-    if layout then layout.Parent=buttons end
+    for o,position in pairs(horizontalTargets)do if o.Parent then o.Position=UDim2.fromOffset(position.X,position.Y)end end
+    if layout then layout.Padding=basePadding;layout.Parent=buttons end
    end
+   for o in pairs(startCells)do if o.Parent then o.Size=UDim2.fromOffset(p.cell,p.cell)end end
   end
   if animate and not root:GetAttribute("AltairReduceMotion")then
+   -- A parent may resize before AbsoluteSize observers are dispatched. The
+   -- active-only constraint retains fractional logical dimensions independently
+   -- of that parent normalization, then releases the authored endpoint.
+   if not sizeLimit then sizeLimit=Instance.new("UISizeConstraint");sizeLimit.Name="DockMotionBounds"end
+   sizeLimit.MinSize=startSize;sizeLimit.MaxSize=startSize;sizeLimit.Parent=bar
    local progress=Instance.new("NumberValue");self.progress=progress
    local connection=progress.Changed:Connect(draw);self.progressConnection=connection
    self.progressTween=motion:Create(progress,TweenInfo.new(.46,Enum.EasingStyle.Sine,Enum.EasingDirection.Out),{Value=1})
@@ -1103,13 +1382,13 @@ local function bindDock(root)
    local oldVertical=line.Size.Y.Offset>line.Size.X.Offset
    local angle=(oldVertical and 90 or 0)+line.Rotation
    local length=math.max(line.Size.X.Offset,line.Size.Y.Offset)
-   line.Size=self:DragSize(length,4)
+   line.Size=self:DragSize(length,2)
    line.Rotation=animate and angle-(vertical and 90 or 0)or 0
-   set(line,{Size=self:DragSize(100,4)},animate)
+   set(line,{Size=self:DragSize(100,2)},animate)
    if animate then local rotation=motion:Create(line,TweenInfo.new(.36,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Rotation=0});animations.HandleRotation=rotation;rotation:Play()end
   end
  end
- root.Destroying:Connect(function()for _,t in pairs(animations)do t:Cancel()end;if view.progressTween then view.progressTween:Cancel()end;if view.progressConnection then view.progressConnection:Disconnect()end;if view.progress then view.progress:Destroy()end;if layout and not layout.Parent then layout:Destroy()end end)
+ root.Destroying:Connect(function()for _,t in pairs(animations)do t:Cancel()end;if view.progressTween then view.progressTween:Cancel()end;if view.progressConnection then view.progressConnection:Disconnect()end;if view.progress then view.progress:Destroy()end;if sizeLimit then sizeLimit:Destroy();sizeLimit=nil end;if layout and not layout.Parent then layout:Destroy()end end)
  return view
 end
 
@@ -1117,6 +1396,223 @@ local function bindRayfieldBridge(context)
  local root,capsules=context.Root,context.Capsules
  local env=getgenv and getgenv()or _G
  local bridge={alive=true,records=setmetatable({}, {__mode="k"}),libraries=setmetatable({}, {__mode="k"})}
+ local native=game:GetService("TweenService")
+ -- Exact Rayfield Gen2 1.2.3 defaults. Upstream themes/default.luau,
+ -- Copyright (c) 2026 Corridon Capital, MPL-2.0; THIRD_PARTY_NOTICES.md.
+ local function rgb(r,g,b)return Color3.fromRGB(r,g,b)end
+ local function gradient(a,b,c)
+  if c then return ColorSequence.new({ColorSequenceKeypoint.new(0,a),ColorSequenceKeypoint.new(.9999,b),ColorSequenceKeypoint.new(1,c)})end
+  return ColorSequence.new(a,b)
+ end
+ local defaults={
+  CornerRoundness=UDim.new(0,20),WindowColor=gradient(rgb(10,10,10),rgb(25,25,25),rgb(35,35,35)),ShadowColor=rgb(20,20,20),
+  ElementStroke=rgb(35,35,35),ElementGradient=gradient(rgb(30,30,30),rgb(35,35,35),rgb(35,35,35)),ElementStrokeGradient=gradient(rgb(48,48,48),rgb(58,58,58),rgb(48,48,48)),
+  TabColor=rgb(255,255,255),TabBackground=gradient(rgb(50,50,50),rgb(35,35,35)),TabStroke=gradient(rgb(95,95,95),rgb(50,50,50)),
+  SliderBackground=rgb(47,47,47),SliderBackgroundHover=rgb(60,60,60),SliderProgress=gradient(rgb(0,170,127),rgb(0,134,98)),SliderStroke=rgb(255,255,255),ActionColor=rgb(255,255,255),
+  TitleFont=Font.new("rbxassetid://12187365364",Enum.FontWeight.SemiBold),Font=Font.new("rbxassetid://12187365364",Enum.FontWeight.Medium),ContentColor=rgb(255,255,255),
+  LiveAnimation=false,DarkToggleOverlay=true,ElementTransparency=0,ElementStrokeTransparency=0,ElementStrokeHoverTransparency=0,ElementStrokeHover=rgb(50,50,50),ElementCornerRadius=UDim.new(0,12),ElementTextHoverColor=rgb(255,255,255),TitlingColor=rgb(255,255,255),DropdownHighlight=rgb(255,255,255),
+  AccentColor=rgb(23,153,110),AccentStroke=rgb(32,201,144),AccentGlow=.4,StatBackground=rgb(25,25,25),SliderHandle=rgb(255,255,255),PillCornerRadius=UDim.new(1,0),
+  ToggleTrack=rgb(0,0,0),ToggleTrackTransparency=.9,ToggleKnobOff=rgb(255,255,255),ToggleKnobOffTransparency=.8,FieldBackground=rgb(255,255,255),FieldTransparency=.9,FieldGlow=rgb(255,255,255),PlaceholderColor=rgb(178,178,178),SurfaceStroke=rgb(255,255,255),
+  NeutralButton=rgb(38,38,38),NeutralButtonHover=rgb(54,54,54),NeutralButtonStroke=rgb(255,255,255),ErrorColor=rgb(185,50,50),ErrorStrokeColor=rgb(240,75,75),
+ }
+ bridge.DefaultTheme=table.freeze(table.clone(defaults));bridge.themingEnabled=true
+ local function equal(a,b)
+  if typeof(a)~=typeof(b)then return false end
+  if typeof(a)=="ColorSequence"then
+   local x,y=a.Keypoints,b.Keypoints;if #x~=#y then return false end
+   for i,p in ipairs(x)do if p.Time~=y[i].Time or p.Value~=y[i].Value then return false end end
+   return true
+  elseif typeof(a)=="Font"then return a.Family==b.Family and a.Weight==b.Weight and a.Style==b.Style end
+  return a==b
+ end
+ local function same(a,b)
+  if type(a)~="table"or type(b)~="table"then return false end
+  for key,value in pairs(a)do if not equal(value,b[key])then return false end end
+  for key in pairs(b)do if a[key]==nil then return false end end
+  return true
+ end
+ local function isDefault(theme)
+  if type(theme)~="table"then return false end
+  for key,value in pairs(defaults)do
+   local current=theme[key]
+   if key=="Font"or key=="TitleFont"then
+    if typeof(current)~="Font"or current.Weight~=value.Weight or current.Style~=Enum.FontStyle.Normal or(current.Family~=value.Family and current.Family~="rbxasset://fonts/families/BuilderSans.json")then return false end
+   elseif not equal(current,value)then return false end
+  end
+  for key in pairs(theme)do if defaults[key]==nil then return false end end
+  return true
+ end
+ local function stopThemeMotion(record)
+  if record.themeConnection then record.themeConnection:Disconnect();record.themeConnection=nil end
+  local progress=record.themeProgress;record.themeProgress=nil
+  for _,animation in ipairs(record.themeAnimations or {})do animation:Cancel()end
+  record.themeAnimations={}
+  if progress then progress:Destroy()end
+ end
+ local function sample(sequence,time)
+  local keys=sequence.Keypoints
+  for i=2,#keys do local a,b=keys[i-1],keys[i];if time<=b.Time then return a.Value:Lerp(b.Value,(time-a.Time)/math.max(1e-7,b.Time-a.Time))end end
+  return keys[#keys].Value
+ end
+ local function applyWindowTheme(record,target,animate)
+  local window=record.window;if not window.main.Parent or window.unloaded then return false end
+  stopThemeMotion(record)
+  -- Hide/Show owns the collapsed shell's corner morph. A theme update must
+  -- change its future expanded radius without touching the visible pill.
+  local hiddenCorner=window.hidden and window.windowCorner
+  local hiddenRadius=hiddenCorner and hiddenCorner.CornerRadius
+  local themeProperties=window.themeProperties
+  local hiddenBinding=hiddenCorner and themeProperties[hiddenCorner]
+  local originalTheme=window.theme;local themeBefore=table.clone(originalTheme)
+  local previous={}
+  for object,properties in pairs(themeProperties)do if typeof(object)=="Instance"and object.Parent and object~=hiddenCorner then
+   for property,binding in pairs(properties)do local ok,value=pcall(function()return object[property]end);if ok then previous[#previous+1]={object=object,property=property,binding=binding,from=value}end end
+  end end
+  if hiddenBinding then themeProperties[hiddenCorner]=nil end
+  local ok=pcall(record.changeTheme,window,target)
+  if hiddenBinding then themeProperties[hiddenCorner]=hiddenBinding end
+  if hiddenCorner and hiddenCorner.Parent and hiddenCorner.CornerRadius~=hiddenRadius then hiddenCorner.CornerRadius=hiddenRadius end
+  if not ok then
+   -- An unsupported upstream binding can throw after changing some surfaces.
+   -- Roll back this attempt, including any native tweens it already started.
+   window.theme=originalTheme
+   for key in pairs(originalTheme)do if themeBefore[key]==nil then originalTheme[key]=nil end end
+   for key,value in pairs(themeBefore)do originalTheme[key]=value end
+   for _,entry in ipairs(previous)do if entry.object.Parent then pcall(function()
+    local kind=typeof(entry.from)
+    if kind=="Color3"or kind=="number"or kind=="UDim"or kind=="UDim2"or kind=="Vector2"then
+     local cancelled=native:Create(entry.object,TweenInfo.new(0),{[entry.property]=entry.from});cancelled:Play();cancelled:Cancel()
+    end
+    entry.object[entry.property]=entry.from
+   end)end end
+   return false
+  end
+  record.themeApplied=table.clone(window.theme)
+  local duration=root:GetAttribute("AltairReduceMotion")and .08 or .28
+  animate=animate~=false and not window.hidden
+  local sequences={}
+  for _,entry in ipairs(previous)do
+   local got,goal=pcall(function()local b=entry.binding;return type(b)=="table"and b[2](window.theme[b[1]])or window.theme[b]end)
+   if got and goal~=nil and entry.object.Parent then
+    local kind=typeof(goal)
+    if kind=="ColorSequence"and typeof(entry.from)==kind then
+     if animate and not equal(entry.from,goal)then
+      local times,seen={},{}
+      for _,sequence in ipairs({entry.from,goal})do for _,point in ipairs(sequence.Keypoints)do if not seen[point.Time]then seen[point.Time]=true;times[#times+1]=point.Time end end end
+      table.sort(times);entry.points={};entry.target=goal
+      for _,time in ipairs(times)do entry.points[#entry.points+1]={time,sample(entry.from,time),sample(goal,time)}end
+      entry.object[entry.property]=entry.from;sequences[#sequences+1]=entry
+     else entry.object[entry.property]=goal end
+    elseif kind=="Color3"or kind=="number"or kind=="UDim"or kind=="UDim2"or kind=="Vector2"then
+     local animation=native:Create(entry.object,TweenInfo.new(animate and duration or 0,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{[entry.property]=goal})
+     if animate then entry.object[entry.property]=entry.from;record.themeAnimations[#record.themeAnimations+1]=animation;animation:Play()
+     else animation:Play();animation:Cancel();entry.object[entry.property]=goal end
+    end
+   end
+  end
+  if #sequences>0 then
+   local progress=Instance.new("NumberValue");record.themeProgress=progress
+   record.themeConnection=progress.Changed:Connect(function(alpha)
+    for _,entry in ipairs(sequences)do if entry.object.Parent then local points={};for _,point in ipairs(entry.points)do points[#points+1]=ColorSequenceKeypoint.new(point[1],point[2]:Lerp(point[3],alpha))end;entry.object[entry.property]=ColorSequence.new(points)end end
+   end)
+   local animation=native:Create(progress,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Value=1});record.themeAnimations[#record.themeAnimations+1]=animation
+   animation.Completed:Once(function(status)if record.themeProgress==progress then
+    if status==Enum.PlaybackState.Completed then for _,entry in ipairs(sequences)do if entry.object.Parent then entry.object[entry.property]=entry.target end end end
+    if record.themeConnection then record.themeConnection:Disconnect();record.themeConnection=nil end;record.themeProgress=nil;progress:Destroy()
+   end end);animation:Play()
+  end
+  return true
+ end
+ local function restoredTheme(record)
+  local current=table.clone(record.window.theme)
+  for key,value in pairs(record.themeOriginal)do if not record.themeApplied or equal(current[key],record.themeApplied[key])then current[key]=value end end
+  return current
+ end
+ local function stopAutomaticTheme(record,restore,animate)
+  if restore and record.themeApplied and type(record.window.theme)=="table"then
+   if not applyWindowTheme(record,restoredTheme(record),animate)then stopThemeMotion(record)end
+  else stopThemeMotion(record)end
+  record.themeApplied=nil;record.themeActive=false
+ end
+ local function checkAutomaticTheme(record)
+  if not bridge.alive or record.destroyed or record.window.__AltairRayfieldBridgeOwner~=record or not record.themeOriginal or record.themeOptOut or record.window.unloaded or not record.window.main.Parent then return false end
+  if type(record.window.theme)~="table"then stopThemeMotion(record);record.themeApplied=nil;record.themeActive=false;record.themeOptOut=true;return false end
+  if not same(record.window.theme,record.themeApplied or record.themeOriginal)then
+   stopAutomaticTheme(record,true,true);record.themeOptOut=true;record.window.screenGui:SetAttribute("AltairRayfieldTheme","Custom");return false
+  end
+  return true
+ end
+ local function palette(record)
+  local config=context.Theme or {};local bar=root:FindFirstChild("SmartBar");local settings=root:FindFirstChild("Settings")
+  local function color(object,property,fallback)
+   if not object then return fallback end
+   local target=object:GetAttribute("AltairTheme_"..property)
+   if target~=nil then return target end
+   if not root:GetAttribute("AltairThemeEnabled")then return object:GetAttribute("AltairThemeDefault_"..property)or object[property]end
+   return object[property]
+  end
+  local background=color(settings,"BackgroundColor3",color(bar,"BackgroundColor3",rgb(12,13,17)))
+  local light=.2126*background.R+.7152*background.G+.0722*background.B>.55
+  local ink=light and rgb(22,24,29)or rgb(245,247,250);local shade=light and Color3.new(0,0,0)or Color3.new(1,1,1)
+  local accent=config.active and config.color or rgb(216,146,65)
+  local back=bar and bar:FindFirstChild("Back");local buttons=back and back:FindFirstChild("Buttons");local scripts=buttons and buttons:FindFirstChild("Scripts");local fill=scripts and scripts:FindFirstChildOfClass("UIGradient")
+  if fill then local sequence=color(fill,"Color",fill.Color);accent=sample(sequence,.5)end
+  local edge=background:Lerp(shade,light and .2 or .24);local raised=background:Lerp(shade,light and .04 or .08)
+  local target=table.clone(record.themeOriginal)
+  target.WindowColor=gradient(background:Lerp(light and Color3.new(1,1,1)or Color3.new(0,0,0),.14),background,background:Lerp(shade,.04))
+  target.ShadowColor=Color3.new(0,0,0);target.ElementGradient=gradient(raised,raised:Lerp(accent,.035),raised:Lerp(shade,.035));target.ElementStroke=edge;target.ElementStrokeGradient=gradient(edge,edge:Lerp(accent,.12),edge)
+  target.TabBackground=gradient(raised:Lerp(shade,.04),raised);target.TabStroke=gradient(edge,edge:Lerp(accent,.08));target.TabColor=ink
+  target.SliderBackground=raised;target.SliderBackgroundHover=raised:Lerp(shade,.08);target.SliderProgress=gradient(accent:Lerp(background,.12),accent);target.SliderStroke=ink;target.SliderHandle=ink
+  target.ActionColor=ink;target.ContentColor=ink;target.TitlingColor=ink;target.ElementTextHoverColor=ink;target.DropdownHighlight=ink
+  target.ElementStrokeHover=edge:Lerp(accent,.35);target.ElementStrokeTransparency=.7;target.ElementStrokeHoverTransparency=.35;target.ElementTransparency=.04
+  target.AccentColor=accent;target.AccentStroke=accent:Lerp(shade,.25);target.StatBackground=raised;target.ToggleTrack=ink;target.ToggleKnobOff=ink;target.FieldBackground=ink;target.FieldGlow=ink;target.PlaceholderColor=ink:Lerp(background,.35);target.SurfaceStroke=ink
+  target.NeutralButton=raised;target.NeutralButtonHover=raised:Lerp(shade,.08);target.NeutralButtonStroke=edge;target.DarkToggleOverlay=not light
+  if config.style=="Roblox"then target.CornerRoundness=UDim.new(0,12);target.ElementCornerRadius=UDim.new(0,8);target.Font=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium);target.TitleFont=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.SemiBold)end
+  for key,value in pairs(record.fontOverrides or {})do target[key]=value end
+  return target
+ end
+ function bridge:RefreshThemes()
+  if not self.alive then return end
+  local enabled=self.themingEnabled and capsules:IsEnabled()
+  for _,record in pairs(self.records)do if checkAutomaticTheme(record)then
+   if enabled then local target=palette(record);if not record.themeApplied or not same(target,record.themeApplied)then record.themeActive=applyWindowTheme(record,target,true);if not record.themeActive then record.themeOptOut=true end end;record.window.screenGui:SetAttribute("AltairRayfieldTheme",record.themeActive and "Altair"or"Unsupported")
+   else stopAutomaticTheme(record,true,true);record.window.screenGui:SetAttribute("AltairRayfieldTheme","Default")end
+  end end
+ end
+ function bridge:SetThemingEnabled(enabled)self.themingEnabled=enabled~=false;self:RefreshThemes()end
+ local function wrapAutomaticTheme(record)
+  local window=record.window
+  if type(window.ChangeTheme)~="function"or type(window.themeProperties)~="table"or not isDefault(window.theme)then window.screenGui:SetAttribute("AltairRayfieldTheme","CustomOrUnsupported");return end
+  record.changeTheme=window.ChangeTheme;record.themeOriginal=table.clone(window.theme)
+  record.changeThemeWrapper=function(self,...)
+   if not bridge.alive or record.destroyed or record.themeOptOut then return record.changeTheme(self,...)end
+   local overrides=select(1,...)
+   local fontsOnly=type(overrides)=="table"and next(overrides)~=nil
+   if fontsOnly then for key,value in pairs(overrides)do
+    if(key~="Font"and key~="TitleFont")or typeof(value)~="Font"then fontsOnly=false;break end
+   end end
+   if fontsOnly then
+    if not checkAutomaticTheme(record)then return record.changeTheme(self,...)end
+    -- Gen2 asynchronously resolves its brand fonts with a partial ChangeTheme.
+    -- Font-only calls (whatever their source) do not choose a new palette.
+    stopThemeMotion(record)
+    local values=table.pack(record.changeTheme(self,...))
+    record.fontOverrides=record.fontOverrides or {}
+    for key in pairs(overrides)do
+     local value=self.theme[key]
+     record.fontOverrides[key]=value;record.themeOriginal[key]=value
+     if record.themeApplied then record.themeApplied[key]=value end
+    end
+    return table.unpack(values,1,values.n)
+   end
+   -- A developer's explicit choice always wins, including a partial theme.
+   local restored=restoredTheme(record);stopThemeMotion(record)
+   for key,value in pairs(restored)do self.theme[key]=value end
+   record.themeApplied=nil;record.themeActive=false;record.themeOptOut=true;self.screenGui:SetAttribute("AltairRayfieldTheme","Custom")
+   return record.changeTheme(self,...)
+  end
+  window.ChangeTheme=record.changeThemeWrapper
+ end
  local function notify(original,self,data,...)
   if bridge.alive and root.Parent and type(data)=="table" and not data.Actions and not data.Callback then
    local ok,result=pcall(context.Notify,data.Title or data.title or "Rayfield",data.Content or data.content or data.Description,data.Image or data.Icon or data.icon,{Duration=data.Duration or data.duration})
@@ -1125,16 +1621,18 @@ local function bindRayfieldBridge(context)
   return original(self,data,...)
  end
  function bridge:WrapWindow(window)
-  if type(window)~="table" or self.records[window]then return window end
+  if not self.alive or type(window)~="table" or self.records[window]then return window end
   if type(window.Hide)~="function" or type(window.Show)~="function" or not window.main or not window.screenGui then return window end
   local record={window=window,hide=window.Hide,show=window.Show,rect=window._collapsedRect,notify=window.Notify,generation=0}
   self.records[window]=record
+  window.__AltairRayfieldBridgeOwner=record
+  wrapAutomaticTheme(record)
   local name=window.showName or (window.title and window.title.Text)or "Rayfield"
   local handle=capsules:RegisterExternal({Title=name,Icon=window.collapsedIcon and window.collapsedIcon.Image or window.showIcon,Restore=function()window:Show()end})
   record.handle=handle
-  if record.notify then record.notifyWrapper=function(self,data,...)return notify(record.notify,self,data,...)end;window.Notify=record.notifyWrapper end
+  if record.notify then record.notifyWrapper=function(self,data,...)if record.destroyed then return record.notify(self,data,...)end;return notify(record.notify,self,data,...)end;window.Notify=record.notifyWrapper end
   record.rectWrapper=function(self,...)
-   if bridge.alive and capsules:IsEnabled() and self.hidden and handle.group.Visible then
+   if not record.destroyed and bridge.alive and capsules:IsEnabled() and self.hidden and handle.group.Visible then
     local p,visualSize=handle:Rect();local s=visualSize;local localScale=self.main:FindFirstChildOfClass("UIScale");if localScale then s/=math.max(.01,localScale.Scale)end;local parent=self.main.Parent
     local origin=parent:IsA("GuiObject")and parent.AbsolutePosition or self.screenGui.AbsolutePosition
     local a=self.main.AnchorPoint
@@ -1177,6 +1675,8 @@ local function bindRayfieldBridge(context)
    end
   end
   record.hideWrapper=function(self,...)
+   if record.destroyed then return record.hide(self,...)end
+   checkAutomaticTheme(record)
    if not bridge.alive then return record.hide(self,...)end
    if not capsules:IsEnabled()then record.setEnabled(false);return record.hide(self,...)end
    if record.pending then return end
@@ -1207,6 +1707,8 @@ local function bindRayfieldBridge(context)
    return table.unpack(result,2,result.n)
   end
   record.showWrapper=function(self,...)
+   if record.destroyed then return record.show(self,...)end
+   checkAutomaticTheme(record)
    if bridge.alive and not capsules:IsEnabled()then record.setEnabled(false);return record.show(self,...)end
    if bridge.alive then
     if self.animating then return record.show(self,...)end
@@ -1217,9 +1719,20 @@ local function bindRayfieldBridge(context)
    return record.show(self,...)
   end
   window.Hide=record.hideWrapper;window.Show=record.showWrapper
-  record.connection=window.screenGui.Destroying:Connect(function()handle:Destroy();bridge.records[window]=nil end)
+  record.connection=window.screenGui.Destroying:Connect(function()
+   record.destroyed=true;stopThemeMotion(record)
+   record.restoreToken=nil
+   if window.__AltairRayfieldBridgeOwner==record then window.__AltairRayfieldBridgeOwner=nil end
+   if window.Hide==record.hideWrapper then window.Hide=record.hide end
+   if window.Show==record.showWrapper then window.Show=record.show end
+   if window._collapsedRect==record.rectWrapper then window._collapsedRect=record.rect end
+   if window.Notify==record.notifyWrapper then window.Notify=record.notify end
+   if window.ChangeTheme==record.changeThemeWrapper then window.ChangeTheme=record.changeTheme end
+   handle:Destroy();bridge.records[window]=nil
+  end)
   record.background=window.main.BackgroundTransparency
   if window.hidden then record.setEnabled(capsules:IsEnabled())end
+  self:RefreshThemes()
   return window
  end
  function bridge:WrapLibrary(library)
@@ -1286,24 +1799,64 @@ local function bindRayfieldBridge(context)
  end
  bridge.enabledConnection=capsules:ObserveEnabled(function(enabled)
   for _,record in pairs(bridge.records)do record.setEnabled(enabled)end
+  bridge:RefreshThemes()
  end)
+ local theme=context.Theme
+ if theme and type(theme.Apply)=="function"then
+  bridge.themeOwner=theme;bridge.themeApply=theme.Apply
+  bridge.themeApplyWrapper=function(self,...)
+   local values=table.pack(bridge.themeApply(self,...));if bridge.alive then bridge:RefreshThemes()end;return table.unpack(values,1,values.n)
+  end
+  theme.Apply=bridge.themeApplyWrapper
+ end
+ local function restoreNativeWindow(record)
+  local window=record.window;local token={};record.restoreToken=token
+  local delays={.1,.2,.4,.8}
+  local function finish()
+   if record.restoreToken==token then record.restoreToken=nil end
+   if window.__AltairRayfieldBridgeOwner==record then window.__AltairRayfieldBridgeOwner=nil end
+  end
+  local function attempt(index)
+   if record.restoreToken~=token then return end
+   if window.__AltairRayfieldBridgeOwner~=record or record.destroyed or window.unloaded
+    or not window.main or not window.main.Parent or not window.screenGui.Parent
+    or window.Hide~=record.hide or window.Show~=record.show then finish();return end
+   if window.animating then
+    local delay=delays[index]
+    if delay then task.delay(delay,function()attempt(index+1)end)else finish()end
+    return
+   end
+   -- Native Hide owns its in-flight geometry. Wait for it to settle, then use
+   -- native Show rather than changing animating, Position or Size ourselves.
+   window.main.Visible=true
+   if record.background then window.main.BackgroundTransparency=record.background end
+   for face,visible in pairs(record.face or {})do if face.Parent then face.Visible=visible end end
+   if window.hidden then pcall(record.show,window)end
+   finish()
+  end
+  attempt(1)
+ end
  function bridge:Destroy()
   if not self.alive then return end;self.alive=false;for _,connection in ipairs(self.discoveryConnections)do connection:Disconnect()end;if hook.active==self then hook.active=nil end
   if self.enabledConnection then self.enabledConnection:Disconnect()end
+  if self.themeOwner and self.themeOwner.Apply==self.themeApplyWrapper then self.themeOwner.Apply=self.themeApply end
   for window,record in pairs(self.records)do
+   local ownsWindow=window.__AltairRayfieldBridgeOwner==record
+   local restoreVisibility=ownsWindow and window.Hide==record.hideWrapper and window.Show==record.showWrapper
+   if ownsWindow and record.themeOriginal and window.ChangeTheme==record.changeThemeWrapper then stopAutomaticTheme(record,true,false)else stopThemeMotion(record)end
    record.generation+=1
    if record.connection then record.connection:Disconnect()end
-   if not window.unloaded and window.main and window.main.Parent then
-    window.main.Visible=true
-    if record.background then window.main.BackgroundTransparency=record.background end
-    for face,visible in pairs(record.face or {})do if face.Parent then face.Visible=visible end end
-    if window.hidden then record.show(window)end
+   if ownsWindow then
+    if window.Hide==record.hideWrapper then window.Hide=record.hide end
+    if window.Show==record.showWrapper then window.Show=record.show end
+    if window._collapsedRect==record.rectWrapper then window._collapsedRect=record.rect end
+    if window.Notify==record.notifyWrapper then window.Notify=record.notify end
+    if window.ChangeTheme==record.changeThemeWrapper then window.ChangeTheme=record.changeTheme end
+    if window.screenGui.Parent then window.screenGui:SetAttribute("AltairRayfieldTheme",nil)end
    end
-   if window.Hide==record.hideWrapper then window.Hide=record.hide end
-   if window.Show==record.showWrapper then window.Show=record.show end
-   if window._collapsedRect==record.rectWrapper then window._collapsedRect=record.rect end
-   if window.Notify==record.notifyWrapper then window.Notify=record.notify end
    record.handle:Destroy()
+   if restoreVisibility then restoreNativeWindow(record)
+   elseif ownsWindow then window.__AltairRayfieldBridgeOwner=nil end
   end
   for library,record in pairs(self.libraries)do
    if library.CreateWindow==record.wrapper then library.CreateWindow=record.create end
@@ -1314,106 +1867,180 @@ local function bindRayfieldBridge(context)
 end
 
 local function bindHomeIsolation(root,scopes)
- -- Foreign game surfaces do not need Altair theme/ancestor checks per tween.
- local tweens=game:GetService("TweenService");local controller={opened=false,generation=0,records={},connections={},customScopes=scopes~=nil}
- local players=game:GetService("Players");local playerGui=players.LocalPlayer:WaitForChild("PlayerGui")
- local function tween(object,goals,duration)
-  if not object.Parent then return end
-  local animation=tweens:Create(object,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goals)
-  -- Roblox arbitrates overlapping properties. Position and opacity must remain
-  -- independent so starting a fade never cancels the outward slide.
-  animation:Play()
- end
+ local native=game:GetService("TweenService");local run=game:GetService("RunService")
+ local controller={opened=false,generation=0,records={},connections={},customScopes=scopes~=nil,alive=true}
+ local playerGui=game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
  local properties={Frame={"BackgroundTransparency"},ScrollingFrame={"BackgroundTransparency","ScrollBarImageTransparency"},TextLabel={"BackgroundTransparency","TextTransparency","TextStrokeTransparency"},TextButton={"BackgroundTransparency","TextTransparency","TextStrokeTransparency"},TextBox={"BackgroundTransparency","TextTransparency","TextStrokeTransparency"},ImageLabel={"BackgroundTransparency","ImageTransparency"},ImageButton={"BackgroundTransparency","ImageTransparency"},UIStroke={"Transparency"},CanvasGroup={"GroupTransparency"}}
+ local function budget(generation,opened)
+  if not controller.alive or controller.generation~=generation or controller.opened~=opened then return false end
+  if os.clock()-(controller.workAt or 0)>.001 then run.Heartbeat:Wait();controller.workAt=os.clock()end
+  return controller.alive and controller.generation==generation and controller.opened==opened
+ end
+ local function cancel(record)
+  for animation in pairs(record.animations)do animation:Cancel()end;table.clear(record.animations);table.clear(record.motion)
+ end
+ local function tween(record,object,goals,duration)
+  if not object.Parent then return end
+  local byProperty=record.motion[object]or{};record.motion[object]=byProperty;local changed={}
+  for property,value in pairs(goals)do
+   local old=byProperty[property];if old then old:Cancel();byProperty[property]=nil end
+   if object[property]~=value then changed[property]=value end
+  end
+  if not next(changed)then return end
+  local animation=native:Create(object,TweenInfo.new(duration,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),changed)
+  for property in pairs(changed)do byProperty[property]=animation end;record.animations[animation]=true
+  animation.Completed:Once(function()
+   record.animations[animation]=nil
+   for property in pairs(changed)do if byProperty[property]==animation then byProperty[property]=nil end end
+  end);animation:Play()
+ end
+ local function setEnabled(screen,record,value)
+  record.writing=true;screen.Enabled=value;record.writing=false
+ end
+ local function excluded(screen)
+  if not screen:IsA("ScreenGui")then return true end
+  local name=screen.Name:lower()
+  return screen==root or screen:IsAncestorOf(root)or screen:GetAttribute("AltairUIRevision")or name=="robloxgui"or name:find("chat",1,true)~=nil
+ end
  local function hideScreen(screen)
-  if not screen:IsA("ScreenGui")or screen==root or screen:IsAncestorOf(root)or screen:GetAttribute("AltairUIRevision")or controller.records[screen]then return end
-  if not screen.Enabled then return end
-  local record={enabled=screen.Enabled,visuals={},roots={}};controller.records[screen]=record
-  record.enabledConnection=screen:GetPropertyChangedSignal("Enabled"):Connect(function()
-   if controller.opened and record.hidden and screen.Enabled then screen.Enabled=false end
-  end)
-  local generation=controller.generation;local viewport=root.AbsoluteSize
+  if not controller.alive or not controller.opened then return end
+  if excluded(screen)or not screen.Enabled and not controller.records[screen]then return end
+  local record=controller.records[screen]
+  if record and record.generation==controller.generation and(record.phase=="hiding"or record.phase=="hidden")then return end
+  if not record then
+   record={enabled=screen.Enabled,visuals={},roots={},rootIndex={},motion=setmetatable({},{__mode="k"}),animations={}};controller.records[screen]=record
+   record.enabledConnection=screen:GetPropertyChangedSignal("Enabled"):Connect(function()
+    if record.writing then return end;record.enabled=screen.Enabled
+    if controller.opened and record.hidden and screen.Enabled then setEnabled(screen,record,false)end
+   end)
+  end
+  cancel(record);record.hidden=false
+  local generation=controller.generation;record.generation=generation;record.phase="hiding"
+  local viewport=root.AbsoluteSize
   task.spawn(function()
-  local function budget()
-   if not controller.opened or controller.generation~=generation then return false end
-   if os.clock()-(controller.workAt or 0)>.001 then game:GetService("RunService").Heartbeat:Wait();controller.workAt=os.clock()end
-   return controller.opened and controller.generation==generation
-  end
-  local function fade(object,visible)
-   if not budget()then return end
-   if object:IsA("GuiObject")then visible=visible and object.Visible end
-   if not visible then return end
-   local keys=properties[object.ClassName]
-   if keys then local values,goals={},{};for _,key in ipairs(keys)do values[key]=object[key];goals[key]=1 end;record.visuals[object]=values;tween(object,goals,.32)end
-   if object:IsA("CanvasGroup")then return end
-   for _,child in ipairs(object:GetChildren())do fade(child,visible)end
-  end
-  for _,object in ipairs(screen:GetChildren())do if not budget()then return end;if object:IsA("GuiObject")and object.Visible then
-   local center=object.AbsolutePosition-root.AbsolutePosition+object.AbsoluteSize/2;local relative=Vector2.new(center.X/viewport.X,center.Y/viewport.Y)
-   local state={object=object,position=object.Position};table.insert(record.roots,state)
-   if relative.X>.32 and relative.X<.68 and relative.Y>.32 and relative.Y<.68 then
-    local scale=object:FindFirstChildOfClass("UIScale");state.created=not scale or scale:GetAttribute("AltairHomeOwnedScale")==true
-    if not scale then scale=Instance.new("UIScale");scale.Name="AltairHomeIsolationScale";scale:SetAttribute("AltairHomeOwnedScale",true);scale.Parent=object end
-    state.scale=scale;state.value=scale.Scale;tween(scale,{Scale=scale.Scale*1.48},.3)
-   else
-    local distances={center.X,viewport.X-center.X,center.Y,viewport.Y-center.Y};local side=1
-    for index=2,4 do if distances[index]<distances[side]then side=index end end
-    local size=object.AbsoluteSize;local dx=side==1 and -center.X-size.X/2-24 or side==2 and viewport.X-center.X+size.X/2+24 or 0
-    local dy=side==3 and -center.Y-size.Y/2-24 or side==4 and viewport.Y-center.Y+size.Y/2+24 or 0
-    local parentScale=1;local ancestor=object.Parent
-    while ancestor and ancestor~=screen do for _,child in ipairs(ancestor:GetChildren())do if child:IsA("UIScale")then parentScale*=child.Scale end end;ancestor=ancestor.Parent end
-    tween(object,{Position=state.position+UDim2.fromOffset(dx/math.max(.01,parentScale),dy/math.max(.01,parentScale))},.3)
+   local function fade(object,visible)
+    if not budget(generation,true)then return end
+    if object:IsA("GuiObject")then visible=visible and object.Visible end
+    if not visible then return end
+    local keys=properties[object.ClassName]
+    if keys then
+     local values=record.visuals[object]
+     if not values then values={};for _,key in ipairs(keys)do values[key]=object[key]end;record.visuals[object]=values end
+     local goals={};for key in pairs(values)do goals[key]=1 end;tween(record,object,goals,.32)
+    end
+    if object:IsA("CanvasGroup")then return end
+    for _,child in ipairs(object:GetChildren())do fade(child,visible)end
    end
-   fade(object,true)
-  end end
-  task.delay(.34,function()if controller.opened and controller.generation==generation and screen.Parent then record.hidden=true;screen.Enabled=false end end)
+   for _,object in ipairs(screen:GetChildren())do
+    if not budget(generation,true)then return end
+    if object:IsA("GuiObject")and object.Visible then
+     local state=record.rootIndex[object]
+     if not state then
+      state={object=object,position=object.Position};record.rootIndex[object]=state;record.roots[#record.roots+1]=state
+      local center=object.AbsolutePosition-root.AbsolutePosition+object.AbsoluteSize/2
+      local relative=Vector2.new(center.X/math.max(1,viewport.X),center.Y/math.max(1,viewport.Y))
+      if relative.X>.32 and relative.X<.68 and relative.Y>.32 and relative.Y<.68 then
+       local scale=object:FindFirstChildOfClass("UIScale");state.created=not scale or scale:GetAttribute("AltairHomeOwnedScale")==true
+       if not scale then scale=Instance.new("UIScale");scale.Name="AltairHomeIsolationScale";scale:SetAttribute("AltairHomeOwnedScale",true);scale.Parent=object end
+       state.scale=scale;state.value=scale.Scale;state.hiddenScale=scale.Scale*1.48
+      else
+       local distances={center.X,viewport.X-center.X,center.Y,viewport.Y-center.Y};local side=1
+       for index=2,4 do if distances[index]<distances[side]then side=index end end
+       local size=object.AbsoluteSize
+       local dx=side==1 and-center.X-size.X/2-24 or side==2 and viewport.X-center.X+size.X/2+24 or 0
+       local dy=side==3 and-center.Y-size.Y/2-24 or side==4 and viewport.Y-center.Y+size.Y/2+24 or 0
+       local factor=1;local ancestor=object.Parent
+       while ancestor and ancestor~=screen do local scale=ancestor:FindFirstChildOfClass("UIScale");if scale then factor*=scale.Scale end;ancestor=ancestor.Parent end
+       state.hiddenPosition=state.position+UDim2.fromOffset(dx/math.max(.01,factor),dy/math.max(.01,factor))
+      end
+     end
+     if state.scale and state.scale.Parent then tween(record,state.scale,{Scale=state.hiddenScale},.3)
+     elseif state.hiddenPosition then tween(record,object,{Position=state.hiddenPosition},.3)end
+     fade(object,true)
+    end
+   end
+   task.delay(.34,function()if controller.alive and controller.opened and controller.generation==generation and screen.Parent then record.hidden=true;record.phase="hidden";setEnabled(screen,record,false)end end)
   end)
+ end
+ local function restoreCore()
+  if not controller.coreState then return end
+  local starter=game:GetService("StarterGui")
+  for kind,value in pairs(controller.coreState)do pcall(starter.SetCoreGuiEnabled,starter,kind,value)end
+  pcall(starter.SetCore,starter,"TopbarEnabled",controller.topbarState);controller.coreState=nil
+ end
+ local function release(screen,record)
+  if record.enabledConnection then record.enabledConnection:Disconnect()end
+  for _,state in ipairs(record.roots)do if state.created and state.scale and state.scale.Parent then state.scale:Destroy()end end
+  if controller.records[screen]==record then controller.records[screen]=nil end
  end
  function controller:SetOpened(opened)
-  self.generation+=1;self.opened=opened
+  if not self.alive then return end
+  self.generation+=1;self.opened=opened;self.workAt=os.clock();local generation=self.generation
   if opened then
-   if not self.customScopes then
+   if not self.customScopes and not self.coreState then
     local starter=game:GetService("StarterGui");self.coreState={}
     for _,kind in ipairs(Enum.CoreGuiType:GetEnumItems())do if kind~=Enum.CoreGuiType.All then local ok,value=pcall(starter.GetCoreGuiEnabled,starter,kind);if ok then self.coreState[kind]=value end end end
     local ok,value=pcall(starter.GetCore,starter,"TopbarEnabled");self.topbarState=not ok or value~=false
-    -- Chat remains usable while Home is open. Never blanket-disable CoreGui:
-    -- that also hides the modern chat window and its toggle.
-    for kind in pairs(self.coreState)do
-     if kind~=Enum.CoreGuiType.Chat then pcall(starter.SetCoreGuiEnabled,starter,kind,false)end
-    end
+    for kind in pairs(self.coreState)do if kind~=Enum.CoreGuiType.Chat then pcall(starter.SetCoreGuiEnabled,starter,kind,false)end end
    end
    for _,parent in ipairs(scopes)do for _,screen in ipairs(parent:GetChildren())do hideScreen(screen)end end
   else
-   if self.coreState then
-    local starter=game:GetService("StarterGui")
-    for kind,value in pairs(self.coreState)do pcall(starter.SetCoreGuiEnabled,starter,kind,value)end
-    pcall(starter.SetCore,starter,"TopbarEnabled",self.topbarState);self.coreState=nil
-   end
+   restoreCore()
    for screen,record in pairs(self.records)do
-    if record.enabledConnection then record.enabledConnection:Disconnect()end
-    if screen.Parent then
-    screen.Enabled=record.enabled
-    for object,values in pairs(record.visuals)do tween(object,values,.24)end
-    for _,state in ipairs(record.roots)do
-     tween(state.object,{Position=state.position},.24)
-     if state.scale and state.scale.Parent then
-      tween(state.scale,{Scale=state.value},.24)
-      if state.created then local scale=state.scale;task.delay(.25,function()if scale.Parent and not controller.opened then scale:Destroy()end end)end
+    cancel(record);record.hidden=false;record.generation=generation;record.phase="restoring"
+    if screen.Parent then setEnabled(screen,record,record.enabled)else release(screen,record)end
+   end
+   task.spawn(function()
+    for screen,record in pairs(self.records)do
+     if not budget(generation,false)then return end
+     if screen.Parent then
+      for object,values in pairs(record.visuals)do if not budget(generation,false)then return end;tween(record,object,values,.24)end
+      for _,state in ipairs(record.roots)do
+       if not budget(generation,false)then return end
+       tween(record,state.object,{Position=state.position},.24)
+       if state.scale and state.scale.Parent then tween(record,state.scale,{Scale=state.value},.24)end
+      end
      end
     end
-   end end
-   self.records={}
+    task.delay(.25,function()
+     if not controller.alive or controller.opened or controller.generation~=generation then return end
+     for screen,record in pairs(controller.records)do release(screen,record)end
+    end)
+   end)
   end
  end
- local function watch(parent)table.insert(controller.connections,parent.ChildAdded:Connect(function(child)if controller.opened then task.defer(hideScreen,child)end end))end
- if not scopes then scopes={playerGui};if type(gethui)=="function"then local ok,parent=pcall(gethui);if ok and parent~=playerGui then table.insert(scopes,parent)end end end
- for _,parent in ipairs(scopes)do watch(parent)end
- function controller:Destroy()self:SetOpened(false);for _,connection in ipairs(self.connections)do connection:Disconnect()end end
+ if not scopes then scopes={playerGui};if type(gethui)=="function"then local ok,parent=pcall(gethui);if ok and parent~=playerGui then scopes[#scopes+1]=parent end end end
+ local observed=setmetatable({},{__mode="k"})
+ local function watchScreen(screen)
+  if excluded(screen)or observed[screen]then return end
+  observed[screen]=screen:GetPropertyChangedSignal("Enabled"):Connect(function()
+   if controller.opened and screen.Enabled and not controller.records[screen]then task.defer(hideScreen,screen)end
+  end)
+ end
+ for _,parent in ipairs(scopes)do
+  for _,screen in ipairs(parent:GetChildren())do watchScreen(screen)end
+  controller.connections[#controller.connections+1]=parent.ChildAdded:Connect(function(screen)watchScreen(screen);if controller.opened then task.defer(hideScreen,screen)end end)
+ end
+ function controller:Destroy()
+  if not self.alive then return end;self.alive=false;self.generation+=1;self.opened=false;restoreCore()
+  for _,connection in ipairs(self.connections)do connection:Disconnect()end
+  for _,connection in pairs(observed)do connection:Disconnect()end
+  for screen,record in pairs(self.records)do
+   cancel(record)
+   if screen.Parent then
+    setEnabled(screen,record,record.enabled)
+    for object,values in pairs(record.visuals)do if object.Parent then for property,value in pairs(values)do object[property]=value end end end
+    for _,state in ipairs(record.roots)do if state.object.Parent then state.object.Position=state.position end;if state.scale and state.scale.Parent then state.scale.Scale=state.value end end
+   end
+   release(screen,record)
+  end
+ end
  return controller
 end
+
 local function bindDragContrast(root)
  local line=root.Drag.Drag;local motion=motionService();local controller={elapsed=0,goal=nil}
- local stroke=Instance.new("UIStroke");stroke.Name="AdaptiveContrast";stroke.Color=Color3.fromRGB(14,15,18);stroke.Thickness=1;stroke.Transparency=1;stroke:SetAttribute("AltairContrastOutline",true);stroke.Parent=line
+ local stroke=Instance.new("UIStroke");stroke.Name="AdaptiveContrast";stroke.Color=Color3.fromRGB(14,14,16);stroke.Thickness=.35;stroke.BorderStrokePosition=Enum.BorderStrokePosition.Inner;stroke.Transparency=1;stroke:SetAttribute("AltairContrastOutline",true);stroke.Parent=line
  local params=RaycastParams.new();params.FilterType=Enum.RaycastFilterType.Exclude;params.IgnoreWater=false
  local function luminance(color)return .2126*color.R+.7152*color.G+.0722*color.B end
  function controller:Update(value)
@@ -1421,7 +2048,7 @@ local function bindDragContrast(root)
   local strength=math.clamp((value-.58)/.32,0,1);local target=1-strength*.86;local outlineColor=Color3.new(1,1,1):Lerp(Color3.fromRGB(14,15,18),strength)
   if self.goal and math.abs(self.goal-target)<.025 then return end;self.goal=target
   if self.animation then self.animation:Cancel()end
-  self.animation=motion:Create(stroke,TweenInfo.new(.24,Enum.EasingStyle.Quint),{Transparency=target,Thickness=1+strength*.5,Color=outlineColor});self.animation:Play()
+  self.animation=motion:Create(stroke,TweenInfo.new(.24,Enum.EasingStyle.Quint),{Transparency=target,Thickness=.35+strength*.15,Color=outlineColor});self.animation:Play()
  end
  function controller:Sample()
   local camera=workspace.CurrentCamera;if not camera then return .3 end
@@ -1493,6 +2120,7 @@ local function measure(font, size, text)
     params.Size = size
     params.Width = math.huge
     local ok, bounds = pcall(TextService.GetTextBoundsAsync, TextService, params)
+    params:Destroy()
     return if ok then bounds else Vector2.new(size * 0.6, size)
 end
 
@@ -1500,15 +2128,19 @@ end
 -- GetTextBoundsAsync yields, so measure the ten digits once per (font, size) and
 -- cache. Later odometers reuse the result and never touch TextService again.
 local metricsCache = {}
-local function digitMetrics(font, size)
+local metricsCacheCount = 0
+local function metricsKey(font, size)
     -- Style is part of the key: italic and normal measure differently
-    local key = tostring(font.Family)
+    return tostring(font.Family)
         .. "|"
         .. tostring(font.Weight)
         .. "|"
         .. tostring(font.Style)
         .. "|"
         .. tostring(size)
+end
+local function digitMetrics(font, size, valid)
+    local key = metricsKey(font, size)
     local cached = metricsCache[key]
     if cached then
         return cached
@@ -1516,14 +2148,17 @@ local function digitMetrics(font, size)
 
     local advance, maxWidth = {}, 0
     for d = 0, 9 do
-        local w = math.ceil(measure(font, size, tostring(d)).X)
+        if valid and not valid() then return nil end
+        local w = math.ceil(measure(font, size, tostring(d)).X) + 2
         advance[d] = w
         if w > maxWidth then
             maxWidth = w
         end
     end
     cached = { advance = advance, maxWidth = maxWidth }
+    if metricsCacheCount >= 64 then table.clear(metricsCache);metricsCacheCount = 0 end
     metricsCache[key] = cached
+    metricsCacheCount += 1
     return cached
 end
 
@@ -1540,6 +2175,9 @@ function odometer.new(window, container, opts)
         duration = opts.duration or 0.55,
         slots = {}, -- [indexFromRight] = { reel = reelData?, static = label? }
         length = 0, -- how many slots are currently shown
+        alive = true,
+        metricGeneration = 0,
+        metricConnections = {},
     }, odometer)
 
     self.roll = TweenInfo.new(self.duration, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -1555,9 +2193,24 @@ function odometer.new(window, container, opts)
     -- Natural advance per digit (includes side bearings), plus the widest: the
     -- scrolling strip uses the widest so no glyph clips mid-roll, while each clip
     -- cell uses its own digit's advance.
-    local metrics = digitMetrics(window.theme.Font, self.textSize)
+    local measuredFont = window.theme.Font
+    self.metricConnections[#self.metricConnections + 1] = container.Destroying:Connect(function()
+        self.alive = false;self.metricGeneration += 1
+        for _,connection in ipairs(self.metricConnections) do connection:Disconnect() end
+        table.clear(self.metricConnections)
+        for _,slot in pairs(self.slots) do
+            if slot.reel then
+                if slot.reel.stripTween then slot.reel.stripTween:Cancel();slot.reel.stripTween = nil end
+                if slot.reel.sizeTween then slot.reel.sizeTween:Cancel();slot.reel.sizeTween = nil end
+            end
+        end
+    end)
+
+    local metrics = digitMetrics(measuredFont, self.textSize, function()return self.alive end)
+    if not self.alive or not metrics then return self end
     self.advance = metrics.advance
     self.maxWidth = metrics.maxWidth
+    self.metricsKey = metricsKey(measuredFont, self.textSize)
 
     window:Create("UIListLayout", {
         FillDirection = Enum.FillDirection.Horizontal,
@@ -1570,6 +2223,68 @@ function odometer.new(window, container, opts)
     })
 
     return self
+end
+
+-- The owning window can replace the rendered glyph face after construction.
+-- Re-measure only on that event, retaining the vertical reel's exact phase.
+function odometer:_applyMetrics(metrics)
+    local oldAdvance = self.advance
+    self.advance, self.maxWidth = metrics.advance, metrics.maxWidth
+    for _,slot in pairs(self.slots) do
+        local reel = slot.reel
+        if reel and reel.cell.Parent then
+            local rolling = reel.stripTween ~= nil
+            local phase = 1
+            if rolling and reel.startIndex and reel.targetIndex and reel.startIndex ~= reel.targetIndex then
+                phase = math.clamp((-reel.strip.Position.Y.Offset / self.height - reel.startIndex) / (reel.targetIndex - reel.startIndex), 0, 1)
+            elseif rolling and oldAdvance[reel.fromDigit or reel.target] ~= oldAdvance[reel.target] then
+                local from = oldAdvance[reel.fromDigit or reel.target]
+                phase = math.clamp((reel.cell.Size.X.Offset - from) / (oldAdvance[reel.target] - from), 0, 1)
+            end
+            if reel.sizeTween then reel.sizeTween:Cancel();reel.sizeTween = nil end
+            local from = self.advance[reel.fromDigit or reel.target]
+            local target = self.advance[reel.target]
+            reel.cell.Size = UDim2.fromOffset(from + (target - from) * phase, self.height)
+            reel.strip.Size = UDim2.fromOffset(self.maxWidth, self.height)
+            for _,glyph in ipairs(reel.strip:GetChildren()) do
+                if glyph:IsA("TextLabel") then glyph.Size = UDim2.fromOffset(self.maxWidth, self.height) end
+            end
+            if rolling then
+                local remaining = math.max(.01, self.duration - (os.clock() - (reel.startedAt or os.clock())))
+                reel.sizeTween = variables.tweenService:Create(reel.cell, TweenInfo.new(remaining, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Size = UDim2.fromOffset(target, self.height)})
+                reel.sizeTween:Play()
+            end
+        end
+    end
+end
+
+function odometer:_watchFont(label)
+    if self.metricProbe then return end
+    self.metricProbe = label
+    local function changed()
+        if not self.alive or not label.Parent then return end
+        local key = metricsKey(label.FontFace, label.TextSize)
+        if key == self.metricsKey and not self.metricPending then return end
+        self.metricGeneration += 1
+        self.metricFace, self.metricSize = label.FontFace, label.TextSize
+        if self.metricPending then return end
+        self.metricPending = true
+        task.defer(function()
+            while self.alive and label.Parent do
+                local generation, font, size = self.metricGeneration, self.metricFace, self.metricSize
+                local metrics = digitMetrics(font, size, function()return self.alive end)
+                if not self.alive or not label.Parent then break end
+                if generation == self.metricGeneration then
+                    self.metricsKey = metricsKey(font, size)
+                    self:_applyMetrics(metrics)
+                    break
+                end
+            end
+            self.metricPending = false
+        end)
+    end
+    self.metricConnections[#self.metricConnections + 1] = label:GetPropertyChangedSignal("FontFace"):Connect(changed)
+    changed()
 end
 
 -- Lazily build (or fetch) the reel for a slot: a clipped cell + a fixed-width
@@ -1604,7 +2319,7 @@ function odometer:_reel(index)
     })
 
     for i = 0, stripLength - 1 do
-        self.window:Create("TextLabel", {
+        local glyph = self.window:Create("TextLabel", {
             Text = tostring(i % 10),
             Position = UDim2.fromOffset(0, i * self.height),
             Size = UDim2.fromOffset(self.maxWidth, self.height),
@@ -1618,6 +2333,7 @@ function odometer:_reel(index)
 
             Parent = strip,
         }, { TextColor3 = "ContentColor", FontFace = "Font" })
+        self:_watchFont(glyph)
     end
 
     local reel = { cell = cell, strip = strip, digit = 0, target = 0, stripTween = nil, sizeTween = nil }
@@ -1693,6 +2409,7 @@ function odometer:_reelRoll(reel, digit, up)
 
     reel.strip.Position = UDim2.new(0.5, 0, 0, -startIndex * self.height)
     reel.target = digit
+    reel.fromDigit, reel.startIndex, reel.targetIndex, reel.startedAt = a, startIndex, targetIndex, os.clock()
 
     -- Roll the strip vertically and reflow the cell to the new digit's width together.
     local stripTween = variables.tweenService:Create(reel.strip, self.roll, {
@@ -1762,10 +2479,17 @@ end
 -- Core: render `text`, animating digit changes when `animate` and rolling in the
 -- direction implied by `up` (value increased vs decreased).
 function odometer:_render(text, animate, up)
+    if not self.alive then return end
     text = tostring(text)
 
     -- skip the reconcile when unchanged; snap() runs every drag frame
     if text == self._lastText then
+        if not animate then
+            for _,slot in pairs(self.slots) do
+                local reel = slot.reel
+                if reel and (reel.stripTween or reel.sizeTween) then self:_reelSnap(reel, reel.target) end
+            end
+        end
         return
     end
     self._lastText = text
@@ -1807,6 +2531,7 @@ end
 -- Fade every current label toward `target` transparency, and remember it so
 -- lazily-created cells come in at the same level. Mirrors Window:_reveal.
 function odometer:reveal(target, animate, info)
+    if not self.alive then return end
     self.transparency = target
     for _, slot in self.slots do
         if slot.static and slot.static.Visible then
@@ -1853,8 +2578,8 @@ local constants={statAccents={
 local accents = constants.statAccents
 
 local accentTransparency = NumberSequence.new({
-    NumberSequenceKeypoint.new(0, 0.85),
-    NumberSequenceKeypoint.new(1, 0),
+    NumberSequenceKeypoint.new(0, 0.98),
+    NumberSequenceKeypoint.new(1, 0.86),
 })
 
 local compactHeight = 41
@@ -1958,44 +2683,56 @@ function Statistic.new(tab, properties)
     return self
 end
 
--- full 90px card: title, value bottom-left, % change bottom-right
-function Statistic:_buildFull()
+-- Both card layouts share the same material and accent edge. Keep these
+-- defaults in one place without changing their layout-specific descendants.
+function Statistic:_accentGradient(parent, color)
+    return self.window:Create("UIGradient", {
+        Rotation = 2,
+        Offset = Vector2.new(0, 0.5),
+        Color = color,
+        Transparency = accentTransparency,
+        Parent = parent,
+    })
+end
+
+function Statistic:_buildShell(properties)
     local window = self.window
-
-    self.main = window:Create("Frame", {
-        Size = UDim2.new(1, -20, 0, 90),
-        BorderSizePixel = 0,
-        Name = self.name,
-        ZIndex = 5,
-
-        BackgroundTransparency = 1,
-
-        Parent = self.tab.tabPage,
-    }, { BackgroundColor3 = "StatBackground", BackgroundTransparency = "ElementTransparency" })
-
+    properties.Name = self.name
+    properties.BorderSizePixel = 0
+    properties.ZIndex = 5
+    properties.BackgroundTransparency = 1
+    properties.Parent = self.tab.tabPage
+    self.main = window:Create("Frame", properties,
+        { BackgroundColor3 = "StatBackground", BackgroundTransparency = "ElementTransparency" })
+    self.main:SetAttribute("AltairDesignRole", "inset")
     window:Create("UICorner", {
         Parent = self.main,
     }, { CornerRadius = "ElementCornerRadius" })
-
     self.stroke = window:Create("UIStroke", {
-        Transparency = 1, -- Animation In = 0
-        Color = Color3.fromRGB(255, 255, 255),
-
+        Transparency = 1,
+        Color = Design.Edge,
+        Thickness = 0.6,
         Parent = self.main,
     }, { Transparency = "ElementStrokeTransparency" })
+    self.strokeGradient = self:_accentGradient(self.stroke, accents.neutral.stroke)
+end
 
-    self.strokeGradient = window:Create("UIGradient", {
-        Rotation = 2,
-        Offset = Vector2.new(0, 0.5),
-        Color = accents.neutral.stroke,
-        Transparency = accentTransparency,
-
-        Parent = self.stroke,
+-- full 90px card: title, value bottom-left, % change bottom-right
+function Statistic:_buildFull()
+    local window = self.window
+    self:_buildShell({ Size = UDim2.new(1, -20, 0, 90) })
+    self.signal = window:Create("Frame", {
+        Name = "DirectionSignal", Position = UDim2.fromOffset(0, 17),
+        Size = UDim2.fromOffset(3, 56), BorderSizePixel = 0,
+        BackgroundColor3 = glowColor(accents.neutral), BackgroundTransparency = 1,
+        ZIndex = 6, Parent = self.main,
     })
+    self.signal:SetAttribute("AltairDesignRole", "accent")
+    window:Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = self.signal })
 
     self.titleContainer = window:Create("Frame", {
         Size = UDim2.new(1, -40, 0, 32),
-        Position = UDim2.fromOffset(20, 15),
+        Position = UDim2.fromOffset(18, 12),
         BorderSizePixel = 0,
         LayoutOrder = -1,
         BackgroundTransparency = 1,
@@ -2025,7 +2762,7 @@ function Statistic:_buildFull()
         Size = UDim2.fromOffset(300, 19),
         BorderSizePixel = 0,
         BackgroundTransparency = 1,
-        TextSize = 19,
+        TextSize = 14,
         TextXAlignment = Enum.TextXAlignment.Left,
         TextWrapped = true,
         LayoutOrder = 1,
@@ -2036,14 +2773,7 @@ function Statistic:_buildFull()
         Parent = self.titleContainer,
     }, { TextColor3 = "ContentColor", FontFace = "TitleFont" })
 
-    self.mainGradient = window:Create("UIGradient", {
-        Rotation = 2,
-        Offset = Vector2.new(0, 0.5),
-        Color = accents.neutral.fill,
-        Transparency = accentTransparency,
-
-        Parent = self.gradientContainer,
-    })
+    self.mainGradient = self:_accentGradient(self.gradientContainer, accents.neutral.fill)
 
     window:Create("UICorner", {
         Parent = self.gradientContainer,
@@ -2076,8 +2806,8 @@ function Statistic:_buildFull()
     -- Value (bottom-left) + change (bottom-right) odometer readouts.
     self.valueHost = window:Create("Frame", {
         AnchorPoint = Vector2.new(0, 1),
-        Position = UDim2.new(0, 20, 1, -15),
-        Size = UDim2.fromOffset(200, 20),
+        Position = UDim2.new(0, 18, 1, -16),
+        Size = UDim2.fromOffset(200, 24),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         ZIndex = 10,
@@ -2097,7 +2827,7 @@ function Statistic:_buildFull()
     })
 
     self.valueOdo = odometer.new(window, self.valueHost, {
-        textSize = 20,
+        textSize = 24,
         alignment = Enum.HorizontalAlignment.Left,
         transparency = 1, -- revealed to 0 on show
     })
@@ -2121,37 +2851,10 @@ function Statistic:_buildCompact()
     -- in a row it's content-sized and flexes; standalone it's full-width, no flex item
     local inRow = self.tab.compact or false
 
-    self.main = window:Create("Frame", {
-        Name = self.name,
+    self:_buildShell({
         Size = if inRow then UDim2.fromOffset(0, compactHeight) else UDim2.new(1, -20, 0, compactHeight),
         AutomaticSize = if inRow then Enum.AutomaticSize.X else Enum.AutomaticSize.None,
         ClipsDescendants = true,
-        BorderSizePixel = 0,
-        ZIndex = 5,
-
-        BackgroundTransparency = 1, -- In = ElementTransparency
-
-        Parent = self.tab.tabPage,
-    }, { BackgroundColor3 = "StatBackground", BackgroundTransparency = "ElementTransparency" })
-
-    window:Create("UICorner", {
-        Parent = self.main,
-    }, { CornerRadius = "ElementCornerRadius" })
-
-    self.stroke = window:Create("UIStroke", {
-        Transparency = 1, -- In = ElementStrokeTransparency
-        Color = Color3.fromRGB(255, 255, 255),
-
-        Parent = self.main,
-    }, { Transparency = "ElementStrokeTransparency" })
-
-    self.strokeGradient = window:Create("UIGradient", {
-        Rotation = 2,
-        Offset = Vector2.new(0, 0.5),
-        Color = accents.neutral.stroke,
-        Transparency = accentTransparency,
-
-        Parent = self.stroke,
     })
 
     if inRow then
@@ -2186,14 +2889,7 @@ function Statistic:_buildCompact()
         Parent = self.card,
     }, { CornerRadius = "ElementCornerRadius" })
 
-    self.mainGradient = window:Create("UIGradient", {
-        Rotation = 2,
-        Offset = Vector2.new(0, 0.5),
-        Color = accents.neutral.fill,
-        Transparency = accentTransparency,
-
-        Parent = self.card,
-    })
+    self.mainGradient = self:_accentGradient(self.card, accents.neutral.fill)
 
     window:Create("UIPadding", {
         PaddingLeft = UDim.new(0, 15),
@@ -2303,6 +2999,7 @@ function Statistic:_setAccent(key, direction)
     local accent = accents[key]
     self.strokeGradient.Color = accent.stroke
     self.mainGradient.Color = accent.fill
+    if self.signal then variables.tweenService:Create(self.signal, accentTweenInfo, { BackgroundColor3 = glowColor(accent) }):Play() end
     if self.glow then
         self.glow.Color = glowColor(accent)
     end
@@ -2469,12 +3166,14 @@ function Statistic:_setShown(shown, animate)
 
     if shown then
         w:_revealCommon(self, animate)
+        w:_reveal(self.signal, { BackgroundTransparency = 0.12 }, animate)
         w:_reveal(self.gradientContainer, { BackgroundTransparency = 0 }, animate)
         w:_reveal(self.glow, { Transparency = 0.82 }, animate)
         self.valueOdo:reveal(0, animate)
         self.changeOdo:reveal(0, animate)
     else
         w:_hideCommon(self, animate)
+        w:_reveal(self.signal, { BackgroundTransparency = 1 }, animate)
         w:_reveal(self.gradientContainer, { BackgroundTransparency = 1 }, animate)
         w:_reveal(self.glow, { Transparency = 1 }, animate)
         self.valueOdo:reveal(1, animate)
@@ -2504,8 +3203,8 @@ end)()
 local function rayfieldWindow(parent)
  local root=parent:FindFirstAncestorOfClass("ScreenGui")
  local service=motionService(function()return root and root:GetAttribute("AltairReduceMotion")==true end)
- local font=Font.new("rbxasset://fonts/families/GothamSSm.json")
- local window={theme={Font=font,TitleFont=font,ContentColor=Color3.fromRGB(245,245,247),StatBackground=Color3.fromRGB(19,21,24),ElementTransparency=.08,ElementStrokeTransparency=.65,ElementCornerRadius=UDim.new(0,12)}}
+ local font=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium)
+ local window={theme={Font=font,TitleFont=Font.new(font.Family,Enum.FontWeight.SemiBold),ContentColor=Design.Ink,StatBackground=Design.Raised,ElementTransparency=.12,ElementStrokeTransparency=.9,ElementCornerRadius=UDim.new(0,12)}}
  function window:Create(class,properties,themes)
   local object=Instance.new(class)
   for key,value in pairs(properties)do object[key]=value end
@@ -2520,7 +3219,7 @@ local function rayfieldWindow(parent)
   if animate then service:Create(object,info or TweenInfo.new(.18),goal):Play() else for key,value in pairs(goal)do object[key]=value end end
  end
  function window:_revealCommon(card,animate)
-  self:_reveal(card.main,{BackgroundTransparency=.08},animate);self:_reveal(card.stroke,{Transparency=.65},animate);self:_reveal(card.title,{TextTransparency=0},animate)
+  self:_reveal(card.main,{BackgroundTransparency=.12},animate);self:_reveal(card.stroke,{Transparency=.9},animate);self:_reveal(card.title,{TextTransparency=0},animate)
  end
  function window:_hideCommon(card,animate)
   self:_reveal(card.main,{BackgroundTransparency=1},animate);self:_reveal(card.stroke,{Transparency=1},animate);self:_reveal(card.title,{TextTransparency=1},animate)
@@ -2615,6 +3314,15 @@ end
 
 local function clampByte(n)
     return math.clamp(math.round(n), 0, 255)
+end
+
+local function parseAlphaPercent(text)
+    if type(text) ~= "string" then return nil end
+    local value = text:match("^%s*(.-)%s*$")
+    value = value:gsub("%%%s*$", ""):match("^%s*(.-)%s*$")
+    local number = tonumber(value)
+    if not number or number ~= number or math.abs(number) == math.huge then return nil end
+    return clamp01(number / 100)
 end
 
 -- named colours accepted by the smart field
@@ -3059,6 +3767,89 @@ end
 
 -- The picker guts: sat/val map, hue bar and an editable hex field, all sitting under the
 -- header. They're fully transparent while collapsed and fade in on open.
+function ColorPicker:_buildAxis(x, width, color, gradientProperties)
+    local window = self.window
+    local bar = window:Create("Frame", {
+        Position = UDim2.fromOffset(x, contentY),
+        Size = UDim2.fromOffset(width, mapSize.Y),
+        BackgroundColor3 = color,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        BackgroundTransparency = 1,
+        Parent = self.main,
+    })
+    window:Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = bar })
+    gradientProperties.Parent = bar
+    local gradient = window:Create("UIGradient", gradientProperties)
+    local handle = window:Create("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0, 0),
+        Size = UDim2.fromOffset(width + 6, 6),
+        BackgroundColor3 = Color3.fromRGB(243, 246, 252),
+        BorderSizePixel = 0,
+        ZIndex = 4,
+        BackgroundTransparency = 1,
+        Parent = bar,
+    })
+    window:Create("UICorner", { CornerRadius = UDim.new(1, 0), Parent = handle })
+    local stroke = window:Create("UIStroke", {
+        Color = Color3.fromRGB(255, 255, 255),
+        Thickness = 0.6,
+        Transparency = 1,
+        Parent = handle,
+    })
+    -- Both thin axes retain the same padded mouse/touch target.
+    local interact = window:Create("TextButton", {
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 16, 1, 8),
+        Position = UDim2.fromScale(0.5, 0.5),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Text = "",
+        TextTransparency = 1,
+        AutoButtonColor = false,
+        ZIndex = 6,
+        Parent = bar,
+    })
+    return bar, handle, stroke, interact, gradient
+end
+
+function ColorPicker:_buildTextField(size, value, placeholder, padding)
+    local window = self.window
+    local box = window:Create("Frame", {
+        Position = UDim2.new(0, rightX, 0, contentY + 90),
+        Size = size,
+        BackgroundColor3 = Design.Well,
+        BorderSizePixel = 0,
+        ZIndex = 2,
+        BackgroundTransparency = 1,
+        Parent = self.main,
+    })
+    box:SetAttribute("AltairDesignRole", "control")
+    window:Create("UICorner", { CornerRadius = UDim.new(0, 9), Parent = box })
+    local stroke = window:Create("UIStroke", {
+        Color = Design.Edge,
+        Thickness = 0.6,
+        Transparency = 1,
+        Parent = box,
+    })
+    local input = window:Create("TextBox", {
+        Text = value,
+        PlaceholderText = placeholder,
+        Size = UDim2.new(1, -padding, 1, 0),
+        Position = UDim2.fromScale(0.5, 0.5),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        TextSize = 15,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        ClearTextOnFocus = false,
+        ZIndex = 3,
+        TextTransparency = 1,
+        Parent = box,
+    }, { TextColor3 = "ContentColor", FontFace = "Font", PlaceholderColor3 = "PlaceholderColor" })
+    return box, stroke, input
+end
+
 function ColorPicker:_buildPicker()
     self:_buildMap()
 
@@ -3098,231 +3889,28 @@ function ColorPicker:_buildPicker()
         Parent = self.map,
     })
 
-    -- Hue bar: vertical spectrum with a round handle tracking self.hue.
-    self.hueBar = self.window:Create("Frame", {
-        Position = UDim2.fromOffset(hueX, contentY),
-        Size = UDim2.fromOffset(hueWidth, mapSize.Y),
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-        BorderSizePixel = 0,
-        ZIndex = 2,
+    -- Hue and alpha retain their own gradients, state fields and hit targets.
+    self.hueBar, self.hueHandle, self.hueHandleStroke, self.hueInteract = self:_buildAxis(
+        hueX, hueWidth, Color3.fromRGB(255, 255, 255), { Color = hueSequence, Rotation = 90 })
+    self.alphaBar, self.alphaHandle, self.alphaHandleStroke, self.alphaInteract, self.alphaGradient = self:_buildAxis(
+        alphaX, alphaWidth, self.value, {
+            Rotation = 90,
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1),
+            }),
+        })
 
-        BackgroundTransparency = 1, -- Open = 0
-
-        Parent = self.main,
-    })
-
-    self.window:Create("UICorner", {
-        CornerRadius = UDim.new(1, 0),
-        Parent = self.hueBar,
-    })
-
-    self.window:Create("UIGradient", {
-        Color = hueSequence,
-        Rotation = 90,
-
-        Parent = self.hueBar,
-    })
-
-    self.hueHandle = self.window:Create("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0.5, 0, 0, 0),
-        Size = UDim2.fromOffset(hueWidth + 8, 8),
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-        BorderSizePixel = 0,
-        ZIndex = 4,
-
-        BackgroundTransparency = 1, -- Open = 0
-
-        Parent = self.hueBar,
-    })
-
-    self.window:Create("UICorner", {
-        CornerRadius = UDim.new(1, 0),
-        Parent = self.hueHandle,
-    })
-
-    self.hueHandleStroke = self.window:Create("UIStroke", {
-        Color = Color3.fromRGB(255, 255, 255),
-        Thickness = 2,
-        Transparency = 1, -- Open = 0 (solid white)
-
-        Parent = self.hueHandle,
-    })
-
-    self.hueInteract = self.window:Create("TextButton", {
-        BackgroundTransparency = 1,
-        -- pad the hit area sideways so the thin bar is easy to grab
-        Size = UDim2.new(1, 16, 1, 8),
-        Position = UDim2.fromScale(0.5, 0.5),
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Text = "",
-        TextTransparency = 1,
-        AutoButtonColor = false,
-        ZIndex = 6,
-
-        Parent = self.hueBar,
-    })
-
-    -- Alpha bar: the colour fading top(opaque)->bottom(transparent). The bar's own transparency
-    -- gradient does the fade (0 at top -> 1 at bottom), so the card shows through as it clears.
-    -- The round handle tracks self.alpha.
-    self.alphaBar = self.window:Create("Frame", {
-        Position = UDim2.fromOffset(alphaX, contentY),
-        Size = UDim2.fromOffset(alphaWidth, mapSize.Y),
-        BackgroundColor3 = self.value,
-        BorderSizePixel = 0,
-        ZIndex = 2,
-
-        BackgroundTransparency = 1, -- Open = 0 (then the gradient fades it down its length)
-
-        Parent = self.main,
-    })
-
-    self.window:Create("UICorner", {
-        CornerRadius = UDim.new(1, 0),
-        Parent = self.alphaBar,
-    })
-
-    self.alphaGradient = self.window:Create("UIGradient", {
-        Rotation = 90,
-        Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0),
-            NumberSequenceKeypoint.new(1, 1),
-        }),
-        Parent = self.alphaBar,
-    })
-
-    self.alphaHandle = self.window:Create("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.new(0.5, 0, 0, 0),
-        Size = UDim2.fromOffset(alphaWidth + 8, 8),
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-        BorderSizePixel = 0,
-        ZIndex = 4,
-
-        BackgroundTransparency = 1, -- Open = 0
-
-        Parent = self.alphaBar,
-    })
-
-    self.window:Create("UICorner", {
-        CornerRadius = UDim.new(1, 0),
-        Parent = self.alphaHandle,
-    })
-
-    self.alphaHandleStroke = self.window:Create("UIStroke", {
-        Color = Color3.fromRGB(255, 255, 255),
-        Thickness = 2,
-        Transparency = 1, -- Open = 0 (solid white)
-
-        Parent = self.alphaHandle,
-    })
-
-    self.alphaInteract = self.window:Create("TextButton", {
-        BackgroundTransparency = 1,
-        Size = UDim2.new(1, 16, 1, 8),
-        Position = UDim2.fromScale(0.5, 0.5),
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Text = "",
-        TextTransparency = 1,
-        AutoButtonColor = false,
-        ZIndex = 6,
-
-        Parent = self.alphaBar,
-    })
-
-    -- Hex field under the big preview.
-    self.hexBox = self.window:Create("Frame", {
-        Position = UDim2.new(0, rightX, 0, contentY + 90),
-        Size = UDim2.new(1, -(rightX + 20), 0, 30),
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-        BorderSizePixel = 0,
-        ZIndex = 2,
-
-        BackgroundTransparency = 1, -- Open = 0.9
-
-        Parent = self.main,
-    })
-
-    self.window:Create("UICorner", {
-        CornerRadius = UDim.new(0, 8),
-        Parent = self.hexBox,
-    })
-
-    self.hexBoxStroke = self.window:Create("UIStroke", {
-        Color = Color3.fromRGB(255, 255, 255),
-        Transparency = 1, -- Open = 0.85
-
-        Parent = self.hexBox,
-    })
-
-    self.hexInput = self.window:Create("TextBox", {
-        Text = "#" .. self.value:ToHex():upper(),
-        PlaceholderText = locale.t("Smart Input"),
-        Size = UDim2.new(1, -14, 1, 0),
-        Position = UDim2.fromScale(0.5, 0.5),
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-        TextSize = 15,
-        TextXAlignment = Enum.TextXAlignment.Center,
-        ClearTextOnFocus = false,
-        ZIndex = 3,
-
-        TextTransparency = 1, -- Open = 0.4
-
-        Parent = self.hexBox,
-    }, { TextColor3 = "ContentColor", FontFace = "Font", PlaceholderColor3 = "PlaceholderColor" })
-
-    -- Alpha % field, sits right of the hex field. Same styling as hexBox.
-    self.alphaBox = self.window:Create("Frame", {
-        Position = UDim2.new(0, rightX, 0, contentY + 90),
-        Size = UDim2.fromOffset(alphaFieldWidth, 30),
-        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
-        BorderSizePixel = 0,
-        ZIndex = 2,
-
-        BackgroundTransparency = 1, -- Open = 0.9
-
-        Parent = self.main,
-    })
-
-    self.window:Create("UICorner", {
-        CornerRadius = UDim.new(0, 8),
-        Parent = self.alphaBox,
-    })
-
-    self.alphaBoxStroke = self.window:Create("UIStroke", {
-        Color = Color3.fromRGB(255, 255, 255),
-        Transparency = 1, -- Open = 0.85
-
-        Parent = self.alphaBox,
-    })
-
-    self.alphaInput = self.window:Create("TextBox", {
-        Text = tostring(math.round(self.alpha * 100)) .. "%",
-        PlaceholderText = "100%",
-        Size = UDim2.new(1, -10, 1, 0),
-        Position = UDim2.fromScale(0.5, 0.5),
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-        TextSize = 15,
-        TextXAlignment = Enum.TextXAlignment.Center,
-        ClearTextOnFocus = false,
-        ZIndex = 3,
-
-        TextTransparency = 1, -- Open = 0.4
-
-        Parent = self.alphaBox,
-    }, { TextColor3 = "ContentColor", FontFace = "Font", PlaceholderColor3 = "PlaceholderColor" })
+    self.hexBox, self.hexBoxStroke, self.hexInput = self:_buildTextField(
+        UDim2.new(1, -(rightX + 20), 0, 30), "#" .. self.value:ToHex():upper(), locale.t("Smart Input"), 14)
+    self.alphaBox, self.alphaBoxStroke, self.alphaInput = self:_buildTextField(
+        UDim2.fromOffset(alphaFieldWidth, 30), tostring(math.round(self.alpha * 100)) .. "%", "100%", 10)
 
     self.window:ConnectFor(self, self.mapInteract.InputBegan, function(input)
         if
             input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch
         then
-            self:_beginDrag("sat", input.UserInputType == Enum.UserInputType.MouseButton1)
+            self:_beginDrag("sat", input.UserInputType == Enum.UserInputType.MouseButton1,input)
         end
     end)
 
@@ -3331,7 +3919,7 @@ function ColorPicker:_buildPicker()
             input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch
         then
-            self:_beginDrag("hue", input.UserInputType == Enum.UserInputType.MouseButton1)
+            self:_beginDrag("hue", input.UserInputType == Enum.UserInputType.MouseButton1,input)
         end
     end)
 
@@ -3340,13 +3928,14 @@ function ColorPicker:_buildPicker()
             input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch
         then
-            self:_beginDrag("alpha", input.UserInputType == Enum.UserInputType.MouseButton1)
+            self:_beginDrag("alpha", input.UserInputType == Enum.UserInputType.MouseButton1,input)
         end
     end)
 
     self.window:ConnectFor(self, variables.userInputService.InputEnded, function(input)
         if
-            (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
+            ((self._dragIsMouse and input.UserInputType == Enum.UserInputType.MouseButton1)
+             or(not self._dragIsMouse and input.UserInputType == Enum.UserInputType.Touch and(self._touchInput==nil or self._touchInput==input)))
             and self._drag
         then
             self:_endDrag()
@@ -3355,37 +3944,64 @@ function ColorPicker:_buildPicker()
 
     -- commit the field on enter/click-away, parsing whatever format they typed. anything
     -- unrecognised just snaps back to the current colour.
-    self.window:ConnectFor(self, self.hexInput.FocusLost, function()
-        local color = parseColor(self.hexInput.Text)
-        if color then
-            self:Set(color)
-        else
-            self.hexInput.Text = "#" .. self.value:ToHex():upper()
-        end
-    end)
+    self.window:ConnectFor(self, self.hexInput.Focused, function() self:_beginFieldEdit("hex") end)
+    self.window:ConnectFor(self, self.hexInput.FocusLost, function() self:_commitField("hex") end)
 
-    -- alpha field: take the first number as a percent, clamp 0..100, else snap back
-    self.window:ConnectFor(self, self.alphaInput.FocusLost, function()
-        local n = tonumber((self.alphaInput.Text:gsub("[^%d%.]", "")))
-        if n then
-            self:SetAlpha(clamp01(n / 100))
-        else
-            self.alphaInput.Text = tostring(math.round(self.alpha * 100)) .. "%"
-        end
-    end)
+    -- Keep the sign and reject malformed input instead of stripping it into a
+    -- different positive value. A completed edit belongs to one open/close cycle.
+    self.window:ConnectFor(self, self.alphaInput.Focused, function() self:_beginFieldEdit("alpha") end)
+    self.window:ConnectFor(self, self.alphaInput.FocusLost, function() self:_commitField("alpha") end)
+end
+
+function ColorPicker:_restoreFieldText(kind)
+    if kind == "alpha" then self.alphaInput.Text = tostring(math.round(self.alpha * 100)) .. "%"
+    else self.hexInput.Text = "#" .. self.value:ToHex():upper() end
+end
+
+function ColorPicker:_beginFieldEdit(kind)
+    local field = kind == "alpha" and self.alphaInput or self.hexInput
+    if not self._isOpen or not self.window:_interactive() then
+        self:_restoreFieldText(kind)
+        if field:IsFocused() then field:ReleaseFocus() end
+        return
+    end
+    self._fieldEdits = self._fieldEdits or {}
+    self._fieldEdits[kind] = self._pickerGeneration or 0
+end
+
+function ColorPicker:_commitField(kind, closing)
+    local field = kind == "alpha" and self.alphaInput or self.hexInput
+    if not closing and field:IsFocused() then return false end -- an older queued loss must not commit a new edit
+    local generation = self._fieldEdits and self._fieldEdits[kind]
+    if self._fieldEdits then self._fieldEdits[kind] = nil end
+    if generation == nil or not self.window:_interactive()
+        or (generation ~= self._pickerGeneration and generation ~= self._closingFocusGeneration) then
+        self:_restoreFieldText(kind)
+        return false
+    end
+    if kind == "alpha" then
+        local alpha = parseAlphaPercent(self.alphaInput.Text)
+        if alpha ~= nil then self:SetAlpha(alpha); return true end
+    else
+        local color = parseColor(self.hexInput.Text)
+        if color then self:Set(color); return true end
+    end
+    self:_restoreFieldText(kind)
+    return false
 end
 
 -- start following the mouse for the given region ("sat" or "hue"). Mirrors the slider: one
 -- RenderStepped loop that self-terminates if the window unloads mid-drag. For a mouse drag
 -- it also bails the moment the button is up, so a dropped InputEnded cant leave it running.
-function ColorPicker:_beginDrag(region, isMouse)
+function ColorPicker:_beginDrag(region, isMouse, sourceInput)
     -- the interacts stay visible through the close fade, so a click landing in that window
     -- would drag a picker thats already shut
-    if not self._isOpen then
+    if not self._isOpen or not self.window:_interactive() then
         return
     end
     self._drag = region
     self._dragIsMouse = isMouse
+    self._touchInput=not isMouse and sourceInput or nil
     self:_setHeld(region)
     self:_pump()
 
@@ -3397,8 +4013,9 @@ function ColorPicker:_beginDrag(region, isMouse)
     self._dragConnection = variables.runService.RenderStepped:Connect(function()
         local mouseReleased = self._dragIsMouse
             and not variables.userInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-        if self.window.unloaded or not self._drag or mouseReleased then
-            if mouseReleased then
+        local inactive=not self.window:_interactive()
+        if self.window.unloaded or not self._drag or mouseReleased or inactive then
+            if self._drag and(mouseReleased or inactive)then
                 self:_endDrag()
                 return
             end
@@ -3413,15 +4030,16 @@ function ColorPicker:_beginDrag(region, isMouse)
 end
 
 function ColorPicker:_endDrag()
+    local wasDragging=self._drag~=nil
     self._drag = nil
+    self._touchInput=nil
     self:_setHeld(nil)
     if self._dragConnection then
         self._dragConnection:Disconnect()
         self._dragConnection = nil
     end
 
-    self.window:_siaUsed(self, "set")
-    self.window:_persist(self)
+    if wasDragging then self.window:_siaUsed(self, "set");self.window:_persist(self)end
 end
 
 -- grow only the grabbed control a touch while dragging, so it reads as a press (same idea as
@@ -3442,7 +4060,7 @@ end
 -- AbsolutePosition, and GetMouseLocation is +inset.Y off it), so subtract the inset. Only Y
 -- matters here since the inset is vertical, but subtract both to be safe.
 function ColorPicker:_mouseLocation()
-    local mouse = variables.userInputService:GetMouseLocation()
+    local mouse = self._touchInput and Vector2.new(self._touchInput.Position.X,self._touchInput.Position.Y)or variables.userInputService:GetMouseLocation()
     local screenGui = self.window.screenGui
     if screenGui and screenGui.IgnoreGuiInset then
         return mouse - variables.guiService:GetGuiInset()
@@ -3574,11 +4192,15 @@ function ColorPicker:_fireCallback()
 end
 
 function ColorPicker:_open()
-    if self._isOpen then
+    if self._isOpen or not self.window:_interactive()then
         return
     end
+    self._pickerGeneration = (self._pickerGeneration or 0) + 1
+    self._closingFocusGeneration = nil
     self._isOpen = true
     self:_setControlsVisible(true) -- back into input before they fade in
+    if self.hexInput:IsFocused() then self:_beginFieldEdit("hex") end
+    if self.alphaInput:IsFocused() then self:_beginFieldEdit("alpha") end
 
     if self._outsideClickConn then
         self.window:Disconnect(self._outsideClickConn)
@@ -3616,7 +4238,12 @@ function ColorPicker:_close()
     if not self._isOpen then
         return
     end
+    self._closingFocusGeneration = self._pickerGeneration or 0
+    self._pickerGeneration = (self._pickerGeneration or 0) + 1
+    local generation = self._pickerGeneration
     self._isOpen = false
+    self:_setControlsInteractive(false) -- stop new input without cutting off the visual fade
+    if self._pickerGeneration ~= generation or self._isOpen or self.window.unloaded then return end
 
     if self._outsideClickConn then
         self.window:Disconnect(self._outsideClickConn)
@@ -3627,12 +4254,20 @@ function ColorPicker:_close()
     if self._drag then
         self:_endDrag()
     end
-    if self.hexInput:IsFocused() then
-        self.hexInput:ReleaseFocus()
+    if self._pickerGeneration ~= generation or self._isOpen or self.window.unloaded then return end
+    if self._fieldEdits and self._fieldEdits.hex == self._closingFocusGeneration then
+        self:_commitField("hex", true)
+        if self._pickerGeneration ~= generation or self._isOpen or self.window.unloaded then return end
     end
-    if self.alphaInput:IsFocused() then
-        self.alphaInput:ReleaseFocus()
+    if self.hexInput:IsFocused() then self.hexInput:ReleaseFocus() end
+    if self._pickerGeneration ~= generation or self._isOpen or self.window.unloaded then return end
+    if self._fieldEdits and self._fieldEdits.alpha == self._closingFocusGeneration then
+        self:_commitField("alpha", true)
+        if self._pickerGeneration ~= generation or self._isOpen or self.window.unloaded then return end
     end
+    if self.alphaInput:IsFocused() then self.alphaInput:ReleaseFocus() end
+    if self._pickerGeneration ~= generation or self._isOpen or self.window.unloaded then return end
+    self._closingFocusGeneration = nil
 
     self:_applyPickerVisibility(false, true)
     self:_renderInvisible(true)
@@ -3644,7 +4279,7 @@ function ColorPicker:_close()
     -- once the controls have faded, drop them out of input so a transparent field below the
     -- collapsed header cant grab the cursor
     task.delay(fadeInfo.Time, function()
-        if not self._isOpen then
+        if not self._isOpen and self._pickerGeneration == generation and not self.window.unloaded and self.main.Parent then
             self:_setControlsVisible(false)
         end
     end)
@@ -3668,10 +4303,10 @@ function ColorPicker:_applyPickerVisibility(open, animate)
         [self.alphaBar] = { BackgroundTransparency = if open then 0 else 1 },
         [self.alphaHandle] = { BackgroundTransparency = if open then 0 else 1 },
         [self.alphaHandleStroke] = { Transparency = if open then 0 else 1 },
-        [self.hexBox] = { BackgroundTransparency = if open then 0.9 else 1 },
+        [self.hexBox] = { BackgroundTransparency = if open then 0.1 else 1 },
         [self.hexBoxStroke] = { Transparency = if open then 0.85 else 1 },
         [self.hexInput] = { TextTransparency = if open then 0.4 else 1 },
-        [self.alphaBox] = { BackgroundTransparency = if open then 0.9 else 1 },
+        [self.alphaBox] = { BackgroundTransparency = if open then 0.1 else 1 },
         [self.alphaBoxStroke] = { Transparency = if open then 0.85 else 1 },
         [self.alphaInput] = { TextTransparency = if open then 0.4 else 1 },
     }
@@ -3691,8 +4326,25 @@ end
 -- transparent TextBox or button down there would still catch the cursor and clicks. Toggling the
 -- top control frames off drops the whole cluster out of input when closed. The preview pill is
 -- separate, so it stays.
+function ColorPicker:_setControlsInteractive(interactive)
+    local generation = self._pickerGeneration
+    for _, target in { self.mapInteract, self.hueInteract, self.alphaInteract, self.hexInput, self.alphaInput } do
+        for _, property in { "Active", "Interactable", "Selectable" } do
+            if self._pickerGeneration ~= generation then return end
+            target[property] = interactive
+        end
+    end
+    if self._pickerGeneration ~= generation then return end
+    self.hexInput.TextEditable = interactive
+    if self._pickerGeneration ~= generation then return end
+    self.alphaInput.TextEditable = interactive
+end
+
 function ColorPicker:_setControlsVisible(visible)
+    local generation = self._pickerGeneration
+    self:_setControlsInteractive(visible and self._isOpen)
     for _, frame in { self.map, self.hueBar, self.alphaBar, self.hexBox, self.alphaBox } do
+        if self._pickerGeneration ~= generation then return end
         frame.Visible = visible
     end
 end
@@ -3799,8 +4451,14 @@ return ColorPicker
 
 end)()
 local contentSlides=setmetatable({}, {__mode="k"})
+local function stopContentSlide(object)
+ local animation=contentSlides[object]
+ if animation then contentSlides[object]=nil;animation:Cancel()end
+end
 local function slideContent(object,rest,direction,distance)
- local previous=contentSlides[object];if previous then previous:Cancel()end
+ stopContentSlide(object)
+ local root=object:FindFirstAncestorOfClass("ScreenGui")
+ if root and root:GetAttribute("AltairReduceMotion")==true then object.Position=rest;return end
  local progress=Instance.new("NumberValue");local native=game:GetService("TweenService")
  object.Position=rest+UDim2.fromOffset(direction*distance,0)
  local connection=progress.Changed:Connect(function(value)
@@ -3808,7 +4466,16 @@ local function slideContent(object,rest,direction,distance)
   if object.Parent then object.Position=rest+UDim2.fromOffset(direction*distance*(1-bounded),0)end
  end)
  local animation=native:Create(progress,TweenInfo.new(.28,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Value=1});contentSlides[object]=animation
- animation.Completed:Once(function(state)connection:Disconnect();progress:Destroy();if state==Enum.PlaybackState.Completed and object.Parent then object.Position=rest end;if contentSlides[object]==animation then contentSlides[object]=nil end end);animation:Play()
+ local destroyed,reduced
+ animation.Completed:Once(function(state)
+  connection:Disconnect();if destroyed then destroyed:Disconnect()end;if reduced then reduced:Disconnect()end;progress:Destroy()
+  if contentSlides[object]==animation then contentSlides[object]=nil;if state==Enum.PlaybackState.Completed and object.Parent then object.Position=rest end end
+ end)
+ destroyed=object.Destroying:Connect(function()if contentSlides[object]==animation then stopContentSlide(object)end end)
+ if root then reduced=root:GetAttributeChangedSignal("AltairReduceMotion"):Connect(function()
+  if root:GetAttribute("AltairReduceMotion")==true and contentSlides[object]==animation then stopContentSlide(object);if object.Parent then object.Position=rest end end
+ end)end
+ animation:Play()
 end
 local function slideHeading(panel,direction)
  for _,name in ipairs({"Icon","Title","Subtitle","HeaderIcon","ContentTitle","ContentSubtitle"})do
@@ -3819,31 +4486,52 @@ local function slideHeading(panel,direction)
  end
 end
 
+local function controlMotionTime(object,duration)
+ local screen=object:IsA("ScreenGui")and object or object:FindFirstAncestorOfClass("ScreenGui")
+ return screen and screen:GetAttribute("AltairReduceMotion")==true and math.min(duration,.08)or duration
+end
 local resetAnimations=setmetatable({}, {__mode="k"})
+local resetRestAngles=setmetatable({}, {__mode="k"})
 local function bounceReset(icon)
- local old=resetAnimations[icon];if old then old:Cancel()end
- local tween=game:GetService("TweenService"):Create(icon,TweenInfo.new(.7,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Rotation=icon.Rotation-360})
- resetAnimations[icon]=tween;tween:Play();return tween
+ local old=resetAnimations[icon];resetAnimations[icon]=nil;if old then old:Cancel()end
+ local rest=resetRestAngles[icon];if rest==nil then rest=icon.Rotation;resetRestAngles[icon]=rest end
+ local reduced=controlMotionTime(icon,.7)<.7
+ local tween=game:GetService("TweenService"):Create(icon,TweenInfo.new(reduced and 0 or .7,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Rotation=reduced and rest or rest-360})
+ resetAnimations[icon]=tween
+ tween.Completed:Once(function()
+  if resetAnimations[icon]~=tween then return end
+  resetAnimations[icon]=nil;if icon.Parent then icon.Rotation=rest end
+ end)
+ tween:Play();return tween
 end
 
+local buildRuler
 local function buildColorPicker(template,parent,setting,changed,commit,resetTheme)
  local window=rayfieldWindow(parent);local connections={};local root=parent:FindFirstAncestorOfClass("ScreenGui")
  window.screenGui=root;window.hasShownOnce=true
- window.theme.ElementStroke=Color3.fromRGB(90,95,108);window.theme.ElementStrokeHover=Color3.fromRGB(165,175,195);window.theme.ElementStrokeHoverTransparency=.4;window.theme.ElementTextHoverColor=Color3.new(1,1,1)
+ window.theme.ElementStroke=Design.Edge;window.theme.ElementStrokeHover=Design.Edge:Lerp(Design.Ink,.2);window.theme.ElementStrokeHoverTransparency=.78;window.theme.ElementTextHoverColor=Design.Ink
  local create=window.Create
  function window:Create(class,properties,themes)local o=create(self,class,properties,themes);if class=="ImageLabel"and properties.Image=="__AltairPalette"then applyIcon(o,"palette")end;return o end
  function window:Connect(signal,fn)local c=signal:Connect(fn);connections[#connections+1]=c;return c end
  function window:ConnectFor(_,signal,fn)return self:Connect(signal,fn)end
  function window:Disconnect(c)if c then c:Disconnect()end end
- function window:_interactive()return parent.Parent~=nil and not root.Settings:GetAttribute("AltairClosing")end
+ local pages=parent.Parent and parent.Parent:FindFirstChildOfClass("UIPageLayout")
+ function window:_interactive()
+  if self.unloaded or not parent.Parent or root.Settings:GetAttribute("AltairClosing")or(pages and pages.CurrentPage and pages.CurrentPage~=parent)then return false end
+  local object=parent;while object do
+   if object:IsA("GuiObject")and(not object.Visible or object:IsA("CanvasGroup")and object.GroupTransparency>.999)then return false end
+   if object:IsA("ScreenGui")then return object.Enabled end;object=object.Parent
+  end
+  return false
+ end
  function window:_registerControl()end;function window:_siaUsed()end
  function window:_persist()commit()end
  function window:_runGuarded(_,callback,...)callback(...)end
  function window:StyleElementBody(main)
   local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(0,12);corner.Parent=main
-  main.BackgroundColor3=Color3.fromRGB(20,22,27);main:SetAttribute("AltairSurface",true)
-  local gradient=Instance.new("UIGradient");gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(225,228,235));gradient.Rotation=90;gradient.Parent=main
-  local stroke=Instance.new("UIStroke");stroke.Color=self.theme.ElementStroke;stroke.Transparency=.65;stroke.Parent=main;return stroke
+  main.BackgroundColor3=Design.Raised;main:SetAttribute("AltairSurface",true);main:SetAttribute("AltairDesignRole","inset")
+  local gradient=Instance.new("UIGradient");gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(233,233,236));gradient.Rotation=90;gradient.Parent=main
+  local stroke=Instance.new("UIStroke");stroke.Color=self.theme.ElementStroke;stroke.Thickness=.6;stroke.Transparency=.9;stroke.Parent=main;return stroke
  end
  function window:CreateHoverOverlay(main)local o=Instance.new("Frame");o.Size=UDim2.fromScale(1,1);o.BackgroundColor3=Color3.new(1,1,1);o.BackgroundTransparency=1;o.BorderSizePixel=0;o.Parent=main;return o end
  function window:CreateGlow(parent,color,_,alpha)
@@ -3868,7 +4556,6 @@ local function buildColorPicker(template,parent,setting,changed,commit,resetThem
  function picker:_close()close(self);resetPosition(true)end
  window:Connect(reset.Activated,function()
   if not window:_interactive()then return end
-  if resetSpin then resetSpin:Cancel()end
   if resetScaleTween then resetScaleTween:Cancel()end
   resetSpin=bounceReset(reset)
   resetScaleTween=resetMotion:Create(resetScale,TweenInfo.new(.09),{Scale=.9});resetScaleTween:Play()
@@ -3880,6 +4567,23 @@ local function buildColorPicker(template,parent,setting,changed,commit,resetThem
  local shown=picker._setShown
  function picker:_setShown(value,animate)shown(self,value,animate);window:_reveal(reset,{ImageTransparency=value and .25 or 1},animate)end
  picker:_setShown(true,false)
+ local function syncVisibility()
+  local painted=true;local object=parent
+  while object do
+   if object:IsA("GuiObject")and(not object.Visible or object:IsA("CanvasGroup")and object.GroupTransparency>.999)then painted=false;break end
+   if object:IsA("ScreenGui")then painted=object.Enabled;break end;object=object.Parent
+  end
+  picker:_setShown(window:_interactive(),painted)
+ end
+ local ancestor=parent
+ while ancestor do
+  if ancestor:IsA("GuiObject")then window:Connect(ancestor:GetPropertyChangedSignal("Visible"),syncVisibility)
+  elseif ancestor:IsA("ScreenGui")then window:Connect(ancestor:GetPropertyChangedSignal("Enabled"),syncVisibility)end
+  ancestor=ancestor.Parent
+ end
+ if pages then window:Connect(pages:GetPropertyChangedSignal("CurrentPage"),syncVisibility)end
+ window:Connect(root.Settings:GetAttributeChangedSignal("AltairClosing"),syncVisibility)
+ window:Connect(game:GetService("UserInputService").WindowFocusReleased,function()if picker._drag then picker:_endDrag()end end)
  picker.main.Destroying:Connect(function()if resetMove then resetMove:Cancel()end;if resetSpin then resetSpin:Cancel()end;if resetScaleTween then resetScaleTween:Cancel()end;window.unloaded=true;picker:_endDrag();for _,c in ipairs(connections)do c:Disconnect()end end)
  return picker.main,picker
 end
@@ -3899,167 +4603,1236 @@ local function buildStats(template,parent)
  return row,{fps=fps,ping=ping}
 end
 
--- Pointer/touch/keyboard slider; commits once when an interaction finishes.
-local function buildSlider(template,parent,setting,onChange,onCommit)
- local row=template:Clone();row.Name=setting.name;row.Parent=parent;row.Visible=true;row.Title.Text=setting.name
- local old=row:FindFirstChild("Interact");if old then old:Destroy() end
- local function make(class,name,properties,container)
-  local object=Instance.new(class);object.Name=name
-  for key,value in pairs(properties) do object[key]=value end
-  object.Parent=container or row;return object
- end
- local value=make("TextLabel","Value",{BackgroundTransparency=1,Position=UDim2.new(1,-110,0,12),Size=UDim2.fromOffset(92,22),TextSize=14,TextColor3=Color3.fromRGB(235,238,245),FontFace=row.Title.FontFace,TextXAlignment=Enum.TextXAlignment.Right,ZIndex=row.Title.ZIndex})
- local track=make("Frame","Track",{Position=UDim2.new(0,20,1,-24),Size=UDim2.new(1,-40,0,14),BackgroundColor3=Color3.fromRGB(68,72,82),BorderSizePixel=0,ZIndex=row.Title.ZIndex})
- local fill=make("Frame","Fill",{Size=UDim2.fromScale(0,1),BackgroundColor3=Color3.fromRGB(110,158,255),BorderSizePixel=0,ZIndex=track.ZIndex+1},track)
- local thumb=make("Frame","Thumb",{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(1,0,.5,0),Size=UDim2.fromOffset(35,20),BackgroundColor3=Color3.fromRGB(245,247,255),BorderSizePixel=0,ZIndex=track.ZIndex+2},fill)
- for _,v in ipairs({track,fill,thumb}) do local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(1,0);corner.Parent=v end
- local hit=make("TextButton","SliderInput",{Text="",BackgroundTransparency=1,Position=UDim2.new(0,12,1,-42),Size=UDim2.new(1,-24,0,40),AutoButtonColor=false,Selectable=true,ZIndex=track.ZIndex+3})
- local input=game:GetService("UserInputService");local connections={};local dragging=false;local touch=nil;local dragLeft,dragWidth
- local low,high=setting.values[1],setting.values[2];local motion=motionService()
- local window=rayfieldWindow(row)
- value.Text="";local readout=Instance.new("Frame");readout.Name="RollingValue";readout.BackgroundTransparency=1;readout.Size=UDim2.fromScale(1,1);readout.ZIndex=value.ZIndex+1;readout.Parent=value
- local odo=RayfieldOdometer.new(window,readout,{textSize=14,alignment=Enum.HorizontalAlignment.Right,transparency=0,duration=.3})
- local edge=Instance.new("UIStroke");edge.Color=Color3.new(1,1,1);edge.Transparency=1;edge.Parent=thumb
- connections[#connections+1]=hit.MouseEnter:Connect(function()motion:Create(track,TweenInfo.new(.25),{BackgroundColor3=Color3.fromRGB(90,96,110)}):Play()end)
- connections[#connections+1]=hit.MouseLeave:Connect(function()motion:Create(track,TweenInfo.new(.25),{BackgroundColor3=Color3.fromRGB(68,72,82)}):Play()end)
- local function draw(animate)
-  local ratio=(setting.current-low)/(high-low)
-  local text=tostring(math.floor(setting.current+.5))..(setting.suffix or "%")
-  value:SetAttribute("DisplayedValue",text)
-  if animate then
-   motion:Create(fill,TweenInfo.new(.3,Enum.EasingStyle.Quint),{Size=UDim2.fromScale(ratio,1)}):Play()
-   if dragging then odo:snap(text) else odo:to(text,true) end
-  else fill.Size=UDim2.fromScale(ratio,1);odo:snap(text) end
- end
- local function setValue(nextValue)
-  nextValue=math.clamp(math.floor(nextValue+.5),low,high)
-  if nextValue~=setting.current then setting.current=nextValue;draw(true);onChange(nextValue) end
- end
- local function pointer(x)
-  local left,width=dragLeft or track.AbsolutePosition.X,dragWidth or track.AbsoluteSize.X
-  if width>0 then setValue(low+math.clamp((x-left)/width,0,1)*(high-low)) end
- end
- local function finish()
-  if not dragging then return end;dragging=false;touch=nil;dragLeft=nil;dragWidth=nil
-  motion:Create(thumb,TweenInfo.new(.3),{Size=UDim2.fromOffset(35,20),BackgroundTransparency=0}):Play();motion:Create(edge,TweenInfo.new(.3),{Transparency=1}):Play();onCommit()
- end
- connections[#connections+1]=hit.InputBegan:Connect(function(event)
-  if event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch then
-   dragLeft,dragWidth=track.AbsolutePosition.X,track.AbsoluteSize.X
-   dragging=true;touch=event.UserInputType==Enum.UserInputType.Touch and event or nil
-   motion:Create(thumb,TweenInfo.new(.3),{Size=UDim2.fromOffset(41,22),BackgroundTransparency=.7}):Play();motion:Create(edge,TweenInfo.new(.3),{Transparency=.6}):Play();pointer(event.Position.X)
-  elseif event.KeyCode==Enum.KeyCode.Left or event.KeyCode==Enum.KeyCode.Right then setValue(setting.current+(event.KeyCode==Enum.KeyCode.Right and (setting.step or 5) or -(setting.step or 5)));onCommit() end
- end)
- connections[#connections+1]=input.InputChanged:Connect(function(event)
-  if dragging and ((touch and event==touch) or (not touch and event.UserInputType==Enum.UserInputType.MouseMovement)) then pointer(event.Position.X) end
- end)
- connections[#connections+1]=input.InputEnded:Connect(function(event)
-  if dragging and (event==touch or event.UserInputType==Enum.UserInputType.MouseButton1) then finish() end
- end)
- connections[#connections+1]=input.WindowFocusReleased:Connect(finish)
- row.Destroying:Connect(function() for _,connection in ipairs(connections) do connection:Disconnect() end end)
- connections[#connections+1]=row:GetAttributeChangedSignal("AltairRefreshValue"):Connect(function()draw(true)end)
- draw();return row
-end
-
--- Native, resolution-independent previews: the cards remain crisp at every UI size.
-local experimentalBadge
-local function buildStyleGallery(parent,setting,changed)
- local root=parent:FindFirstAncestorOfClass("ScreenGui")
- local z=root.Settings.ZIndex+4
- local motion=motionService();local connections={};local cards={};local controller={}
- local function make(class,name,owner,props)
-  local object=Instance.new(class);object.Name=name
-  if object:IsA("GuiObject")then object.BorderSizePixel=0;object.BackgroundTransparency=1;object.ZIndex=z end
-  for key,value in pairs(props or {})do object[key]=value end
-  object.Parent=owner;return object
- end
- local function corner(owner,radius)return make("UICorner","UICorner",owner,{CornerRadius=UDim.new(0,radius)})end
- local function text(name,owner,value,position,size,fontSize,bold)
-  return make("TextLabel",name,owner,{Text=value,Position=position,Size=size,TextSize=fontSize,TextColor3=Color3.fromRGB(242,243,247),FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",bold and Enum.FontWeight.Bold or Enum.FontWeight.Regular),TextXAlignment=Enum.TextXAlignment.Left})
- end
- local function connect(signal,callback)table.insert(connections,signal:Connect(callback))end
- local frame=make("Frame",setting.name,parent,{Size=UDim2.new(1,-16,0,248)})
- frame:SetAttribute("AltairThemeEditor",true);frame:SetAttribute("AltairStyleGallery",true)
- text("Title",frame,"Styles",UDim2.fromOffset(2,0),UDim2.new(1,-110,0,24),18,true)
- text("Description",frame,"A different interface. Your colours stay yours.",UDim2.fromOffset(2,25),UDim2.new(1,0,0,20),12,false).TextColor3=Color3.fromRGB(177,181,194)
- experimentalBadge(frame)
- for index,id in ipairs({"Altair","Roblox"})do
-  local card=make("TextButton",id,frame,{Text="",AutoButtonColor=false,Position=UDim2.new((index-1)*.5,(index-1)*6,0,52),Size=UDim2.new(.5,-6,0,144),BackgroundColor3=Color3.fromRGB(29,31,38),BackgroundTransparency=.14})
-  corner(card,12)
-  local stroke=make("UIStroke","Selection",card,{Color=Color3.fromRGB(82,88,106),Thickness=1,Transparency=.5})
-  local scale=make("UIScale","HoverScale",card,{Scale=1})
-  local preview=make("Frame","SmartBarPreview",card,{Position=UDim2.fromOffset(8,8),Size=UDim2.new(1,-16,0,72),ClipsDescendants=true,BackgroundColor3=Color3.fromRGB(12,14,20),BackgroundTransparency=.15})
-  corner(preview,8)
-  local actual=root.SmartBar:Clone();actual.Name="SmartBarPreview";actual.AnchorPoint=Vector2.new(.5,.5);actual.Position=UDim2.fromScale(.5,.58);actual.Size=UDim2.fromOffset(300,60);actual.Visible=true;actual.BackgroundTransparency=.1;actual.Parent=preview
-  for _,object in ipairs(actual:GetDescendants())do
-   if object:IsA("UIScale")then object.Scale=1 end
-   if object:IsA("GuiObject")then object.ZIndex=z+1 end
-   if object.Name=="Shadow"or object.Name=="CircleGradient"then object:Destroy()end
+-- Signal controls share one input/physics model; only active motion owns a render loop.
+buildRuler=function(parent,options)
+ options=options or {}
+ local input=game:GetService("UserInputService")
+ local run=game:GetService("RunService")
+ local native=game:GetService("TweenService")
+ local actions=game:GetService("ContextActionService")
+ local controller={value=0,alive=true,dragging=false,hovered=false,suspended=false,HasMoved=false,InputStage="idle"}
+ local connections={};local renderConnection;local valueTween;local zoomTween
+ local scale=options.Scale or 600/908
+ local low,high=0,100;local step,tickStep,majorEvery=1,1,5
+ local precisionZoom=options.PrecisionZoom or 5
+ local poolLimit=math.clamp(math.floor(options.PoolLimit or 128),8,128)
+ local amber=options.Color or Color3.fromRGB(240,158,30)
+ local future=options.FutureColor or Color3.fromRGB(76,52,17)
+ local white=Color3.fromRGB(243,246,252)
+ local markerColor=options.MarkerColor or Color3.fromRGB(180,126,42)
+ local altairSkin=options.Skin=="Altair"
+ local trackSkin=options.Skin=="Track"
+ local paletteTransition
+ local axis=options.Orientation=="Vertical"and "Vertical"or "Horizontal"
+ local state={position=Instance.new("NumberValue"),zoom=Instance.new("NumberValue")}
+ state.zoom.Value=1
+ local root=Instance.new("Frame");root.Name=options.Name or "Ruler";root.Visible=false;root.BackgroundTransparency=1;root.BorderSizePixel=0
+ root.Position=options.Position or UDim2.new();root.Size=options.Size or UDim2.new(1,0,0,104*scale);root.ZIndex=options.ZIndex or parent.ZIndex+1
+ root:SetAttribute("AltairRuler",true);root:SetAttribute("AltairThemeIgnore",true);root.Parent=parent
+ root:SetAttribute("AltairControlDesign",trackSkin and "Track"or "Signal")
+ local wheelAction="AltairRulerWheel-"..game:GetService("HttpService"):GenerateGUID(false)
+ local wheelBound=false
+ local viewport=Instance.new("Frame");viewport.Name="TapeViewport";viewport.BackgroundTransparency=1;viewport.BorderSizePixel=0;viewport.ClipsDescendants=true;viewport.Size=UDim2.fromScale(1,1);viewport.ZIndex=root.ZIndex;viewport.Parent=root
+ local marker=Instance.new("ImageLabel");marker.Name="Selection";marker.BackgroundTransparency=1;marker.ImageColor3=markerColor;marker.ZIndex=root.ZIndex+2;marker.Size=UDim2.fromOffset(40*scale,40*scale);marker.AnchorPoint=Vector2.new(.5,.5);applyIcon(marker,"chevron-up");marker.Parent=root
+ local trackVisual,trackHover,trackFeedbackActive=nil,0,false
+ if trackSkin then
+  viewport.Visible=false;marker.Visible=false
+  root:SetAttribute("AltairRulerSkin","Track")
+  local function shape(name,owner,color,z)
+   local object=Instance.new("Frame");object.Name=name;object.BackgroundColor3=color;object.BorderSizePixel=0;object.ZIndex=z;object.Parent=owner
+   local rounding=Instance.new("UICorner");rounding.CornerRadius=UDim.new(1,0);rounding.Parent=object
+   return object
   end
-  local fit=actual:FindFirstChildOfClass("UIScale")or make("UIScale","PreviewScale",actual,{})
-  local function resizePreview()fit.Scale=math.min(.7,math.max(.1,(preview.AbsoluteSize.X-12)/300))end
-  connect(preview:GetPropertyChangedSignal("AbsoluteSize"),resizePreview);task.defer(resizePreview)
-  actual.Back.AnchorPoint=Vector2.new(1,.5);actual.Back.Position=UDim2.new(1,-8,.5,0);actual.Back.Size=UDim2.new(1,-76,1,-12);actual.Back.BackgroundTransparency=.45
-  actual.Back.Buttons.AnchorPoint=Vector2.zero;actual.Back.Buttons.Position=UDim2.fromOffset(8,7);actual.Back.Buttons.Size=UDim2.new(1,-16,1,-14)
-  if id=="Roblox"then actual.BackgroundColor3=Color3.new(1,1,1);local gradient=actual:FindFirstChildOfClass("UIGradient");if gradient then gradient.Color=ColorSequence.new(Color3.fromRGB(27,29,35),Color3.fromRGB(22,24,30))end;actual.Back.BackgroundColor3=Color3.fromRGB(43,45,53)end
-  actual.Back.Time.Text="12:03";actual.Back.Time.TextTransparency=0;actual.Back.Time.AMPM.Text="AM";actual.Back.Time.AMPM.TextTransparency=0
-  for _,object in ipairs(actual:GetDescendants())do
-   if id=="Roblox"and object:IsA("UICorner")and object.CornerRadius.Scale==0 and object.CornerRadius.Offset<25 then object.CornerRadius=UDim.new(0,8)end
-   if id=="Roblox"and object:IsA("UIStroke")then object.Color=Color3.fromRGB(100,103,115);local gradient=object:FindFirstChildOfClass("UIGradient");if gradient then gradient.Color=ColorSequence.new(Color3.new(1,1,1))end end
-   if object:IsA("TextLabel")then object.TextTransparency=0;if id=="Roblox"then object.FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",object.FontFace.Weight)end end
-   if object:IsA("ImageLabel")and object.Name=="Icon"then object.ImageTransparency=0 end
-   if object:IsA("Frame")and object.Parent==actual.Back.Buttons and object.Name~="Placeholder"then
-    object.Visible=true;object.Size=UDim2.fromOffset(34,34);object.BackgroundTransparency=0
-    if id=="Roblox"then object.BackgroundColor3=Color3.new(1,1,1);object.UIGradient.Color=ColorSequence.new(Color3.fromRGB(47,49,58),Color3.fromRGB(34,36,43))end
+  local rail=shape("TrackRail",root,future,root.ZIndex)
+  rail.AnchorPoint=Vector2.new(.5,.5);rail.BackgroundTransparency=.14
+  rail:SetAttribute("AltairDesignRole","inset")
+  local rim=Instance.new("UIStroke");rim.Name="RailRim";rim.Thickness=.6;rim.Transparency=.88;rim.Color=amber;rim.Parent=rail
+  local fill=shape("TrackFill",rail,Color3.new(1,1,1),root.ZIndex+1);fill.ClipsDescendants=true
+  local gradient=Instance.new("UIGradient");gradient.Name="TrackGradient";gradient.Parent=fill
+  local halo=shape("TrackHalo",root,amber,root.ZIndex+1);halo.AnchorPoint=Vector2.new(.5,.5);halo.BackgroundTransparency=1
+  local handle=shape("TrackHandle",root,amber,root.ZIndex+2);handle.AnchorPoint=Vector2.new(.5,.5)
+  local edge=Instance.new("UIStroke");edge.Name="HandleRim";edge.Thickness=.6;edge.Transparency=.5;edge.Color=white;edge.Parent=handle
+  trackVisual={Rail=rail,Fill=fill,Gradient=gradient,Handle=handle,Halo=halo,Rim=rim,HandleRim=edge}
+  controller.Track=trackVisual
+ end
+ local focus,signalBand,precisionBadge
+ if not trackSkin and axis=="Horizontal"then
+  signalBand=Instance.new("Frame");signalBand.Name="SignalBand";signalBand.AnchorPoint=Vector2.new(.5,.5);signalBand.BackgroundColor3=Design.Raised;signalBand.BackgroundTransparency=1;signalBand.BorderSizePixel=0;signalBand.ZIndex=root.ZIndex-1;signalBand.Parent=root
+  signalBand:SetAttribute("AltairDesignRole","inset")
+  local round=Instance.new("UICorner");round.CornerRadius=UDim.new(0,8*scale);round.Parent=signalBand
+  local rim=Instance.new("UIStroke");rim.Name="SignalRim";rim.Color=Design.Edge;rim.Transparency=1;rim.Thickness=.6;rim.Parent=signalBand
+  local falloff=Instance.new("UIGradient");falloff.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(.12,.12),NumberSequenceKeypoint.new(.5,0),NumberSequenceKeypoint.new(.88,.12),NumberSequenceKeypoint.new(1,1)});falloff.Parent=signalBand
+  focus=Instance.new("Frame");focus.Name="FocusRail";focus.AnchorPoint=Vector2.new(.5,.5);focus.BackgroundColor3=amber;focus.BackgroundTransparency=1;focus.BorderSizePixel=0;focus.ZIndex=root.ZIndex;focus.Parent=root
+  local rounding=Instance.new("UICorner");rounding.CornerRadius=UDim.new(0,8*scale);rounding.Parent=focus
+  local edge=Instance.new("UIStroke");edge.Name="FocusRim";edge.Color=amber;edge.Transparency=1;edge.Thickness=.6;edge.Parent=focus
+  marker.Image="";marker.BackgroundTransparency=.08;marker.BackgroundColor3=amber
+  local cap=Instance.new("UICorner");cap.CornerRadius=UDim.new(1,0);cap.Parent=marker
+  precisionBadge=Instance.new("TextLabel");precisionBadge.Name="PrecisionMode";precisionBadge.BackgroundTransparency=1;precisionBadge.AnchorPoint=Vector2.new(.5,1);precisionBadge.Text=options.PrecisionLabel or "PRECISION";precisionBadge.TextSize=12*scale;precisionBadge.FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium);precisionBadge.TextColor3=Design.Muted;precisionBadge.TextTransparency=1;precisionBadge.ZIndex=root.ZIndex+1;precisionBadge.Parent=root
+ end
+ local hit=Instance.new("TextButton");hit.Name="Input";hit.Text="";hit.BackgroundTransparency=1;hit.BorderSizePixel=0;hit.AutoButtonColor=false;hit.Selectable=true;hit.Size=UDim2.fromScale(1,1);hit.ZIndex=root.ZIndex+3;hit:SetAttribute("NoHover",true);hit:SetAttribute("ReferenceRulerControl",true);hit.Parent=root
+ local tapeValue=state.position;tapeValue.Name="TapeValue";tapeValue.Parent=root
+ local zoomValue=state.zoom;zoomValue.Name="Zoom";zoomValue.Parent=root
+ controller.Root,controller.Input,controller.Selection=root,hit,marker
+ controller.VisualValue,controller.Zoom=tapeValue,zoomValue
+ local layers={{step=1,flashes={},pulses={},slots={}},{step=1/precisionZoom,flashes={},pulses={},slots={}}}
+ local font=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Bold)
+ local lastVisual,flashUntil,pointerAxis=nil,0,nil
+ local lastRenderAt
+ local dirty=false;local interactionChanged=false;local destroying=false
+ local coast,advanceCoast;local pendingCommit=false
+ local motionGeneration=0
+ local physicsUpdating=false
+ local function track(signal,callback)local c=signal:Connect(callback);connections[#connections+1]=c;return c end
+ local function coordinateScale()
+  local result=1;local object=root
+  while object and not object:IsA("ScreenGui")do
+   for _,child in ipairs(object:GetChildren())do if child:IsA("UIScale")then result*=child.Scale;break end end
+   object=object.Parent
+  end
+  return math.max(.001,result)
+ end
+ local function visible()
+  if not controller.alive or not root.Parent then return false end
+  local object=root
+  while object do
+   if object:IsA("GuiObject")and not object.Visible then return false end
+   if object:IsA("ScreenGui")then return object.Enabled end
+   object=object.Parent
+  end
+  return true
+ end
+ local function allowed()
+  return visible()and not controller.suspended and(not options.CanInteract or options.CanInteract())
+ end
+ local function unbindWheel()
+  if wheelBound then wheelBound=false;actions:UnbindAction(wheelAction)end
+ end
+ local function syncWheel()
+  if not controller.hovered or not allowed()then unbindWheel();return end
+  if wheelBound then return end
+  wheelBound=true
+  actions:BindActionAtPriority(wheelAction,function()
+   return controller.hovered and allowed()and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
+  end,false,Enum.ContextActionPriority.High.Value+1,Enum.UserInputType.MouseWheel)
+ end
+ local function bounded(value)
+  value=tonumber(value);if not value or value~=value or math.abs(value)==math.huge then return low end
+  return math.clamp(value,low,high)
+ end
+ local function rounded(value,quantum)
+  value=bounded(value);quantum=math.max(1e-7,quantum)
+  local origin=tonumber(options.SnapOrigin);if not origin or origin~=origin or math.abs(origin)==math.huge then origin=low end
+  local result=origin+math.floor((value-origin)/quantum+.5)*quantum
+  return math.clamp(math.floor(result*1e6+.5)/1e6,low,high)
+ end
+ local function text(value)
+  if options.FormatTick then return options.FormatTick(value)end
+  return tostring(math.floor(value*1e5+.5)/1e5)
+ end
+ local function slot(layer,index)
+  local item=layer.slots[index];if item then return item end
+  local line=Instance.new("Frame");line.Name="Tick";line.Visible=false;line.BorderSizePixel=0;line.BackgroundColor3=amber;line.AnchorPoint=Vector2.new(.5,0);line.ZIndex=root.ZIndex;line.Parent=viewport
+  local rounding=Instance.new("UICorner");rounding.CornerRadius=UDim.new(1,0);rounding.Parent=line
+  local label=Instance.new("TextLabel");label.Name="Number";label.Visible=false;label.Text="";label.BackgroundTransparency=1;label.FontFace=font;label.TextSize=22*scale;label.TextColor3=amber;label.TextXAlignment=Enum.TextXAlignment.Center;label.TextYAlignment=Enum.TextYAlignment.Center;label.ZIndex=root.ZIndex;label.Parent=viewport
+  item={line=line,label=label};layer.slots[index]=item;return item
+ end
+ local function renderTrack(width,height,value,blend,now,elapsed)
+  local pulse=0
+  for _,layer in ipairs(layers)do
+   for index,entry in pairs(layer.pulses)do
+    local age=now-entry.time
+    if entry.generation==motionGeneration and age<entry.life then pulse=math.max(pulse,(1-age/entry.life)^2)
+    else layer.pulses[index]=nil end
    end
   end
-  local handle=make("Frame","Handle",preview,{Position=UDim2.new(.5,-24,0,6),Size=UDim2.fromOffset(48,2),BackgroundColor3=Color3.fromRGB(185,188,200),BackgroundTransparency=.3});corner(handle,2)
-  text("Name",card,id,UDim2.fromOffset(12,89),UDim2.new(1,-46,0,22),16,true)
-  local subtitle=text("Summary",card,id=="Roblox"and"Builder Sans · quiet surfaces"or"Colourful · glass surfaces",UDim2.fromOffset(12,114),UDim2.new(1,-24,0,18),11,false);subtitle.TextColor3=Color3.fromRGB(172,178,194)
-  local selected=make("ImageLabel","Selected",card,{Position=UDim2.new(1,-31,0,91),Size=UDim2.fromOffset(18,18),ImageColor3=Color3.fromRGB(115,161,255),ImageTransparency=1});applyIcon(selected,"circle-check")
-  cards[id]={card=card,stroke=stroke,scale=scale,selected=selected}
-  connect(card.MouseEnter,function()motion:Create(scale,TweenInfo.new(.22,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1.02}):Play();motion:Create(card,TweenInfo.new(.16),{BackgroundTransparency=0}):Play()end)
-  connect(card.MouseLeave,function()motion:Create(scale,TweenInfo.new(.24,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play();motion:Create(card,TweenInfo.new(.16),{BackgroundTransparency=.14}):Play()end)
-  connect(card.Activated,function()
-   motion:Create(scale,TweenInfo.new(.12,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=.98}):Play()
-   task.delay(.12,function()if card.Parent then motion:Create(scale,TweenInfo.new(.28,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()end end)
-   controller:Set(id)
+  local hoverTarget=controller.dragging and 1 or(controller.hovered and .65 or 0)
+  trackHover+=(hoverTarget-trackHover)*(1-math.exp(-22*math.max(elapsed,1/240)))
+  trackFeedbackActive=math.abs(hoverTarget-trackHover)>.001
+  if not trackFeedbackActive then trackHover=hoverTarget end
+  local inset=math.min(width*.25,math.max(16,24*scale))
+  local railWidth=math.max(1,width-inset*2);local ratio=math.clamp((value-low)/math.max(1e-7,high-low),0,1)
+  local centerY=height*.5;local railHeight=math.max(5,7*scale)+blend*.5
+  local handleSize=math.max(13,21*scale)+trackHover*2+blend+2*pulse
+  local haloSize=math.min(inset*2,height,handleSize+12+4*trackHover+4*pulse)
+  local x=inset+railWidth*ratio
+  local accent=amber;local light=math.clamp(.13*trackHover+.7*pulse,0,1)
+  trackVisual.Rail.Position=UDim2.fromOffset(width*.5,centerY);trackVisual.Rail.Size=UDim2.fromOffset(railWidth,railHeight)
+  trackVisual.Rail.BackgroundColor3=Design.Well:Lerp(future,.12);trackVisual.Rim.Color=accent
+  trackVisual.Rim.Transparency=.92-.08*trackHover-.06*blend
+  trackVisual.Fill.Position=UDim2.new();trackVisual.Fill.Size=UDim2.fromScale(ratio,1)
+  trackVisual.Gradient.Color=ColorSequence.new(accent:Lerp(Design.Surface,.28),accent:Lerp(white,.12+.36*pulse))
+  trackVisual.Handle.Position=UDim2.fromScale(x/width,.5);trackVisual.Handle.Size=UDim2.fromOffset(handleSize,handleSize)
+  trackVisual.Handle.BackgroundColor3=white:Lerp(accent,.16*(1-light));trackVisual.HandleRim.Color=accent:Lerp(white,.68)
+  trackVisual.HandleRim.Transparency=.55-.16*trackHover-.18*pulse
+  trackVisual.Halo.Position=UDim2.fromScale(x/width,.5);trackVisual.Halo.Size=UDim2.fromOffset(haloSize,haloSize)
+  trackVisual.Halo.BackgroundColor3=accent;trackVisual.Halo.BackgroundTransparency=1-math.clamp(.07*trackHover+.07*blend+.14*pulse,0,.28)
+ end
+ local function render()
+  if not controller.alive or controller.suspended or not visible()then return end
+  local factor=coordinateScale();local width=root.AbsoluteSize.X/factor;local height=root.AbsoluteSize.Y/factor
+  if width<=0 or height<=0 then return end
+  local length=axis=="Vertical"and height or width
+  local center=length*.5;local spacing=16.5*scale
+  local now=os.clock();local value=tapeValue.Value;local zoom=zoomValue.Value
+  if paletteTransition then
+   local p=math.clamp((now-paletteTransition.at)/(paletteTransition.duration or .22),0,1);local eased=1-(1-p)^2
+   amber=paletteTransition.accent:Lerp(paletteTransition.toAccent,eased)
+   future=paletteTransition.future:Lerp(paletteTransition.toFuture,eased)
+   markerColor=paletteTransition.marker:Lerp(paletteTransition.toMarker,eased)
+   if p>=1 then paletteTransition=nil end
+  end
+  marker.ImageColor3=markerColor
+  if focus then
+   local landing,bounce=0,0
+   for _,layer in ipairs(layers)do
+    for index,entry in pairs(layer.pulses)do
+     local age=now-entry.time
+     if entry.generation==motionGeneration and age<entry.life then
+      local pulse=(1-age/entry.life)^2
+      landing=math.max(landing,pulse)
+      bounce=math.max(bounce,math.sin(math.min(1,age/.22)*math.pi)*pulse)
+     else layer.pulses[index]=nil end
+    end
+   end
+   signalBand.Position=UDim2.fromScale(.5,.47);signalBand.Size=UDim2.new(1,-12*scale,0,30*scale)
+   focus.Position=UDim2.fromScale(.5,.47);focus.Size=UDim2.fromOffset(30*scale,30*scale)
+   focus.BackgroundColor3=amber;focus.FocusRim.Color=amber;marker.BackgroundColor3=amber:Lerp(white,landing)
+   local capWidth=math.max(12,20*scale)*(1+.24*bounce);local capHeight=math.max(3,6*scale)*(1+.3*bounce)
+   marker.Size=UDim2.fromScale(capWidth/width,capHeight/height);marker.Position=UDim2.fromScale(.5,.47-.9*scale*bounce/height)
+   precisionBadge.Position=UDim2.new(.5,0,1,0);precisionBadge.Size=UDim2.fromOffset(90*scale,16*scale)
+  end
+  local elapsed=math.min(.1,lastRenderAt and now-lastRenderAt or 0)
+  local blend=math.clamp((zoom-1)/math.max(.001,precisionZoom-1),0,1)
+  if precisionBadge then precisionBadge.TextTransparency=1-blend*.8 end
+  if trackSkin then
+   renderTrack(width,height,value,blend,now,elapsed)
+   lastVisual=value;lastRenderAt=now;dirty=false;return
+  end
+  local fineReveal=math.clamp((blend-.5)*2,0,1)
+  local changing=lastVisual and math.abs(lastVisual-value)>1e-6
+  if changing then flashUntil=now+.42 end
+  if axis=="Horizontal"then
+   marker.Rotation=0;if not focus then marker.Position=UDim2.new(.5,0,0,84*scale)end
+  else
+   marker.Rotation=90;marker.Position=UDim2.new(0,width-8*scale,.5,0)
+  end
+  for layerIndex,layer in ipairs(layers)do
+   local layerOpacity=layerIndex==1 and 1 or fineReveal
+   if layerOpacity<.001 then
+    for _,item in ipairs(layer.slots)do item.line.Visible=false;item.label.Visible=false end
+   else
+    local interval=tickStep*layer.step
+    local pixelStep=spacing*zoom*layer.step
+    local count=math.min(poolLimit,math.ceil(length/math.max(1,pixelStep))+6)
+    local first=math.floor(value/interval)-math.floor(count/2)
+    for i=1,count do
+     local item=slot(layer,i);local index=first+i-1;local number=index*interval
+     local point=center+(number-value)/tickStep*spacing*zoom
+     if axis=="Vertical"and not options.Reverse then point=length-point end
+     local fineMajor=layerIndex==2 and index%precisionZoom==0
+     local inRange=not fineMajor and number>=low-1e-5 and number<=high+1e-5 and point>=-20*scale and point<=length+20*scale
+     if inRange then
+      if changing and((lastVisual<value and number>lastVisual and number<=value)or(lastVisual>value and number<lastVisual and number>=value))then
+       local crossing=math.clamp((number-lastVisual)/(value-lastVisual),0,1)
+       layer.flashes[index]=now-elapsed*(1-crossing)
+      end
+      local crossed=layer.flashes[index];local age=crossed and now-crossed or math.huge
+      local tail=math.exp(-.42/.12);local flash=age<.42 and math.max(0,(math.exp(-age/.12)-tail)/(1-tail))or 0
+      local pulsed=layer.pulses[index];local pulseAge=pulsed and now-pulsed.time or math.huge
+      local lifetime=pulsed and pulsed.life or .25
+      local pulse=pulsed and pulsed.generation==motionGeneration and pulseAge<lifetime and(1-pulseAge/lifetime)^2 or 0
+      local hover=options.HoverLighting and pointerAxis and controller.hovered and not controller.dragging and math.exp(-((point-pointerAxis)/(spacing*1.2))^2)*.25 or 0
+      local light=math.clamp(math.max(flash,pulse,hover),0,1)
+      local distance=math.abs(point-center)/math.max(1,center)
+      local fade=math.clamp(1-distance^2,0,1)
+      local opacity=fade*layerOpacity
+      local base=options.ColorAt and options.ColorAt(number)or(number<=value+1e-5 and amber or future)
+      local color=base:Lerp(white,light)
+      item.line.Visible=true;item.line.BackgroundColor3=color;item.line.BackgroundTransparency=1-opacity
+      if axis=="Horizontal"then
+       local small=layerIndex==2
+       local milestone=not small and index%majorEvery==0
+       local markHeight=small and 7 or(milestone and 6 or 14)
+       local markWidth=small and 2 or(milestone and 6 or 3)
+       item.line.Position=UDim2.new(point/width,0,.47,-markHeight*.5*scale);item.line.Size=UDim2.fromOffset((markWidth+2*pulse)*scale,markHeight*scale)
+      else
+       item.line.AnchorPoint=Vector2.new(0,.5);item.line.Position=UDim2.new(0,20*scale,point/height,0);item.line.Size=UDim2.fromOffset(math.max(8*scale,width-40*scale),3*scale)
+      end
+      local labelOpacity=axis~="Horizontal"and options.ShowNumbers~=false and layerIndex==1 and(index%majorEvery==0 and 1 or fineReveal)or 0
+      item.label.Visible=labelOpacity>.001
+      if labelOpacity>.001 then
+       item.label.Text=text(number);item.label.TextSize=(altairSkin and 19 or 22)*scale;item.label.TextColor3=altairSkin and Color3.fromRGB(222,226,236):Lerp(amber,number<=value and .24 or .08)or base;item.label.TextTransparency=1-opacity*labelOpacity*(altairSkin and(number<=value and 1 or .66)or 1)
+       if axis=="Horizontal"then item.label.AnchorPoint=Vector2.new(.5,0);item.label.Position=UDim2.new(point/width,0,0,-3*scale);item.label.Size=UDim2.fromOffset(72*scale,28*scale)
+       else item.label.AnchorPoint=Vector2.new(.5,.5);item.label.Position=UDim2.fromScale(.5,point/height);item.label.Size=UDim2.fromOffset(width,20*scale)end
+      end
+     else item.line.Visible=false;item.label.Visible=false end
+    end
+    for i=count+1,#layer.slots do layer.slots[i].line.Visible=false;layer.slots[i].label.Visible=false end
+    if now>(layer.cleanupAt or 0)then
+     layer.cleanupAt=now+.5
+     for _,values in ipairs({layer.flashes,layer.pulses})do for index,at in pairs(values)do local time=type(at)=="table"and at.time or at;if now-time>1 then values[index]=nil end end end
+    end
+   end
+  end
+  lastVisual=value;lastRenderAt=now;dirty=false
+ end
+ local function disconnectRender()if renderConnection then renderConnection:Disconnect();renderConnection=nil end end
+ local function wake()
+  if controller.suspended or not controller.alive or renderConnection then return end
+  renderConnection=run.RenderStepped:Connect(function(dt)
+   if not visible()or controller.suspended then disconnectRender();return end
+   if advanceCoast then advanceCoast(dt)end
+   render()
+   if not controller.dragging and not coast and not valueTween and not zoomTween and not paletteTransition and not trackFeedbackActive and os.clock()>flashUntil and not dirty then disconnectRender()end
   end)
  end
- local reset=make("TextButton","ResetStyle",frame,{Text="Reset style",TextSize=13,FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium),TextColor3=Color3.fromRGB(235,238,245),AutoButtonColor=false,Position=UDim2.fromOffset(0,208),Size=UDim2.fromOffset(125,32),BackgroundColor3=Color3.fromRGB(42,45,55),BackgroundTransparency=.2});corner(reset,8)
- local resetIcon=make("ImageLabel","Icon",reset,{Position=UDim2.fromOffset(10,8),Size=UDim2.fromOffset(16,16)});applyIcon(resetIcon,"rotate-ccw")
- reset.Text="      Reset style"
- connect(reset.MouseEnter,function()motion:Create(reset,TweenInfo.new(.16),{BackgroundTransparency=0}):Play()end)
- connect(reset.MouseLeave,function()motion:Create(reset,TweenInfo.new(.16),{BackgroundTransparency=.2}):Play()end)
- connect(reset.Activated,function()bounceReset(resetIcon);controller:Set("Altair")end)
- text("AppliesTo",frame,"Applies across Altair",UDim2.fromOffset(137,213),UDim2.new(1,-137,0,22),11,false).TextColor3=Color3.fromRGB(156,163,181)
- function controller:Set(id,silent)
-  if id~="Roblox"then id="Altair"end
-  local previous=setting.current;setting.current=id
-  for name,card in pairs(cards)do
-   local active=name==id
-   motion:Create(card.stroke,TweenInfo.new(.2),{Color=active and Color3.fromRGB(112,156,255)or Color3.fromRGB(82,88,106),Transparency=active and .05 or .5,Thickness=active and 1.5 or 1}):Play()
-   motion:Create(card.selected,TweenInfo.new(.16),{ImageTransparency=active and 0 or 1}):Play()
-  end
-  if not silent and previous~=id then changed(id)end
+ local function cancelValueTween()if valueTween then local old=valueTween;valueTween=nil;old:Cancel()end end
+ local function cancelZoomTween()if zoomTween then local old=zoomTween;zoomTween=nil;old:Cancel()end end
+ local function moveValue(nextValue,animate,duration,easing)
+  cancelValueTween()
+  if animate and math.abs(tapeValue.Value-nextValue)>1e-6 then
+   local tween=native:Create(tapeValue,TweenInfo.new(controlMotionTime(root,duration or options.MotionDuration or .12),easing or Enum.EasingStyle.Exponential,Enum.EasingDirection.Out),{Value=nextValue});valueTween=tween
+   tween.Completed:Once(function()if valueTween==tween then valueTween=nil end end);tween:Play();wake()
+  else tapeValue.Value=nextValue;lastVisual=nextValue;dirty=true;render()end
  end
- controller:Set(setting.current,true)
- frame.Destroying:Connect(function()for _,connection in ipairs(connections)do connection:Disconnect()end end)
- return frame,controller
+ function controller:Set(nextValue,animate,preserveEffects)
+  if not self.alive then return end
+  local target=bounded(nextValue)
+  if physicsUpdating and self.value==target then return end
+  if animate==true and not self.suspended and self.value==target and(valueTween or math.abs(tapeValue.Value-target)<1e-6)then return end
+  coast=nil;pendingCommit=false;if not preserveEffects then motionGeneration+=1 end
+  if not self.dragging then self.InputStage="idle"end
+  self.suspended=false;self.value=target;root:SetAttribute("Value",self.value)
+  moveValue(self.value,animate==true);syncWheel()
+ end
+ function controller:GetValue()return self.value end
+ function controller:RefreshVisual()dirty=true;if renderConnection then wake()else render()end end
+ function controller:SetPrecision(enabled,animate)
+  if not self.alive then return end
+  self.precision=enabled==true;cancelZoomTween()
+  local target=self.precision and precisionZoom or 1
+  if animate~=false and math.abs(zoomValue.Value-target)>.001 then
+   local tween=native:Create(zoomValue,TweenInfo.new(controlMotionTime(root,options.ZoomDuration or .24),Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{Value=target});zoomTween=tween
+   tween.Completed:Once(function()if zoomTween==tween then zoomTween=nil end end);tween:Play();wake()
+  else zoomValue.Value=target;dirty=true;render()end
+ end
+ local function changed(nextValue)
+  if nextValue==controller.value then return end
+  controller:Set(nextValue,true);dirty=true;interactionChanged=true
+  if options.OnChanged then
+   local ok,problem=pcall(options.OnChanged,nextValue);if not ok then warn("Altair ruler change: "..tostring(problem))end
+  end
+ end
+ local function physicsValue(value)
+  if value==controller.value then return end
+  controller.value=value;root:SetAttribute("Value",value)
+  if options.OnChanged then
+   physicsUpdating=true
+   local ok,problem=pcall(options.OnChanged,value)
+   physicsUpdating=false;if not ok then warn("Altair ruler change: "..tostring(problem))end
+  end
+ end
+ local function commitValue(value)
+  pendingCommit=false
+  if options.OnCommit then
+   local ok,problem=pcall(options.OnCommit,value)
+   if not ok then warn("Altair ruler commit: "..tostring(problem))end
+  end
+ end
+ function controller:Pulse(lifetime)
+  if not self.alive or self.suspended then return end
+  local now=os.clock();lifetime=lifetime or .25
+  for _,layer in ipairs(layers)do local interval=tickStep*layer.step;layer.pulses[math.floor(tapeValue.Value/interval+.5)]={time=now,life=lifetime,generation=motionGeneration}end
+  flashUntil=math.max(flashUntil,now+lifetime);wake()
+ end
+ function controller:LandingPulse(generation)
+  if not self.alive or self.suspended then return end
+  generation=generation or motionGeneration
+  if generation~=motionGeneration then return end
+  self:Pulse(.25)
+  task.delay(.27,function()
+   if controller.alive and not controller.suspended and not controller.dragging and not coast and generation==motionGeneration then controller:Pulse(.8)end
+  end)
+ end
+ function controller:IsCoasting()return coast~=nil end
+ function controller:Fling(velocity,commit)
+  if not self.alive or self.suspended then return end
+  cancelValueTween();coast=nil;motionGeneration+=1
+  velocity=math.clamp(tonumber(velocity)or 0,-(high-low)*4,(high-low)*4)
+  if math.abs(velocity)<.01 then return end
+  -- Release starts at the rendered phase, preserving continuity even when
+  -- the rounded readout and the following tape are temporarily apart.
+  pendingCommit=commit~=false
+  coast={position=bounded(tapeValue.Value),velocity=velocity,direction=math.sign(velocity),age=0,commit=pendingCommit}
+  self.InputStage="coast"
+  wake()
+ end
+ local function landed(value,commit,generation)
+  if generation~=motionGeneration or not controller.alive or controller.suspended then return end
+  controller.InputStage="idle"
+  if commit then commitValue(value)end
+  if options.OnLanded then task.spawn(options.OnLanded,value)end
+ end
+ local function settle(position,commit)
+  local ending=coast;coast=nil;local target=rounded(position,step);local generation=motionGeneration
+  pendingCommit=commit==true
+  if ending and ending.direction>0 then target=math.max(controller.value,target)
+  elseif ending and ending.direction<0 then target=math.min(controller.value,target)end
+  controller.InputStage="snap";physicsValue(target);controller:LandingPulse(generation)
+  moveValue(target,true,options.SettleDuration or .27,Enum.EasingStyle.Quart)
+  local settling=valueTween
+  if settling then settling.Completed:Once(function(status)if status==Enum.PlaybackState.Completed then landed(target,commit,generation)end end)
+  else landed(target,commit,generation)end
+ end
+ advanceCoast=function(dt)
+  if not coast then return end
+  local current=coast;local friction=math.max(.001,options.Friction or 4.2);dt=math.min(dt,.05)
+  local decay=math.exp(-friction*dt)
+  local nextPosition=bounded(current.position+current.velocity/friction*(1-decay))
+  current.age+=dt;current.velocity*=decay
+  if nextPosition==low or nextPosition==high then current.velocity=0 end
+  current.position=nextPosition
+  tapeValue.Value=tapeValue.Value+(nextPosition-tapeValue.Value)*(1-math.exp(-60*dt))
+  local nextReadout=rounded(nextPosition,step)
+  if current.direction>0 then nextReadout=math.max(controller.value,nextReadout)
+  elseif current.direction<0 then nextReadout=math.min(controller.value,nextReadout)end
+  physicsValue(nextReadout)
+  if math.abs(current.velocity)<(options.StopVelocity or .4)or current.age>2 then settle(nextPosition,current.commit)end
+ end
+ local dragStart,dragValue,dragPixelsPerUnit,dragThreshold,activeTouch,lastDragAt,lastDragValue,lastMotionAt,dragVelocity,pressPrecision,dragMoved
+ local function finish(immediate,commit)
+  local wasDragging=controller.dragging
+  local releaseVelocity=dragVelocity or 0
+  local fresh=lastMotionAt and os.clock()-lastMotionAt<.1
+  if lastMotionAt then releaseVelocity*=math.exp(-math.max(0,os.clock()-lastMotionAt)*12)end
+  local tapped=wasDragging and not dragMoved and not immediate and commit~=false
+  controller.dragging=false;controller.InputStage="idle";activeTouch=nil;dragStart=nil;dragValue=nil;dragPixelsPerUnit=nil;dragThreshold=nil
+  if tapped then controller:SetPrecision(not pressPrecision,true);moveValue(controller.value,true);if pendingCommit then commitValue(controller.value)end
+  else controller:SetPrecision(false,not immediate)end
+  local thrown=commit~=false and not immediate and wasDragging and interactionChanged and fresh and(not pressPrecision or options.FineFling==true)and math.abs(releaseVelocity)>(options.FlickThreshold or 3)
+  if thrown then controller:Fling(releaseVelocity,true)
+  elseif commit~=false and wasDragging and interactionChanged and not pressPrecision then settle(controller.value,true)
+  elseif commit~=false and wasDragging and interactionChanged then moveValue(controller.value,true);commitValue(controller.value)end
+  interactionChanged=false
+  if immediate then
+   coast=nil;pendingCommit=false;motionGeneration+=1;controller.InputStage="idle";controller.hovered=false;pointerAxis=nil;unbindWheel();cancelValueTween();cancelZoomTween();controller.suspended=true;disconnectRender()
+   for _,layer in ipairs(layers)do table.clear(layer.flashes);table.clear(layer.pulses)end
+  else wake()end
+ end
+ function controller:IsDragging()return self.dragging end
+ function controller:Cancel(immediate)coast=nil;pendingCommit=false;motionGeneration+=1;unbindWheel();finish(immediate==true,false)end
+ function controller:SetRange(minimum,maximum,quantum,interval)
+  low=tonumber(minimum)or 0;high=tonumber(maximum)or low+1;if high<=low then high=low+1 end
+  step=math.max(1e-7,tonumber(quantum)or 1);tickStep=math.max(1e-7,tonumber(interval)or step)
+  self:Set(bounded(self.value),false)
+ end
+ function controller:Configure(config)
+  config=config or {};local previousVisual=tapeValue.Value;self:Cancel(true)
+  if config.MajorEvery then majorEvery=math.max(1,math.floor(config.MajorEvery))end
+  if config.Scale then scale=config.Scale end
+  if config.PrecisionStep then options.PrecisionStep=config.PrecisionStep end
+  local nextAccent=config.Color or amber;local nextFuture=config.FutureColor or future;local nextMarker=config.MarkerColor or markerColor
+  if config.Animate==true and(nextAccent~=amber or nextFuture~=future or nextMarker~=markerColor)then
+   paletteTransition={at=os.clock(),duration=controlMotionTime(root,.22),accent=amber,future=future,marker=markerColor,toAccent=nextAccent,toFuture=nextFuture,toMarker=nextMarker}
+  else paletteTransition=nil;amber=nextAccent;future=nextFuture;markerColor=nextMarker;marker.ImageColor3=markerColor end
+  if config.FormatTick then options.FormatTick=config.FormatTick end
+  local range=config.Range or {low,high}
+  low=tonumber(range[1])or 0;high=tonumber(range[2])or low+1;if high<=low then high=low+1 end
+  step=math.max(1e-7,tonumber(config.Step)or step);tickStep=math.max(1e-7,tonumber(config.TickStep)or tickStep)
+  local target=bounded(config.Value==nil and self.value or config.Value)
+  if config.Animate==true then
+   self.suspended=false;self.value=target;root:SetAttribute("Value",target);tapeValue.Value=previousVisual;lastVisual=previousVisual
+   moveValue(target,true,options.RetargetDuration or .30,Enum.EasingStyle.Quart);syncWheel();wake()
+  else self:Set(target,false)end
+ end
+ local function pointer(event)
+  local point=event and event.Position or input:GetMouseLocation()
+  return axis=="Vertical"and point.Y or point.X
+ end
+ local function dragPointer(event)
+  if not controller.dragging or not allowed()then return end
+  local distance=pointer(event)-dragStart
+  if not dragMoved and math.abs(distance)<dragThreshold then return end
+  dragMoved=true;controller.HasMoved=true;controller.InputStage=pressPrecision and "fine-drag"or"coarse-drag"
+  -- A normal track follows the hand; a ruler moves its tape in the opposite
+  -- direction. Freeze sensitivity for this gesture, including UI Size drags
+  -- that resize their own ancestors while the pointer is still held down.
+  local direction=(trackSkin and 1 or -1)*(options.Reverse and -1 or 1)
+  local nextValue=bounded(dragValue+distance/dragPixelsPerUnit*direction)
+  local now=os.clock();local elapsed=now-(lastDragAt or now)
+  if elapsed>1e-4 and lastDragValue then
+   local velocity=(nextValue-lastDragValue)/elapsed
+   dragVelocity=(dragVelocity or 0)+(velocity-(dragVelocity or 0))*(1-math.exp(-elapsed*24))
+   if math.abs(nextValue-lastDragValue)>1e-5 then lastMotionAt=now end
+  end
+  lastDragAt=now;lastDragValue=nextValue
+  -- Keep the visible phase continuous even between rounded readout values.
+  -- The callback's same-value Set echo is suppressed by physicsValue, so it
+  -- cannot restart a following tween for every pointer sample.
+  if math.abs(nextValue-tapeValue.Value)>1e-7 then interactionChanged=true end
+  cancelValueTween();tapeValue.Value=nextValue;dirty=true
+  physicsValue(rounded(nextValue,pressPrecision and(options.PrecisionStep or step/(precisionZoom*2))or step));wake()
+ end
+ track(hit.InputBegan,function(event)
+  if not allowed()then return end
+  if event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch then
+   if controller.dragging then return end
+   coast=nil;motionGeneration+=1;cancelValueTween()
+   controller.dragging=true;controller.HasMoved=false;controller.InputStage="pending";dirty=false;interactionChanged=false;activeTouch=event.UserInputType==Enum.UserInputType.Touch and event or nil;dragStart=pointer(event);dragValue=bounded(tapeValue.Value)
+   pressPrecision=controller.precision==true;dragMoved=false
+   local gestureScale=coordinateScale()
+   if trackSkin then
+    local railWidth=trackVisual.Rail.AbsoluteSize.X
+    if railWidth<=0 then
+     local width=root.AbsoluteSize.X/gestureScale
+     local inset=math.min(width*.25,math.max(16,24*scale))
+     railWidth=math.max(1,(width-inset*2)*gestureScale)
+    end
+    dragPixelsPerUnit=railWidth/math.max(1e-7,high-low)
+   else dragPixelsPerUnit=16.5*scale*gestureScale/tickStep end
+   dragPixelsPerUnit*=pressPrecision and precisionZoom or 1
+   dragThreshold=(options.DragThreshold or 4)*scale*gestureScale
+   lastDragAt=os.clock();lastDragValue=dragValue;lastMotionAt=nil;dragVelocity=0
+   wake()
+  elseif event.KeyCode==Enum.KeyCode.Left or event.KeyCode==Enum.KeyCode.Right or event.KeyCode==Enum.KeyCode.Up or event.KeyCode==Enum.KeyCode.Down then
+   local direction=(event.KeyCode==Enum.KeyCode.Right or event.KeyCode==Enum.KeyCode.Up)and 1 or -1
+   if options.Reverse and axis=="Vertical"then direction=-direction end
+   local quantum=controller.precision and(options.PrecisionStep or step/(precisionZoom*2))or step
+   changed(rounded(controller.value+quantum*direction,quantum));commitValue(controller.value)
+  elseif event.KeyCode==Enum.KeyCode.Home or event.KeyCode==Enum.KeyCode.End then
+   local target=event.KeyCode==Enum.KeyCode.Home and low or high
+   -- Explicit boundary input owns the final value even while the rounded
+   -- readout still matches it during an outgoing coast or retarget tween.
+   if target==controller.value then
+    coast=nil;pendingCommit=false;motionGeneration+=1;controller.InputStage="idle";moveValue(target,true)
+   else changed(target)end
+   commitValue(controller.value)
+  end
+ end)
+ track(input.InputChanged,function(event)
+  if controller.dragging and((activeTouch and event==activeTouch)or(not activeTouch and event.UserInputType==Enum.UserInputType.MouseMovement))then dragPointer(event)
+  elseif controller.hovered and not controller.dragging and event.UserInputType==Enum.UserInputType.MouseWheel and allowed()then
+   if controller.precision then
+    local quantum=options.PrecisionStep or step/(precisionZoom*2)
+    changed(rounded(controller.value+event.Position.Z*quantum*(options.Reverse and -1 or 1),quantum))
+    commitValue(controller.value)
+   else
+    local velocity=(coast and coast.velocity or 0)+event.Position.Z*step*(options.WheelImpulse or 16)*(options.Reverse and -1 or 1)
+    controller:Fling(velocity,true)
+   end
+  end
+ end)
+ track(input.InputEnded,function(event)
+  if controller.dragging and((activeTouch and event==activeTouch)or(not activeTouch and event.UserInputType==Enum.UserInputType.MouseButton1))then dragPointer(event);finish(false)end
+ end)
+ track(input.WindowFocusReleased,function()controller.hovered=false;controller:Cancel(true)end)
+ track(hit.MouseEnter,function()controller.hovered=true;dirty=true;syncWheel();wake()end)
+ track(hit.MouseLeave,function()controller.hovered=false;unbindWheel();pointerAxis=nil;dirty=true;flashUntil=os.clock()+.16;wake()end)
+ track(hit.MouseMoved,function(x,y)
+  local factor=coordinateScale();pointerAxis=axis=="Vertical"and(y-root.AbsolutePosition.Y)/factor or(x-root.AbsolutePosition.X)/factor
+  if allowed()then controller.hovered=true end
+  if controller.hovered then dirty=true;syncWheel();wake()end
+ end)
+ track(root:GetPropertyChangedSignal("AbsoluteSize"),function()dirty=true;if not controller.suspended then render()end end)
+ local function visibilityChanged()
+  if not visible()then unbindWheel();finish(true,false)
+  elseif not controller.suspended then
+   -- A same-value Configure may run before its collapsed host is revealed.
+   -- Retry after it becomes visible, including one frame for pending layout.
+   dirty=true;render();syncWheel();wake()
+  end
+ end
+ local ancestor=root
+ while ancestor do
+  if ancestor:IsA("GuiObject")then track(ancestor:GetPropertyChangedSignal("Visible"),visibilityChanged)
+  elseif ancestor:IsA("ScreenGui")then track(ancestor:GetPropertyChangedSignal("Enabled"),visibilityChanged)end
+  ancestor=ancestor.Parent
+ end
+ function controller:Destroy()
+  if not self.alive then return end
+  finish(true,false);self.alive=false;cancelValueTween();cancelZoomTween();disconnectRender()
+  for _,connection in ipairs(connections)do connection:Disconnect()end;table.clear(connections)
+  if root.Parent and not destroying then destroying=true;root:Destroy()end
+ end
+ track(root.Destroying,function()destroying=true;if controller.alive then controller:Destroy()end end)
+ -- Mounting is normally hidden. Populate the bounded pools in short chunks so
+ -- the first precision gesture never creates its tick/text instances mid-frame.
+ local budgetAt=os.clock()
+ if not trackSkin then
+  for _,layer in ipairs(layers)do
+   for index=1,poolLimit do
+    if not controller.alive or not root.Parent then return controller end
+    slot(layer,index)
+    if os.clock()-budgetAt>=.0015 then run.Heartbeat:Wait();budgetAt=os.clock()end
+   end
+  end
+ end
+ root.Visible=true
+ local range=options.Range or {0,100};controller:SetRange(range[1],range[2],options.Step,options.TickStep)
+ majorEvery=math.max(1,math.floor(options.MajorEvery or 5));controller:Set(options.Value==nil and low or options.Value,false)
+ return controller
 end
 
+
+-- A compact settings header expands into the shared ruler on demand.
+local function buildSlider(template,parent,setting,onChange,onCommit)
+ local row=template:Clone();row.Name=setting.name;row.Parent=parent;row.Visible=true;row.Title.Text=setting.name
+ row:SetAttribute("AltairExpandableSlider",true);row:SetAttribute("Expanded",false);row.ClipsDescendants=true
+ local old=row:FindFirstChild("Interact");if old then old:Destroy()end
+ local license=row:FindFirstChild("LicenseDisplay");if license then license.Visible=false end
+ local corner=row:FindFirstChildOfClass("UICorner");if corner then corner.CornerRadius=UDim.new(0,12)end
+ row.BackgroundColor3=Design.Raised;row.BackgroundTransparency=.12;row:SetAttribute("AltairDesignRole","inset")
+ row.Title.FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.SemiBold);row.Title.TextColor3=Color3.fromRGB(243,246,252)
+ row.Description.FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium);row.Description.TextColor3=Design.Muted;row.Description:SetAttribute("AltairDesignRole","muted")
+ local rim=row:FindFirstChildOfClass("UIStroke");if rim then rim.Color=Design.Edge;rim.Thickness=.6;rim.Transparency=.9 end
+ local native=game:GetService("TweenService");local input=game:GetService("UserInputService")
+ local connections={};local animations=setmetatable({},{__mode="k"})
+ local controller={alive=true,Expanded=false,creating=false,dirty=false,version=0}
+ setting._sliderController=controller
+ local screen=parent:FindFirstAncestorOfClass("ScreenGui");local settings=screen and screen:FindFirstChild("Settings")
+ local pages=parent.Parent and parent.Parent:FindFirstChildOfClass("UIPageLayout")
+ local low,high=setting.values[1],setting.values[2];local step=setting.step or 1
+ local accents={
+  uisize=Color3.fromRGB(96,165,250),themetint=Color3.fromRGB(203,141,247),
+  themelightness=Color3.fromRGB(248,194,85),panelopacity=Color3.fromRGB(64,204,187),
+  oledidledim=Color3.fromRGB(239,125,153),oledidledelay=Color3.fromRGB(168,146,235),
+  notificationduration=Color3.fromRGB(96,211,144),capsulerevealtime=Color3.fromRGB(246,162,91),
+ }
+ local baseAccent=accents[setting.id]or Color3.fromRGB(103,161,235)
+ local accent,futureAccent,markerAccent
+ local function styleAccents()
+  accent=baseAccent
+  futureAccent=accent:Lerp(Color3.fromRGB(8,10,14),.78)
+  markerAccent=accent:Lerp(Color3.fromRGB(10,12,16),.28)
+ end
+ styleAccents()
+ local baseHeight=60;local rulerHeight=52
+ local function make(class,name,properties,container)
+  local object=Instance.new(class);object.Name=name
+  if object:IsA("GuiObject")then object.BackgroundTransparency=1;object.BorderSizePixel=0;object.ZIndex=row.Title.ZIndex end
+  for key,value in pairs(properties or {})do object[key]=value end;object.Parent=container or row;return object
+ end
+ local function connect(signal,callback)local c=signal:Connect(callback);connections[#connections+1]=c;return c end
+ local function stop(object,goal)
+  local running=animations[object];if not running then return end
+  for property in pairs(goal)do local tween=running[property];if tween then tween:Cancel();running[property]=nil end end
+ end
+ local function animate(object,duration,goal,style)
+  stop(object,goal)
+  local running=animations[object]or {};animations[object]=running
+  local tween=native:Create(object,TweenInfo.new(controlMotionTime(row,duration),style or Enum.EasingStyle.Quart,Enum.EasingDirection.Out),goal)
+  for property in pairs(goal)do running[property]=tween end
+  tween.Completed:Once(function()for property in pairs(goal)do if running[property]==tween then running[property]=nil end end end);tween:Play()
+ end
+ local function visible()
+  if not controller.alive or not row.Parent or(settings and settings:GetAttribute("AltairClosing"))then return false end
+  if pages and pages.CurrentPage and pages.CurrentPage~=parent then return false end
+  local object=row
+  while object do
+   if object:IsA("GuiObject")and not object.Visible then return false end
+   if object:IsA("ScreenGui")then return object.Enabled end
+   object=object.Parent
+  end
+  return false
+ end
+ local function painted()
+  if pages and pages.CurrentPage and pages.CurrentPage~=parent then return false end
+  local object=row;while object do
+   if object:IsA("GuiObject")and(not object.Visible or object:IsA("CanvasGroup")and object.GroupTransparency>.999)then return false end
+   if object:IsA("ScreenGui")then return object.Enabled end;object=object.Parent
+  end
+  return false
+ end
+ local function formatted(number)
+  number=math.round(number*10)/10
+  return(number%1==0 and tostring(math.floor(number))or string.format("%.1f",number))..(setting.suffix or "%")
+ end
+ local value=make("TextLabel","Value",{AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-43,0,12),Size=UDim2.fromOffset(95,22),TextSize=14,TextColor3=row.Title.TextColor3,FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Bold),TextXAlignment=Enum.TextXAlignment.Right})
+ local arrow=make("ImageLabel","ExpandArrow",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-17,0,23),Size=UDim2.fromOffset(16,16),ImageColor3=row.Title.TextColor3,ImageTransparency=.3});applyIcon(arrow,"chevron-down")
+ local header=make("TextButton","Expand",{Text="",AutoButtonColor=false,Selectable=true,Size=UDim2.new(1,0,0,baseHeight),ZIndex=row.Title.ZIndex+2})
+ local content=make("CanvasGroup","RulerContent",{Position=UDim2.fromOffset(18,baseHeight+4),Size=UDim2.new(1,-36,0,44),GroupTransparency=1,Visible=false})
+ row.Title.Position=UDim2.fromOffset(18,12);row.Title.Size=UDim2.new(1,-165,0,22)
+ row.Description.Text=setting.description or "";row.Description.Visible=row.Description.Text~="";row.Description.TextWrapped=true
+ row.Description.Position=UDim2.fromOffset(18,36);row.Description.Size=UDim2.new(1,-36,0,48);row.Description.TextTransparency=.25
+ local function readout()
+  value.Text=formatted(tonumber(setting.current)or low);value:SetAttribute("DisplayedValue",value.Text)
+ end
+ local function commit(committedValue)
+  if not controller.alive or not controller.dirty then return end
+  if committedValue~=nil and math.abs(committedValue-(tonumber(setting.current)or low))>1e-6 then return end
+  controller.dirty=false;if onCommit then onCommit()end
+ end
+ local layout
+ local interactionReset=false
+ local function settleInteraction()
+  -- Closing/group fades keep their own concealment. Settle a cancelled hover
+  -- only after this row is eligible again, using the authored material alpha.
+  if not interactionReset or not visible()then return end
+  interactionReset=false
+  Design.freezeMaterial(row)
+  row.BackgroundTransparency=Design.materialAlpha(row,.12)
+  if rim and rim.Parent then rim.Transparency=.9 end
+  arrow.ImageTransparency=.3
+ end
+ function controller:Cancel(immediate,save)
+  if self.Ruler then self.Ruler:Cancel(true)end
+  if immediate then
+   for _,running in pairs(animations)do for _,tween in pairs(running)do tween:Cancel()end end;table.clear(animations)
+   interactionReset=true;settleInteraction()
+   if layout and not painted()then layout(false)end
+  end
+  if save~=false then commit()end
+ end
+ layout=function(animated)
+  if not controller.alive then return end
+  local textHeight=row.Description.Visible and math.max(14,row.Description.TextBounds.Y)or 0
+  baseHeight=row.Description.Visible and math.max(60,36+textHeight+12)or 52
+  header.Size=UDim2.new(1,0,0,baseHeight);row.Description.Size=UDim2.new(1,-36,0,textHeight+2)
+  content.Position=UDim2.fromOffset(18,baseHeight+4)
+  local goals={{row,{Size=UDim2.new(1,-16,0,baseHeight+(controller.Expanded and rulerHeight or 0))}},{arrow,{Rotation=controller.Expanded and 180 or 0}}}
+  if controller.Expanded and controller.Ruler then content.Visible=true end
+  goals[#goals+1]={content,{GroupTransparency=controller.Expanded and controller.Ruler and 0 or 1}}
+  for _,target in ipairs(goals)do
+   if animated then animate(target[1],.24,target[2])
+   else stop(target[1],target[2]);for property,nextValue in pairs(target[2])do target[1][property]=nextValue end end
+  end
+  if not controller.Expanded then
+   local version=controller.version
+   if not animated then content.Visible=false
+   else task.delay(.25,function()if controller.alive and controller.version==version and not controller.Expanded then content.Visible=false end end)end
+  end
+ end
+ local function configure(animated)
+  if not controller.Ruler then return end
+  if not controller.Expanded or not visible()then controller.Ruler:Cancel(true);return end
+   styleAccents()
+  controller.Ruler:Configure({Range=setting.values,Value=setting.current,Step=step,TickStep=setting.tickStep or step,PrecisionStep=.1,MajorEvery=setting.majorEvery or 5,Scale=582/908,Animate=animated==true,Skin="Track",Color=accent,FutureColor=futureAccent,MarkerColor=markerAccent})
+ end
+ local function ensureRuler()
+  if controller.Ruler or controller.creating or not controller.alive or not controller.Expanded then return end
+  controller.creating=true
+   styleAccents()
+  local ruler=buildRuler(content,{Name="SettingsRuler",Range=setting.values,Value=setting.current,Step=step,TickStep=setting.tickStep or step,PrecisionStep=.1,MajorEvery=setting.majorEvery or 5,Scale=582/908,Size=UDim2.fromScale(1,1),Skin="Track",Color=accent,FutureColor=futureAccent,MarkerColor=markerAccent,
+   CanInteract=function()return controller.alive and controller.Expanded and not controller.creating and visible()end,
+   OnChanged=function(nextValue)
+    if not controller.alive or not controller.Expanded or not visible()then return end
+    nextValue=math.clamp(math.round(nextValue*10)/10,low,high)
+    if nextValue==setting.current then return end
+    setting.current=nextValue;controller.dirty=true;readout();if onChange then onChange(nextValue)end
+   end,
+   OnCommit=commit,
+  })
+  controller.creating=false
+  if not controller.alive then ruler:Destroy();return end
+  controller.Ruler=ruler;configure(false)
+ end
+ function controller:SetExpanded(expanded,animated)
+  if not self.alive then return end
+  self.version+=1;self.Expanded=expanded==true;row:SetAttribute("Expanded",self.Expanded)
+  if not self.Expanded then self:Cancel(false,true)end
+  -- Track construction has no tick pools or waits. Mount it before reserving
+  -- expansion space, so the first opening never reveals an empty control area.
+  if self.Expanded then if self.Ruler then configure(false)else ensureRuler()end end
+  layout(animated~=false)
+ end
+ function controller:Refresh(animated)
+  if not self.alive then return end
+  settleInteraction();readout();configure(animated);layout(animated)
+ end
+ function controller:Destroy()
+  if not self.alive then return end
+  self:Cancel(true,false);self.alive=false;self.version+=1
+  for _,c in ipairs(connections)do c:Disconnect()end;table.clear(connections)
+  if self.Ruler then self.Ruler:Destroy()end
+  if setting._sliderController==self then setting._sliderController=nil end
+ end
+ connect(header.Activated,function()if visible()then controller:SetExpanded(not controller.Expanded,true)end end)
+ connect(header.MouseEnter,function()if visible()then interactionReset=false;if row:FindFirstChild("UIStroke")then animate(row.UIStroke,.18,{Transparency=.8})end;animate(row,.18,{BackgroundTransparency=.06});animate(arrow,.18,{ImageTransparency=0})end end)
+ connect(header.MouseLeave,function()if controller.alive then if visible()then interactionReset=false end;if row:FindFirstChild("UIStroke")then animate(row.UIStroke,.18,{Transparency=.9})end;animate(row,.18,{BackgroundTransparency=.12});animate(arrow,.18,{ImageTransparency=.3})end end)
+ connect(row.Description:GetPropertyChangedSignal("TextBounds"),function()layout(false)end)
+ connect(row:GetAttributeChangedSignal("AltairRefreshValue"),function()
+  -- An external update owns both the value and its persistence. Discard the
+  -- interrupted gesture's pending commit before retargeting the same tape.
+  controller:Cancel(false,false);controller.dirty=false;controller:Refresh(true)
+ end)
+ connect(input.WindowFocusReleased,function()controller:Cancel(false,true)end)
+ local ancestor=row
+ while ancestor do
+  if ancestor:IsA("GuiObject")then connect(ancestor:GetPropertyChangedSignal("Visible"),function()if not visible()then controller:Cancel(true,true)else controller:Refresh(false)end end)
+  elseif ancestor:IsA("ScreenGui")then connect(ancestor:GetPropertyChangedSignal("Enabled"),function()if not visible()then controller:Cancel(true,true)else controller:Refresh(false)end end)end
+  ancestor=ancestor.Parent
+ end
+ if pages then connect(pages:GetPropertyChangedSignal("CurrentPage"),function()if not visible()then controller:Cancel(true,true)else controller:Refresh(false)end end)end
+ if settings then connect(settings:GetAttributeChangedSignal("AltairClosing"),function()if settings:GetAttribute("AltairClosing")then controller:Cancel(true,true)elseif visible()then controller:Refresh(painted())end end)end
+ connect(row.Destroying,function()controller:Destroy()end)
+ readout();layout(false);return row
+end
+
+-- Character parameters share one ruler; the four model slots remain the source of truth.
+local function buildDaylightDial(parent,options)
+ options=options or {};local input=options.Input or game:GetService("UserInputService");local native=game:GetService("TweenService")
+ local controller={alive=true,value=0,dragging=false};local connections={};local held,motion,dragOrigin,dragValue;local revision,reconciling=0,false
+ local root=Instance.new("CanvasGroup");root.Name=options.Name or "DaylightDial";root.BackgroundTransparency=1;root.Size=options.Size or UDim2.new(1,0,0,126);root.Position=options.Position or UDim2.new();root.ZIndex=parent.ZIndex+1;root:SetAttribute("AltairThemeIgnore",true);root:SetAttribute("AltairDaylightDial",true);root.Parent=parent
+ local function make(class,name,properties)
+  local object=Instance.new(class);object.Name=name;if object:IsA("GuiObject")then object.BackgroundTransparency=1;object.BorderSizePixel=0;object.ZIndex=root.ZIndex+1 end
+  for key,value in pairs(properties or{})do object[key]=value end;object.Parent=root;return object
+ end
+ local function connect(signal,callback)local c=signal:Connect(callback);connections[#connections+1]=c;return c end
+ local gold,night=Color3.fromRGB(238,183,86),Color3.fromRGB(144,162,213);local segments={}
+ for index=0,47 do
+  local object=make("Frame","Arc"..index,{AnchorPoint=Vector2.new(.5,.5),BackgroundColor3=Design.Edge})
+  local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(1,0);corner.Parent=object
+  local fade=Instance.new("UIGradient");fade.Transparency=NumberSequence.new(.1,0);fade.Parent=object;segments[index+1]=object
+ end
+ local marker=make("Frame","Marker",{AnchorPoint=Vector2.new(.5,.5),Size=UDim2.fromOffset(10,10),BackgroundColor3=gold,BackgroundTransparency=0})
+ local rounding=Instance.new("UICorner");rounding.CornerRadius=UDim.new(1,0);rounding.Parent=marker
+ local rim=Instance.new("UIStroke");rim.Color=Design.Ink;rim.Thickness=.6;rim.Transparency=.5;rim.Parent=marker
+ local time=make("TextLabel","Time",{AnchorPoint=Vector2.new(.5,1),Size=UDim2.fromOffset(92,23),Text="12:00",TextSize=19,TextColor3=Design.Ink,FontFace=Design.Heading})
+ local hint=make("TextLabel","Hint",{AnchorPoint=Vector2.new(.5,0),Size=UDim2.fromOffset(220,14),Text="Drag the arc beneath the marker",TextSize=10,TextColor3=Design.Muted,FontFace=Design.Font})
+ local moon=make("ImageLabel","Moon",{AnchorPoint=Vector2.new(.5,.5),Size=UDim2.fromOffset(14,14),ImageColor3=night});applyIcon(moon,"moon")
+ local sun=make("ImageLabel","Sun",{AnchorPoint=Vector2.new(.5,.5),Size=UDim2.fromOffset(14,14),ImageColor3=gold});applyIcon(sun,"sun")
+ local dusk=make("ImageLabel","Dusk",{AnchorPoint=Vector2.new(.5,.5),Size=UDim2.fromOffset(14,14),ImageColor3=night});applyIcon(dusk,"moon")
+ local hit=make("TextButton","Input",{Text="",AutoButtonColor=false,Selectable=true,Size=UDim2.fromScale(1,1),ZIndex=root.ZIndex+3})
+ local reset=make("ImageButton","Reset",{AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-4,0,4),Size=UDim2.fromOffset(28,28),AutoButtonColor=false,ImageColor3=Design.Muted,ZIndex=root.ZIndex+4});applyIcon(reset,"rotate-ccw")
+ local visual=Instance.new("NumberValue");visual.Name="Hour";visual.Parent=root
+ local function render()
+  if not controller.alive then return end
+  local width,height=root.AbsoluteSize.X,root.AbsoluteSize.Y;if width<=0 or height<=0 then return end
+  local radius=math.min(width*.31,height*.74);local base=height*.83;local center=width*.5;local ratio=visual.Value/24
+  for index,object in ipairs(segments)do
+   local hour=(index-1)*.5;local distance=(hour-visual.Value+12)%24-12;local angle=distance*math.pi/12
+   local edge=math.clamp((6-math.abs(distance))/.8,0,1);object.Visible=edge>0
+   object.Position=UDim2.fromScale((center+math.sin(angle)*radius)/width,(base-math.cos(angle)*radius)/height)
+   object.Size=UDim2.fromOffset(2,index%4==1 and 10 or 6);object.Rotation=-math.deg(angle)
+   object.BackgroundColor3=night:Lerp(gold,math.max(0,math.sin((hour-6)*math.pi/12)))
+   object.BackgroundTransparency=1-edge*(index%4==1 and .9 or .56)
+  end
+  marker.Position=UDim2.fromScale(.5,(base-radius)/height);marker.BackgroundColor3=night:Lerp(gold,math.max(0,math.sin((visual.Value-6)*math.pi/12)))
+  local minute=math.floor(controller.value*60+.5)%1440;time.Text=string.format("%02d:%02d",math.floor(minute/60),minute%60)
+  local ink=options.InkSource and options.InkSource.TextColor3 or Design.Ink
+  time.TextColor3=ink;hint.TextColor3=ink:Lerp(Design.Muted,.65);rim.Color=ink
+  time.Position=UDim2.fromScale(.5,.72);hint.Position=UDim2.fromScale(.5,.79)
+  local iconGap=height*.15;moon.Position=UDim2.fromScale((center-radius-iconGap)/width,base/height);dusk.Position=UDim2.fromScale((center+radius+iconGap)/width,base/height);sun.Position=UDim2.fromScale(.5,.35)
+  reset.ImageColor3=ink:Lerp(Design.Muted,.45)
+ end
+ local function allowed()
+  if not controller.alive or not root.Parent or(options.CanInteract and not options.CanInteract())then return false end
+  local object=root;while object do if object:IsA("GuiObject")and not object.Visible then return false elseif object:IsA("ScreenGui")then return object.Enabled end;object=object.Parent end;return false
+ end
+ function controller:Set(value,animated)
+  if not self.alive or type(value)~="number"or value~=value or math.abs(value)==math.huge then return end
+  revision+=1
+  self.value=math.clamp(math.floor(value*60+.5)/60,0,24);if motion then motion:Cancel();motion=nil end
+  if animated then motion=native:Create(visual,TweenInfo.new(controlMotionTime(root,.2),Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{Value=self.value});motion:Play()else visual.Value=self.value end;render()
+ end
+ function controller:GetValue()return self.value end
+ function controller:IsDragging()return self.dragging end
+ local function reconcileCurrent(version)
+  if reconciling or revision~=version or not controller.alive or controller.dragging or not root.Parent or type(options.GetValue)~="function"then return end
+  reconciling=true;local ok,value=pcall(options.GetValue);reconciling=false
+  if not ok or revision~=version or not controller.alive or controller.dragging or not root.Parent or type(value)~="number"or value~=value or math.abs(value)==math.huge then return end
+  value=math.clamp(value,0,24)
+  -- Midnight endpoints are equivalent: keep an explicitly selected 24 intact.
+  if math.abs(((value-controller.value+12)%24)-12)>=.001 then controller:Set(value,false)end
+ end
+ function controller:Cancel(skipReconcile)
+  local wasDragging=self.dragging;revision+=1;held=nil;dragOrigin=nil;dragValue=nil;self.dragging=false;if motion then motion:Cancel();motion=nil end
+  if wasDragging and not skipReconcile then reconcileCurrent(revision)end
+ end
+ local function change(value,commit)
+  local previous=controller.value;controller:Set(value,false)
+  if controller.value~=previous and options.OnChanged then options.OnChanged(controller.value)end
+  if commit and options.OnCommit then options.OnCommit(controller.value)end
+ end
+ local function position(event)
+  local point=event and event.Position or input:GetMouseLocation();local screen=root:FindFirstAncestorOfClass("ScreenGui")
+  return Vector2.new(point.X,point.Y)+(screen and screen.AbsolutePosition or Vector2.zero)-root.AbsolutePosition
+ end
+ local function move(event)
+  if not controller.dragging or not allowed()then controller:Cancel();return end
+  local width,height=root.AbsoluteSize.X,root.AbsoluteSize.Y;if width<=0 or height<=0 or not dragOrigin then return end
+  local radius=math.min(width*.31,height*.74);local p=position(event)
+  change(dragValue+(dragOrigin.X-p.X)*12/math.max(1,math.pi*radius),false)
+ end
+ connect(hit.InputBegan,function(event)
+  if not allowed()then return end
+  if event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch then controller:Cancel();held=event;dragOrigin=position(event);dragValue=controller.value;controller.dragging=true
+  elseif event.UserInputType==Enum.UserInputType.Keyboard then
+   local code=event.KeyCode
+   if code==Enum.KeyCode.Left or code==Enum.KeyCode.Down then change(controller.value-1/60,true)
+   elseif code==Enum.KeyCode.Right or code==Enum.KeyCode.Up then change(controller.value+1/60,true)
+   elseif code==Enum.KeyCode.Home then change(0,true)elseif code==Enum.KeyCode.End then change(24,true)end
+  end
+ end)
+ connect(reset.Activated,function()
+  if not allowed()then return end
+  controller:Cancel();local value=options.OnReset and options.OnReset()
+  if type(value)=="number"then controller:Set(value,true)end
+  bounceReset(reset)
+ end)
+ connect(input.InputChanged,function(event)if held and(event==held or held.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseMovement)then move(event)end end)
+ connect(input.InputEnded,function(event)if held and(event==held or held.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseButton1)then
+  if not allowed()then controller:Cancel();return end
+  local active=held;move(event)
+  if held~=active or not controller.dragging then return end
+  if not allowed()then controller:Cancel();return end
+  local value=controller.value;controller:Cancel(true);local version=revision
+  if options.OnCommit then options.OnCommit(value)end
+  reconcileCurrent(version)
+ end end)
+ connect(input.WindowFocusReleased,function()controller:Cancel()end)
+ connect(root:GetPropertyChangedSignal("AbsoluteSize"),render);connect(visual.Changed,function()if not controller.dragging then render()end end)
+ if options.InkSource then connect(options.InkSource:GetPropertyChangedSignal("TextColor3"),render)end
+ local ancestor=root
+ while ancestor do
+  if ancestor:IsA("GuiObject")then connect(ancestor:GetPropertyChangedSignal("Visible"),function()if not allowed()then controller:Cancel()else render()end end)
+  elseif ancestor:IsA("ScreenGui")then connect(ancestor:GetPropertyChangedSignal("Enabled"),function()if not allowed()then controller:Cancel()else render()end end)end
+  ancestor=ancestor.Parent
+ end
+ function controller:Destroy()if not self.alive then return end;self.alive=false;self:Cancel();for _,c in ipairs(connections)do c:Disconnect()end;table.clear(connections);if root.Parent then root:Destroy()end end
+ connect(root.Destroying,function()controller:Destroy()end)
+ controller.Root,controller.Input,controller.Marker,controller.Readout,controller.VisualValue=root,hit,marker,time,visual
+ controller:Set(options.Value or 12,false);return controller
+end
+
+local function buildCharacterRuler(root,models,onValue,canInteract,onResize)
+ local panel=root.Character;local body=panel.Interactions
+ panel.Size=UDim2.fromOffset(582,304);body.Size=UDim2.new(1,0,1,-50)
+ local native=game:GetService("TweenService");local connections={};local animations=setmetatable({},{__mode="k"})
+ local service={alive=true,Selected=nil,SelectedModel=nil,Expanded=false,value=models[1].value or models[1].default,version=0}
+ local outsidePress;local outsideGeneration=0
+ local sourceScale=582/908;local font=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium)
+ local white=Design.Ink;local muted=Design.Muted
+ local neutral=Design.Surface
+ local function chipNeutral()return neutral end
+ local function contentPosition(horizontal,vertical)
+  return UDim2.fromOffset(-142+(horizontal or 0),236+(vertical or 0))
+ end
+ local function accentFor(index)
+  if index==nil and service.Selected==nil and typeof(service.AccentColor)=="Color3"then return service.AccentColor end
+  local model=models[index or service.Selected or 1]
+  return model and typeof(model.color)=="Color3"and model.color or Color3.fromRGB(44,153,93)
+ end
+ local function chipColor(index,selected,hovered)
+  return neutral:Lerp(accentFor(index),selected and .42 or hovered and .18 or .06)
+ end
+ local function futureColor(accent)return neutral:Lerp(accent,.28)end
+ local function chipInk(selected,hovered)return selected and white or hovered and Color3.fromRGB(220,222,227)or muted end
+ local function make(class,parent,name,properties)
+  local o=Instance.new(class);o.Name=name
+  if o:IsA("GuiObject")then o.BackgroundTransparency=1;o.BorderSizePixel=0;o.ZIndex=body.ZIndex+3 end
+  for key,value in pairs(properties or {})do o[key]=value end;o.Parent=parent;return o
+ end
+ local function connect(signal,callback)local c=signal:Connect(callback);connections[#connections+1]=c;return c end
+ local function animate(object,time,goal,style)
+  if animations[object]then animations[object]:Cancel()end
+  local t=native:Create(object,TweenInfo.new(controlMotionTime(root,time),style or Enum.EasingStyle.Exponential,Enum.EasingDirection.Out),goal);animations[object]=t
+  t.Completed:Once(function()if animations[object]==t then animations[object]=nil end end);t:Play();return t
+ end
+ local function allowed()
+  return service.alive and panel.Visible and not panel:GetAttribute("AltairClosing")and(not canInteract or canInteract())
+ end
+ local function claimInteraction()outsidePress=nil;outsideGeneration+=1 end
+ local function claimPress(event)
+  if allowed()and(event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch)then claimInteraction()end
+ end
+ local deck=make("Frame",body,"RulerDeck",{Position=UDim2.fromOffset(158,24),Size=UDim2.fromOffset(408,68)})
+ deck:SetAttribute("AltairThemeIgnore",true);service.Root=deck
+ local content=make("CanvasGroup",deck,"RulerContent",{Position=contentPosition(),Size=UDim2.fromOffset(550,86),GroupTransparency=1,Visible=false})
+ local sectionTitle=make("TextLabel",content,"SelectedProperty",{Position=UDim2.fromOffset(0,4),Size=UDim2.fromOffset(240,18),Text="Tuning",TextSize=11,FontFace=Design.Font,TextColor3=muted,TextXAlignment=Enum.TextXAlignment.Left})
+ local expansion=Instance.new("NumberValue");expansion.Name="Expansion";expansion.Value=0;expansion.Parent=deck
+ local contentReveal=Instance.new("NumberValue");contentReveal.Name="ContentReveal";contentReveal.Value=1;contentReveal.Parent=deck
+ local contentShift=Instance.new("NumberValue");contentShift.Name="ContentShift";contentShift.Parent=deck
+ service.Content=content;service.Expansion=expansion
+ local chips={};local names={"Speed","Jump","Flight","FOV"}
+ for index,name in ipairs(names)do
+  local chip=make("TextButton",deck,"Parameter"..index,{Text=name,FontFace=font,TextSize=12,TextColor3=muted,TextXAlignment=Enum.TextXAlignment.Left,AutoButtonColor=false,BackgroundTransparency=.08,BackgroundColor3=chipColor(index,false,false),Position=UDim2.fromOffset(((index-1)%3)*140,math.floor((index-1)/3)*38),Size=UDim2.fromOffset(128,30),Selectable=true})
+  local padding=Instance.new("UIPadding");padding.PaddingLeft=UDim.new(0,12);padding.Parent=chip
+  chip:SetAttribute("AltairDesignRole","control")
+  local rounding=Instance.new("UICorner");rounding.CornerRadius=UDim.new(0,8);rounding.Parent=chip;chips[index]=chip
+  local gradient=Instance.new("UIGradient");gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(233,233,236));gradient.Rotation=90;gradient.Parent=chip
+  local rim=Instance.new("UIStroke");rim.Name="ChipRim";rim.Thickness=.6;rim.Color=accentFor(index);rim.Transparency=.91;rim.Parent=chip
+  chip:SetAttribute("AltairBaseColor",accentFor(index))
+  connect(chip.MouseButton1Click,function()if allowed()then service:Select(index,true)end end)
+  connect(chip.InputBegan,claimPress)
+  connect(chip.MouseEnter,function()if allowed()and service.Selected~=index then animate(chip,.16,{BackgroundColor3=chipColor(index,false,true),TextColor3=chipInk(false,true)})end end)
+  connect(chip.MouseLeave,function()if service.alive and service.Selected~=index then animate(chip,.2,{BackgroundColor3=chipColor(index,false,false),TextColor3=chipInk(false,false)})end end)
+ end
+ service.Chips=chips
+ local daylightButton=body.Grid:FindFirstChild("Time of Day")
+ if daylightButton then
+  daylightButton.Parent=deck;daylightButton.Position=UDim2.fromOffset(140,38);daylightButton.Size=UDim2.fromOffset(268,30)
+  local hit=daylightButton:FindFirstChild("Interact");if hit then hit.Size=UDim2.fromScale(1,1)end
+  local icon=daylightButton:FindFirstChild("Icon");if icon then icon.Position=UDim2.fromOffset(10,7);icon.Size=UDim2.fromOffset(16,16)end
+  local title=daylightButton:FindFirstChild("Title");if title then title.Position=UDim2.fromOffset(34,0);title.Size=UDim2.new(1,-42,1,0);title.TextSize=12 end
+  connect(daylightButton.InputBegan,claimPress);if hit then connect(hit.InputBegan,claimPress)end
+  service.DaylightButton=daylightButton
+ end
+ local numberSize=33*sourceScale;local unitSize=20*sourceScale
+ local valueHost=make("TextLabel",content,"ValueReadout",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-54,0,17),Size=UDim2.fromOffset(100,30),Text="",Font=Enum.Font.BuilderSansBold,TextSize=numberSize,TextColor3=white,TextXAlignment=Enum.TextXAlignment.Right})
+ local unit=make("TextLabel",content,"Unit",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,0,0,17),Size=UDim2.fromOffset(50,25),Text="",Font=Enum.Font.SourceSansSemibold,TextSize=unitSize,TextColor3=muted,TextXAlignment=Enum.TextXAlignment.Right})
+ service.Readout=valueHost;service.Unit=unit
+ local reset,resetGlyph;local resetAlpha=.45
+ local widthsCache={};local widthsCacheCount=0;local textService=game:GetService("TextService")
+ local function textWidth(label,size,typeface)
+  if label==""then return 0 end
+  local key=tostring(typeface)..":"..tostring(size)..":"..label;local width=widthsCache[key]
+  if not width then
+   width=textService:GetTextSize(label,size,typeface,Vector2.new(10000,100)).X
+   if widthsCacheCount>=256 then table.clear(widthsCache);widthsCacheCount=0 end
+   widthsCache[key]=width;widthsCacheCount+=1
+  end
+  return width
+ end
+ local function formatted(value)
+  local n=math.round(value*10)/10
+  return n%1==0 and tostring(math.floor(n))or string.format("%.1f",n)
+ end
+ local function units()
+  return service.Selected==1 and"studs/s"or service.Selected==3 and"×"or service.Selected==4 and"°"or ""
+ end
+ local function readout(value,animated)
+  local label=formatted(value);local suffix=units();service.value=value
+  -- The recording replaces digits on one baseline. Width changes reposition the
+  -- reset immediately; only its enabled/disabled emphasis crossfades afterward.
+  local numberWidth=textWidth(label,numberSize,Enum.Font.BuilderSansBold)
+  local unitWidth=textWidth(suffix,unitSize,Enum.Font.SourceSansSemibold)
+  local inset=unitWidth+(unitWidth>0 and 8*sourceScale or 0)
+  valueHost.Text=label;valueHost:SetAttribute("DisplayedValue",label)
+  valueHost.Position=UDim2.new(1,-inset,0,17);valueHost.Size=UDim2.fromOffset(numberWidth+1,30)
+  unit.Text=suffix;unit.Visible=suffix~="";unit.TextTransparency=0;unit.Size=UDim2.fromOffset(unitWidth+1,25)
+  unit.AnchorPoint=Vector2.new(1,suffix=="°"and 0 or .5);unit.Position=UDim2.new(1,0,0,suffix=="°"and 1 or 17)
+  local target=math.abs(value-models[service.Selected].default)>1e-6 and 0 or .45
+  if reset then
+   reset.Position=UDim2.new(1,-16-inset-numberWidth-24*sourceScale-reset.Size.X.Offset/2,0,277)
+   if target~=resetAlpha or not animated then
+    if animations[resetGlyph]then animations[resetGlyph]:Cancel()end
+    resetAlpha=target
+    if animated then animate(resetGlyph,.2,{ImageTransparency=1-(1-target)*expansion.Value},Enum.EasingStyle.Quad)else resetGlyph.ImageTransparency=1-(1-target)*expansion.Value end
+   end
+  else resetAlpha=target end
+ end
+ service.Ruler=buildRuler(content,{Name="SharedRuler",Skin="Altair",Range=models[1].values,Value=service.value,Step=1,TickStep=1,PrecisionStep=.1,MajorEvery=5,Color=accentFor(1),FutureColor=futureColor(accentFor(1)),MarkerColor=accentFor(1),Scale=sourceScale,Position=UDim2.fromOffset(0,34),Size=UDim2.new(1,0,0,52),CanInteract=function()return service.Expanded and not service.DaylightMode and service.SelectedModel~=nil and allowed()end,
+  OnChanged=function(value)
+   if not service.Expanded or not allowed()then return end
+   local model=models[service.Selected];if not model then return end;readout(value,true);if onValue then onValue(model,value)end
+  end,
+  OnCommit=function()local model=models[service.Selected];if model then model.active=false end end,
+ })
+ -- Preserve the reset action and value alignment inside the shared parameter deck.
+ reset=body.Reset;resetGlyph=reset:FindFirstChild("ResetGlyph")
+ if not resetGlyph then
+  resetGlyph=make("ImageLabel",reset,"ResetGlyph",{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=UDim2.fromOffset(26*sourceScale,26*sourceScale),Image=reset.Image,ImageRectOffset=reset.ImageRectOffset,ImageRectSize=reset.ImageRectSize,ScaleType=reset.ScaleType,ImageColor3=Color3.fromRGB(190,190,190),ImageTransparency=.15})
+ end
+ reset.Image="";reset.AnchorPoint=Vector2.new(.5,.5);reset.Position=UDim2.new(1,-121,0,277);reset.Size=UDim2.fromOffset(53*sourceScale,53*sourceScale);reset.AutoButtonColor=false
+ reset.BackgroundColor3=neutral:Lerp(accentFor(1),.12);reset.BackgroundTransparency=0;reset:SetAttribute("AltairThemeIgnore",true)
+ local resetCorner=reset:FindFirstChildOfClass("UICorner")or Instance.new("UICorner");resetCorner.CornerRadius=UDim.new(0,9);resetCorner.Parent=reset
+ local resetEdge=reset:FindFirstChild("RulerResetOutline")or Instance.new("UIStroke");resetEdge.Name="RulerResetOutline";resetEdge.Color=accentFor(1);resetEdge.Thickness=sourceScale;resetEdge.Transparency=1;resetEdge.Parent=reset
+ service.Reset=reset;service.ResetGlyph=resetGlyph
+ connect(reset.InputBegan,claimPress)
+ connect(reset.MouseEnter,function()if service.Expanded and allowed()then animate(reset,.16,{BackgroundColor3=chipNeutral():Lerp(accentFor(),.25)});animate(resetGlyph,.16,{ImageTransparency=1-expansion.Value});animate(resetEdge,.16,{Transparency=1-.16*expansion.Value})end end)
+ connect(reset.MouseLeave,function()if allowed()then animate(reset,.2,{BackgroundColor3=chipNeutral():Lerp(accentFor(),.12)});animate(resetGlyph,.2,{ImageTransparency=1-(1-resetAlpha)*expansion.Value});animate(resetEdge,.2,{Transparency=1})end end)
+ local function renderExpansion()
+  local progress=math.clamp(expansion.Value,0,1)
+  content.GroupTransparency=1-progress*math.clamp(contentReveal.Value,0,1);content.Visible=service.Expanded or progress>0
+  content.Position=contentPosition(contentShift.Value,(1-progress)*8)
+  reset.Visible=service.ContentMode~="daylight"and(service.Expanded or progress>0);reset.BackgroundTransparency=1-progress
+  resetGlyph.ImageTransparency=1-(1-resetAlpha)*progress
+ end
+ connect(expansion.Changed,renderExpansion)
+ connect(contentReveal.Changed,renderExpansion);connect(contentShift.Changed,renderExpansion)
+ local function settleContentMotion()
+  for _,value in ipairs({contentReveal,contentShift})do if animations[value]then animations[value]:Cancel();animations[value]=nil end end
+  contentReveal.Value=1;contentShift.Value=0;renderExpansion()
+ end
+ body.Sliders.Visible=false;body.PropertiesTitle.Visible=false;body.HeaderDivider.Visible=false;body.PropertiesDivider.Visible=false;body.ActionsDivider.Visible=false
+ body.Toggles.Position=UDim2.fromOffset(16,24);body.Toggles.Size=UDim2.fromOffset(126,200)
+ local modesLayout=body.Toggles:FindFirstChildOfClass("UIListLayout");if modesLayout then modesLayout.FillDirection=Enum.FillDirection.Vertical;modesLayout.Padding=UDim.new(0,8)end
+ local function heading(name,text,x,y,width)local label=make("TextLabel",body,name,{Text=text,Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(width,14),FontFace=Design.Font,TextSize=10,TextColor3=muted,TextXAlignment=Enum.TextXAlignment.Left});return label end
+ local modesTitle=heading("ModesTitle","MODES",16,4,126);local tuningTitle=heading("TuningTitle","TUNING",158,4,408)
+ for _,row in ipairs(body.Toggles:GetChildren())do if row:IsA("GuiObject")then
+  row.Size=UDim2.fromOffset(126,44)
+  local icon=row:FindFirstChild("Icon");if icon then icon.Position=UDim2.fromOffset(10,12);icon.Size=UDim2.fromOffset(20,20)end
+  local title=row:FindFirstChild("Title");if title then title.Position=UDim2.fromOffset(39,7);title.Size=UDim2.fromOffset(80,16);title.TextSize=11 end
+  local subtitle=row:FindFirstChild("Subtitle");if subtitle then subtitle.Position=UDim2.fromOffset(39,24);subtitle.Size=UDim2.fromOffset(80,12);subtitle.TextSize=9 end
+  local hit=row:FindFirstChild("Interact");if hit then hit.Size=UDim2.fromScale(1,1)end
+ end end
+ body.ActionsTitle.Text="SESSION";body.ActionsTitle.Position=UDim2.fromOffset(158,108);body.ActionsTitle.Size=UDim2.fromOffset(408,14);body.ActionsTitle.TextSize=10
+ body.Grid.Position=UDim2.fromOffset(158,130);body.Grid.Size=UDim2.fromOffset(408,80)
+ local grid=body.Grid:FindFirstChildOfClass("UIGridLayout");if grid then grid.CellSize=UDim2.fromOffset(96,36);grid.CellPadding=UDim2.fromOffset(8,8);grid.FillDirectionMaxCells=4 end
+ local function sessionButton(row,width,height)
+  width,height=width or 96,height or 36
+  row.Size=UDim2.fromOffset(width,height);local hit=row:FindFirstChild("Interact");if hit then hit.Size=UDim2.fromScale(1,1)end
+  local icon=row:FindFirstChild("Icon");if icon then icon.Position=UDim2.fromOffset(9,(height-14)/2);icon.Size=UDim2.fromOffset(14,14)end
+  local title=row:FindFirstChild("Title");if title then title.Position=UDim2.fromOffset(29,0);title.Size=UDim2.new(1,-34,1,0);title.TextSize=10;title.TextTruncate=Enum.TextTruncate.AtEnd end
+ end
+ for _,row in ipairs(body.Grid:GetChildren())do if row:IsA("GuiObject")then sessionButton(row)end end
+ for index,name in ipairs({"Rejoin","Serverhop"})do
+  local button=body[name];local position=UDim2.fromOffset(158+(index-1)*208,216)
+  button.Position=position;sessionButton(button,200,26)
+  for _,attribute in ipairs({"AltairHoverRestPosition","AltairDeckRest","AltairContentRestPosition"})do if button:GetAttribute(attribute)~=nil then button:SetAttribute(attribute,position)end end
+ end
+ function service:GetSize()return UDim2.fromOffset(582,self.Expanded and(self.ContentMode=="daylight"and 448 or 408)or 304)end
+ local function layout(animated)
+  local expanded=service.Expanded
+  local targets={
+   {panel,{Size=service:GetSize()}},
+   {content,{Size=UDim2.fromOffset(550,service.ContentMode=="daylight"and 138 or 86)}},
+   {expansion,{Value=expanded and 1 or 0}},
+  }
+  panel:SetAttribute("AltairRulerExpanded",expanded);deck:SetAttribute("Expanded",expanded)
+  if expanded then content.Visible=true;reset.Visible=service.ContentMode~="daylight"end
+  for _,target in ipairs(targets)do
+   if animated then animate(target[1],.24,target[2],Enum.EasingStyle.Quart)
+   else if animations[target[1]]then animations[target[1]]:Cancel()end;for property,value in pairs(target[2])do target[1][property]=value end end
+  end
+  renderExpansion()
+  if onResize then onResize(service:GetSize())end
+ end
+ function service:Refresh(animated)
+  if not self.alive then return end
+  sectionTitle.FontFace=font
+  for _,chip in ipairs(chips)do chip.FontFace=font end
+  local accent=accentFor();self.AccentColor=accent
+  local ink=accent;local mutedInk=muted
+  if animated then animate(valueHost,.2,{TextColor3=ink},Enum.EasingStyle.Quad);animate(unit,.2,{TextColor3=mutedInk});animate(sectionTitle,.2,{TextColor3=mutedInk});animate(resetGlyph,.2,{ImageColor3=Color3.fromRGB(190,190,190)})
+  else valueHost.TextColor3=ink;unit.TextColor3=mutedInk;sectionTitle.TextColor3=mutedInk;resetGlyph.ImageColor3=Color3.fromRGB(190,190,190)end
+  reset:SetAttribute("AltairAccentColor",accent)
+  if animated then animate(reset,.2,{BackgroundColor3=chipNeutral():Lerp(accent,.12)},Enum.EasingStyle.Quad);animate(resetEdge,.2,{Color=accent},Enum.EasingStyle.Quad)
+  else reset.BackgroundColor3=chipNeutral():Lerp(accent,.12);resetEdge.Color=accent;resetEdge.Transparency=1 end
+  local model=models[self.Selected];self.SelectedModel=model
+  local daylightVisible=self.ContentMode=="daylight"
+  valueHost.Visible=not daylightVisible;unit.Visible=not daylightVisible;self.Ruler.Root.Visible=not daylightVisible
+  if self.Daylight then self.Daylight.Root.Visible=daylightVisible end
+  sectionTitle.Text=daylightVisible and "TIME OF DAY"or(self.Selected and names[self.Selected]or "TUNING")
+  sectionTitle.Visible=not daylightVisible
+  if model and not self.DaylightMode then
+   self.Ruler:Configure({Range=model.values,Value=model.value or model.default,Step=1,TickStep=1,PrecisionStep=.1,MajorEvery=5,Color=accent,FutureColor=futureColor(accent),MarkerColor=accent,Scale=sourceScale,Animate=animated==true})
+   readout(model.value or model.default,animated)
+  else self.Ruler:Cancel(true)end
+  for index,chip in ipairs(chips)do local goal={BackgroundColor3=chipColor(index,index==self.Selected,false),TextColor3=chipInk(index==self.Selected,false)}
+   local rim=chip:FindFirstChild("ChipRim");if rim then if animated then animate(rim,.2,{Transparency=index==self.Selected and .72 or .91,Color=accentFor(index)},Enum.EasingStyle.Quad)else rim.Transparency=index==self.Selected and .72 or .91;rim.Color=accentFor(index)end end
+   if animated then animate(chip,.2,goal,Enum.EasingStyle.Quad)else if animations[chip]then animations[chip]:Cancel()end;for key,value in pairs(goal)do chip[key]=value end end
+  end
+  layout(animated)
+  if self.DaylightMode and self.Daylight then self.Daylight:Set(self.DaylightOptions.GetValue(),animated==true)end
+ end
+ function service:Set(model,value,animated)
+  if not self.alive or model~=models[self.Selected]then return end
+  -- A model callback can echo the ruler's own value. Keep its current follow tween.
+  if allowed()and(not self.Ruler:IsDragging()or math.abs(self.Ruler:GetValue()-value)>1e-6)then self.Ruler:Set(value,animated==true)end
+  readout(value,animated)
+ end
+ function service:Select(index,animated)
+  if not self.alive or not models[index]then return end
+  claimInteraction()
+  if self.Expanded and self.ContentMode=="daylight"and animated~=false then self:SwitchContent("signal",index);return end
+  if self.Expanded and self.Selected==index and not self.PendingMode then self:Collapse(animated);return end
+  if self.Expanded and self.ContentMode=="signal"then
+   self.version+=1;self.PendingMode=nil;self.Ruler:Cancel(true)
+   for _,model in ipairs(models)do model.active=false end
+   settleContentMotion()
+   self.Selected=index;self.SelectedModel=models[index];self.DaylightMode=false
+   self:Refresh(animated);return
+  end
+  self:Cancel();self.version+=1;self.ContentMode="signal";self.DaylightMode=false;self.Selected=index;self.SelectedModel=models[index];self.Expanded=true;self:Refresh(animated)
+ end
+ function service:KeepExpanded()
+  if not self.alive or not self.SelectedModel or self.DaylightMode then return false end
+  claimInteraction();self.version+=1;self.PendingMode=nil;self.ContentMode="signal";self.Expanded=true
+  settleContentMotion()
+  self:Refresh(true);return true
+ end
+ function service:Collapse(animated)
+  if not self.alive or not self.Expanded then return end
+  self:Cancel();self.Selected=nil;self.SelectedModel=nil;self.DaylightMode=false;self.Expanded=false;self:Refresh(animated)
+ end
+ function service:Cancel()
+  if not self.alive then return end
+  outsidePress=nil
+  self.version+=1;self.Ruler:Cancel(true)
+  self.PendingMode=nil
+  if self.Daylight then self.Daylight:Cancel()end
+  for _,model in ipairs(models)do model.active=false end
+  for _,t in pairs(animations)do t:Cancel()end;table.clear(animations);settleContentMotion()
+ end
+ function service:Destroy()
+  if not self.alive then return end
+  self:Cancel();self.alive=false
+  for _,c in ipairs(connections)do c:Disconnect()end;table.clear(connections)
+  self.Ruler:Destroy();if self.Daylight then self.Daylight:Destroy()end;if modesTitle.Parent then modesTitle:Destroy()end;if tuningTitle.Parent then tuningTitle:Destroy()end;if deck.Parent then deck:Destroy()end
+ end
+ connect(panel:GetPropertyChangedSignal("Visible"),function()if not panel.Visible then service:Cancel()end end)
+ connect(panel:GetAttributeChangedSignal("AltairClosing"),function()if panel:GetAttribute("AltairClosing")then service:Cancel()end end)
+ local input=game:GetService("UserInputService")
+ local function inside(object,point)
+  local position=object.AbsolutePosition;local size=object.AbsoluteSize
+  return point.X>=position.X and point.X<=position.X+size.X and point.Y>=position.Y and point.Y<=position.Y+size.Y
+ end
+ local function collapseOutside(version,intent,afterRelease)
+  local function collapse()
+   if service.alive and service.version==version and outsideGeneration==intent and service.Expanded and allowed()and not service.Ruler:IsDragging()and not(service.Daylight and service.Daylight:IsDragging())then service:Collapse(true)end
+  end
+  -- Let GUI activation claim the latest intent before an outside release folds
+  -- the editor; reset and parameter clicks must never race this deferred close.
+  if afterRelease then task.delay(0,collapse)else task.defer(collapse)end
+ end
+ connect(input.InputBegan,function(event)
+  if not service.Expanded or not allowed()or service.Ruler:IsDragging()or(service.Daylight and service.Daylight:IsDragging())then return end
+  if event.UserInputType~=Enum.UserInputType.MouseButton1 and event.UserInputType~=Enum.UserInputType.Touch then return end
+  local point=Vector2.new(event.Position.X,event.Position.Y)+root.AbsolutePosition
+  if inside(deck,point)or inside(content,point)or reset.Visible and inside(reset,point)then return end
+  local version=service.version
+  outsidePress={input=event,version=version,intent=outsideGeneration}
+ end)
+ connect(input.InputEnded,function(event)
+  if not service.alive or not outsidePress then return end
+  local press=outsidePress;local active=press.input
+  if event==active or(active.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseButton1)then
+   outsidePress=nil;collapseOutside(press.version,press.intent,true)
+  end
+ end)
+ connect(input.WindowFocusReleased,function()outsidePress=nil end)
+ connect(root.Destroying,function()service:Destroy()end)
+ function service:AttachDaylight(options)
+  if self.Daylight then self.Daylight:Destroy()end;self.DaylightOptions=options
+  self.Daylight=buildDaylightDial(content,{Name="Daylight",Value=options.GetValue(),GetValue=options.GetValue,InkSource=panel.Title,Position=UDim2.fromOffset(0,4),Size=UDim2.new(1,0,0,126),CanInteract=function()return self.Expanded and self.DaylightMode and not self.PendingMode and allowed()end,OnChanged=options.OnChanged,OnCommit=options.OnCommit,OnReset=options.OnReset})
+  self.Daylight.Root.Visible=false;return self.Daylight
+ end
+ function service:SelectDaylight(animated)
+  if not self.alive or not self.Daylight then return end
+  if self.PendingMode=="daylight"then self:Collapse(animated);return end
+  if self.Expanded and self.DaylightMode then self:Collapse(animated);return end
+  if self.Expanded and animated~=false then self:SwitchContent("daylight");return end
+  self:Cancel();self.ContentMode="daylight";self.DaylightMode=true;self.Selected=nil;self.SelectedModel=nil;self.Expanded=true;self:Refresh(animated)
+ end
+ function service:SwitchContent(mode,index)
+  self:Cancel();self.PendingMode=mode;local version=self.version
+  animate(contentReveal,.08,{Value=0},Enum.EasingStyle.Quad);animate(contentShift,.08,{Value=-8},Enum.EasingStyle.Quad)
+  task.delay(.085,function()
+   if not self.alive or self.version~=version or self.PendingMode~=mode then return end
+   if not allowed()then self.PendingMode=nil;settleContentMotion();return end
+   self.PendingMode=nil;self.ContentMode=mode;self.DaylightMode=mode=="daylight";self.Selected=index;self.SelectedModel=index and models[index]or nil;self.Expanded=true;self:Refresh(true)
+   contentReveal.Value=0;contentShift.Value=8
+   animate(contentReveal,.18,{Value=1},Enum.EasingStyle.Quart);animate(contentShift,.18,{Value=0},Enum.EasingStyle.Quart)
+  end)
+ end
+ service:Refresh(false);return service
+end
+
+-- Experimental section badge and normal Altair color controls.
+local experimentalBadge
 local function bindTheme(root)
  local records=setmetatable({}, {__mode="k"});local controller={active=false,rainbow=false,color=Color3.fromRGB(91,141,239),strength=.25,lightness=0};local changedConnection
  local rainbowItems=setmetatable({}, {__mode="k"})
- local applying=false;local contrastCache={};local native=game:GetService("TweenService");local styleRecords=setmetatable({}, {__mode="k"})
+ local applying=false;local contrastCache={};local native=game:GetService("TweenService")
  local function skip(object)
   if object:GetAttribute("AltairContrastOutline")then return true end
   local p=object
   while p and p~=root do
    if p:GetAttribute("AltairThemeIgnore")then return true end
    if p:GetAttribute("AltairThemeEditor")then
-    if not p:GetAttribute("AltairStyleGallery")and(object:IsA("TextLabel")or object:IsA("TextBox")or object:IsA("TextButton")or object:GetAttribute("AltairIcon"))then return false end
+    if object:IsA("TextLabel")or object:IsA("TextBox")or object:IsA("TextButton")or object:GetAttribute("AltairIcon")then return false end
     return object~=p and not((object:IsA("UIStroke")or object:IsA("UIGradient"))and object.Parent==p)
    end
    p=p.Parent
@@ -4067,6 +5840,8 @@ local function bindTheme(root)
   return false
  end
  local function role(object,property)
+  if object:GetAttribute("AltairDesignRole")=="divider"and property=="BackgroundColor3"then return "stroke"end
+  if object:GetAttribute("AltairDesignRole")=="indicator"and property=="BackgroundColor3"then return "stroke"end
   if property=="TextColor3"then return "text"end
   if property=="ImageColor3"then return (object.Name=="Shadow"or object.Name=="SoftShadow"or object.Name=="Glow")and"stroke"or"icon"end
   if object:IsA("UIStroke")then return object:FindFirstChildOfClass("UIGradient")and"strokeMultiplier"or"stroke"end
@@ -4116,30 +5891,24 @@ local function bindTheme(root)
   return result:Lerp(Color3.fromRGB(235,238,244),(kind=="surfaceGradient"or kind=="background")and light^2*.92 or light*.75)
  end
  local function desired(base,kind,object,property)
-  kind=role(object,property)
-  if controller.style=="Roblox"then
-   if typeof(base)=="ColorSequence"then
-    if kind=="contentGradient"or kind=="strokeGradient"then base=ColorSequence.new(Color3.new(1,1,1))
-    elseif object.Parent:GetAttribute("AltairSurface")then base=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(232,234,239))
-    elseif object.Parent.Parent==root then base=ColorSequence.new(Color3.fromRGB(27,29,35),Color3.fromRGB(22,24,30))
-    else base=ColorSequence.new(Color3.fromRGB(47,49,58),Color3.fromRGB(34,36,43))end
-   elseif kind=="multiplier"then base=object:GetAttribute("AltairSurface")and Color3.fromRGB(25,27,33)or Color3.new(1,1,1)
-   elseif kind=="background"then base=Color3.fromRGB(25,27,33)
-   elseif kind=="inset"then base=Color3.fromRGB(43,45,53)
-   elseif kind=="strokeMultiplier"then base=Color3.fromRGB(100,103,115)
-   elseif kind=="stroke"then
-    base=(object.Name=="Shadow"or object.Name=="SoftShadow"or object.Name=="Glow")and Color3.new(0,0,0)or Color3.fromRGB(100,103,115)
-   end
+  local toast=object;while toast and toast~=root do if toast.Name=="Toasts"then return base end;toast=toast.Parent end
+  local foreground=role(object,property)
+  if foreground=="text"or foreground=="icon"then
+   local ancestor=object;while ancestor and ancestor~=root do if ancestor.Name=="GameDetection"then return Color3.new(1,1,1)end;ancestor=ancestor.Parent end
   end
+  kind=role(object,property)
   if kind=="text"or kind=="icon"then
    local lightBackground=false;local surface=object
    while surface and surface~=root do
-    if surface:GetAttribute("AltairNotificationCard")then surface=surface:FindFirstChild("CardBackground")or surface end
-    if surface:IsA("GuiObject")and surface.BackgroundTransparency<.7 then
-     if contrastCache[surface]~=nil then lightBackground=contrastCache[surface];break end
-     local record=records[surface];local saved=record and record.BackgroundColor3
-     local color=desired(saved and saved.base or surface.BackgroundColor3,"background",surface,"BackgroundColor3")
-     local gradient=surface:FindFirstChildOfClass("UIGradient")
+    local material=surface;local reference=surface:FindFirstChild("AltairContrastMaterial")
+    if reference and reference:IsA("ObjectValue")and reference.Value then material=reference.Value
+    elseif surface:GetAttribute("AltairNotificationCard")then material=surface:FindFirstChild("CardBackground")or surface
+    elseif surface:IsA("GuiObject")and surface.BackgroundTransparency>=.7 then material=surface:FindFirstChild("Backdrop")or surface end
+    if material:IsA("GuiObject")and(material~=surface or material.BackgroundTransparency<.7)then
+     if contrastCache[material]~=nil then lightBackground=contrastCache[material];break end
+     local record=records[material];local saved=record and record.BackgroundColor3
+     local color=desired(saved and saved.base or material.BackgroundColor3,"background",material,"BackgroundColor3")
+     local gradient=material:FindFirstChildOfClass("UIGradient")
      if gradient then
       local gr=records[gradient];local gs=gr and gr.Color
       local sequence=desired(gs and gs.base or gradient.Color,"gradient",gradient,"Color")
@@ -4148,21 +5917,21 @@ local function bindTheme(root)
      end
      local function linear(c)return c<=.04045 and c/12.92 or((c+.055)/1.055)^2.4 end
      lightBackground=.2126*linear(color.R)+.7152*linear(color.G)+.0722*linear(color.B)>.179
-     contrastCache[surface]=lightBackground;break
+     contrastCache[material]=lightBackground;break
     end
     surface=surface.Parent
    end
    local p=object;local notification=false;local artwork=false
    while p and p~=root do
     if p.Name=="NotificationCapsules"then notification=true end
-    if p.Name=="CustomScriptPrompt"or p.Name=="GameDetection"then artwork=true end
+    if p:GetAttribute("AltairArtworkForeground")then artwork=true end
     p=p.Parent
    end
    if artwork then return base end
    if notification then
     return lightBackground and Color3.new(0,0,0)or Color3.new(1,1,1)
    end
-   if lightBackground then local brightness=.2126*base.R+.7152*base.G+.0722*base.B;return brightness>.8 and Color3.fromRGB(22,24,29)or Color3.fromRGB(65,69,78)end
+   if lightBackground then local brightness=.2126*base.R+.7152*base.G+.0722*base.B;return brightness>.8 and Color3.fromRGB(22,22,22)or Color3.fromRGB(65,65,65)end
    return base
   end
   if typeof(base)=="ColorSequence"then
@@ -4182,58 +5951,21 @@ local function bindTheme(root)
    return ColorSequence.new(points)
   end
   if kind=="multiplier"and object:GetAttribute("AltairSurface")and not controller.active then
-   local surface=controller.style=="Roblox"and Color3.fromRGB(25,27,33)or base
-   return surface:Lerp(Color3.fromRGB(235,238,244),controller.lightness^2*.95)
+   return base:Lerp(Color3.fromRGB(235,238,244),controller.lightness^2*.95)
   end
   return mapped(base,kind)
  end
- local function styleObject(object)
-  if skip(object)or object:IsA("TextLabel")and object:GetAttribute("AltairIcon")then return end
-  local original=styleRecords[object]
-  if not original then
-   if object:IsA("TextLabel")or object:IsA("TextButton")or object:IsA("TextBox")then original={font=object.FontFace}
-   elseif object:IsA("UICorner")then original={radius=object.CornerRadius}
-   else return end
-   styleRecords[object]=original
-  end
-  if original.font then
-   local targetFont=controller.style=="Roblox"and Font.new("rbxasset://fonts/families/BuilderSans.json",original.font.Weight,original.font.Style)or original.font
-   if object.FontFace~=targetFont then object.FontFace=targetFont end
-  elseif original.radius then
-   local radius=original.radius
-   if controller.style=="Roblox"and radius.Scale==0 and radius.Offset<25 then radius=UDim.new(0,object.Parent and object.Parent:GetAttribute("AltairSurface")and 12 or 8)end
-   if object.CornerRadius~=radius then
-    if opacityOffscreen(object)then object.CornerRadius=radius
-    else native:Create(object,TweenInfo.new(.2,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{CornerRadius=radius}):Play()end
-   end
-  end
- end
- local smartIcons={}
- local function styleIcons()
-  local bar=root:FindFirstChild("SmartBar");local back=bar and bar:FindFirstChild("Back");local buttons=back and back:FindFirstChild("Buttons")
-  if not buttons then return end
-  local icons={Home="house",Character="person-standing",Scripts="square-terminal",Playerlist="users-round",Settings="settings"}
-  for name,id in pairs(icons)do
-   local button=buttons:FindFirstChild(name);local icon=button and button:FindFirstChild("Icon")
-   if icon then
-    if not smartIcons[icon]then smartIcons[icon]={image=icon.Image,size=icon.ImageRectSize,offset=icon.ImageRectOffset,id=icon:GetAttribute("AltairIcon"),filled=icon:GetAttribute("AltairFilledIcon")}end
-    if controller.style=="Roblox"then applyIcon(icon,id);icon:SetAttribute("AltairFilledIcon",nil)
-    else local original=smartIcons[icon];icon.Image=original.image;icon.ImageRectSize=original.size;icon.ImageRectOffset=original.offset;icon:SetAttribute("AltairIcon",original.id);icon:SetAttribute("AltairFilledIcon",original.filled)end
-   end
-  end
- end
  local function register(object)
-  styleObject(object)
   if records[object]or skip(object)then return end
   local props={}
-  if object:IsA("Frame")or object:IsA("CanvasGroup")or object:IsA("GuiObject")and object.BackgroundTransparency<.99 then props.BackgroundColor3="background"end
+  if object:IsA("Frame")or object:IsA("CanvasGroup")or object:IsA("GuiObject")and object.BackgroundTransparency<.99 then props.BackgroundColor3=object:GetAttribute("AltairDesignRole")=="indicator"and"stroke"or"background"end
   if object:IsA("UIStroke")then props.Color="stroke"end
   if object:IsA("UIGradient")then props.Color="gradient"end
   if object:IsA("TextLabel")or object:IsA("TextButton")or object:IsA("TextBox")then props.TextColor3="text"end
   if (object:IsA("ImageLabel")or object:IsA("ImageButton"))and(object:GetAttribute("AltairIcon")or object.Name:find("Icon")or object.Name=="Shadow"or object.Name=="SoftShadow"or object.Name=="Glow")then props.ImageColor3="stroke"end
   local record={};records[object]=record
   for property,kind in pairs(props)do
-   local base=object[property];local saved=object:GetAttribute("AltairThemeDefault_"..property);local previous=object:GetAttribute("AltairTheme_"..property)
+   local base=Design.idleBase(root,object,property,object[property]);local saved=object:GetAttribute("AltairThemeDefault_"..property);local previous=object:GetAttribute("AltairTheme_"..property)
    if saved and previous and base==previous then base=saved end
    object:SetAttribute("AltairThemeDefault_"..property,base)
    local item={base=base,kind=kind};record[property]=item
@@ -4251,7 +5983,10 @@ local function bindTheme(root)
    item.connection=object:GetPropertyChangedSignal(property):Connect(function()
     local bar=root:FindFirstChild("SmartBar");local handle=root:FindFirstChild("Drag");local pulse=root:GetAttribute("AltairThemePulse")and((bar and(object==bar or object:IsDescendantOf(bar)))or(handle and(object==handle or object:IsDescendantOf(handle))))
     if applying or pulse or(root:GetAttribute("AltairThemeRainbow")and((bar and(object==bar or object:IsDescendantOf(bar)))or(handle and(object==handle or object:IsDescendantOf(handle)))))or not(controller.enabled or controller.transitioning or(controller.rainbowActive and item.rainbowManaged))or not object.Parent or skip(object)then return end
-    if item.display and(kind~="text"or item.target~=item.base)and object[property]~=item.display then applying=true;object[property]=item.display;applying=false end
+    if item.display and(kind~="text"or item.target~=item.base)then
+     local color=Design.idleColor(root,object,property,item.display)
+     if object[property]~=color then applying=true;object[property]=color;applying=false end
+    end
    end)
   end
  end
@@ -4279,33 +6014,65 @@ local function bindTheme(root)
      end
     else result=Color3.fromHSV(hue%1,saturation,value)end
     entry.item.display=result
-    if object[entry.property]~=result then object[entry.property]=result end
+    local color=Design.idleColor(root,object,entry.property,result)
+    if object[entry.property]~=color then object[entry.property]=color end
    end
   end
   applying=false
  end
- function controller:Apply(config)
-  table.clear(contrastCache)
-  local nextStyle=config and config.style or self.style or "Altair"
-  if nextStyle~="Roblox"then nextStyle="Altair"end
-  if self.style~=nextStyle then
-   self.style=nextStyle;root:SetAttribute("AltairInterfaceStyle",nextStyle)
-   styleIcons()
-   for object in pairs(styleRecords)do if object.Parent then styleObject(object)end end
+ local function sequenceAt(points,time)
+  for index=2,#points do local a,b=points[index-1],points[index]
+   if time<=b.Time then return a.Value:Lerp(b.Value,(time-a.Time)/math.max(.000001,b.Time-a.Time))end
   end
+  return points[#points].Value
+ end
+ local function sequenceStops(from,target)
+  local a,b=from.Keypoints,target.Keypoints;local times,seen={},{}
+  for _,points in ipairs({a,b})do for _,point in ipairs(points)do if not seen[point.Time]then seen[point.Time]=true;times[#times+1]=point.Time end end end
+  table.sort(times);local stops={}
+  for _,time in ipairs(times)do stops[#stops+1]={time=time,from=sequenceAt(a,time),target=sequenceAt(b,time)}end
+  -- Native sequences allow twenty points. Only disparate maximum-size external
+  -- ramps need reduction; authored Altair ramps retain their exact union.
+  while #stops>20 do
+   local chosen,smallest=2,math.huge
+   for index=2,#stops-1 do local left,point,right=stops[index-1],stops[index],stops[index+1];local t=(point.time-left.time)/(right.time-left.time)
+    local function error(value,estimate)return(value.R-estimate.R)^2+(value.G-estimate.G)^2+(value.B-estimate.B)^2 end
+    local loss=math.max(error(point.from,left.from:Lerp(right.from,t)),error(point.target,left.target:Lerp(right.target,t)))
+    if loss<smallest then chosen,smallest=index,loss end
+   end
+   table.remove(stops,chosen)
+  end
+  return stops
+ end
+ function controller:Apply(config)
+  if config then
+   local signature={color=config.color or Color3.fromRGB(91,141,239),custom=config.custom==true,strength=math.clamp(config.strength or .25,0,1),lightness=math.clamp(config.lightness or 0,0,1)}
+   local previous=self.requestedConfig
+   if previous and previous.color==signature.color and previous.custom==signature.custom and previous.strength==signature.strength and previous.lightness==signature.lightness then return end
+   self.requestedConfig=signature
+  end
+  self.requestGeneration=(self.requestGeneration or 0)+1
+  local requestGeneration=self.requestGeneration
+  self.applyGeneration=(self.applyGeneration or 0)+1;local generation=self.applyGeneration
+  if self.animation then self.animation:Cancel();self.animation=nil end
+  table.clear(contrastCache)
   if config then self.color=config.color or Color3.fromRGB(91,141,239);self.active=config.custom==true;self.strength=math.clamp(config.strength or .25,0,1);self.lightness=math.clamp(config.lightness or 0,0,1);self.active=config.custom==true and self.strength>0 end
   self.color=self.color or Color3.fromRGB(91,141,239);self.lightness=self.lightness or 0;self.strength=self.strength or .25
-  self.enabled=self.active or self.lightness>0 or self.style=="Roblox"
+  if requestGeneration~=self.requestGeneration or self.destroyed then return end
+  self.enabled=self.active or self.lightness>0
   root:SetAttribute("AltairThemeEnabled",self.enabled)
-  if self.animation then self.animation:Cancel()end
   local transitions={}
-  self.applyGeneration=(self.applyGeneration or 0)+1;local generation=self.applyGeneration
   local budget=os.clock();local visited=0
   for object,record in pairs(records)do if object.Parent and not skip(object)then for property,item in pairs(record)do
    item.target=desired(item.base,item.kind,object,property);object:SetAttribute("AltairTheme_"..property,self.enabled and item.target or nil)
-   if object[property]~=item.target then
-    if opacityOffscreen(object)then applying=true;object[property]=item.target;item.display=item.target;applying=false
-    else transitions[#transitions+1]={object=object,property=property,item=item,from=object[property]}end
+   local current=Design.idleBase(root,object,property,object[property])
+   if current~=item.target then
+    if opacityOffscreen(object)then applying=true;item.display=item.target;object[property]=Design.idleColor(root,object,property,item.target);applying=false
+    else
+     local entry={object=object,property=property,item=item,from=current,to=item.target}
+     if typeof(entry.from)=="ColorSequence"then entry.stops=sequenceStops(entry.from,entry.to)end
+     transitions[#transitions+1]=entry
+    end
    else item.display=item.target end
   end end
    visited+=1
@@ -4321,10 +6088,10 @@ local function bindTheme(root)
    for _,entry in ipairs(transitions)do if entry.object.Parent then
     local value
     if typeof(entry.from)=="ColorSequence"then
-     local a,b=entry.from.Keypoints,entry.item.target.Keypoints
-     value=ColorSequence.new({ColorSequenceKeypoint.new(0,a[1].Value:Lerp(b[1].Value,alpha)),ColorSequenceKeypoint.new(.5,a[math.ceil(#a/2)].Value:Lerp(b[math.ceil(#b/2)].Value,alpha)),ColorSequenceKeypoint.new(1,a[#a].Value:Lerp(b[#b].Value,alpha))})
-    else value=entry.from:Lerp(entry.item.target,alpha)end
-    entry.item.display=value;entry.object[entry.property]=value
+     local points={};for _,stop in ipairs(entry.stops)do points[#points+1]=ColorSequenceKeypoint.new(stop.time,stop.from:Lerp(stop.target,alpha))end
+     value=ColorSequence.new(points)
+    else value=entry.from:Lerp(entry.to,alpha)end
+    entry.item.display=value;entry.object[entry.property]=Design.idleColor(root,entry.object,entry.property,value)
    end end
    applying=false
   end)
@@ -4334,7 +6101,7 @@ local function bindTheme(root)
    connection:Disconnect();progress:Destroy()
    if state==Enum.PlaybackState.Completed and self.animation==animation then
     self.transitioning=false;applying=true
-    for _,entry in ipairs(transitions)do if entry.object.Parent then entry.item.display=entry.item.target;entry.object[entry.property]=entry.item.target end end
+    for _,entry in ipairs(transitions)do if entry.object.Parent then entry.item.display=entry.to;entry.object[entry.property]=Design.idleColor(root,entry.object,entry.property,entry.to)end end
     applying=false
    end
   end);animation:Play()
@@ -4358,7 +6125,8 @@ local function bindTheme(root)
      if record and not skip(object)then for property,item in pairs(record)do
       local value=desired(item.base,item.kind,object,property);item.target=value;item.display=value
       object:SetAttribute("AltairTheme_"..property,controller.enabled and value or nil)
-      if object[property]~=value then object[property]=value end
+      local color=Design.idleColor(root,object,property,value)
+      if object[property]~=color then object[property]=color end
      end end
      applying=false
     end
@@ -4367,6 +6135,9 @@ local function bindTheme(root)
    table.clear(additions);pending=false;controller.pending=false
   end)
  end)
+ function controller:Attach(screen)
+  for _,object in ipairs(screen:GetDescendants())do register(object)end
+ end
  function controller:WhenReady()
   while self.pending and root.Parent and not self.destroyed do game:GetService("RunService").Heartbeat:Wait()end
  end
@@ -4377,19 +6148,24 @@ end
 -- Shared surface material: a single translucent layer, continuous outline.
 local function styleSurface(panel)
  local root=panel:FindFirstAncestorOfClass("ScreenGui")
- panel:SetAttribute("AltairSurface",true);panel.BackgroundColor3=root and root:GetAttribute("AltairOLED")and Color3.new(0,0,0)or Color3.fromRGB(10,11,14);panel.BorderSizePixel=0
- local corner=panel:FindFirstChildOfClass("UICorner")or Instance.new("UICorner");corner.CornerRadius=UDim.new(0,18);corner.Parent=panel
- local border=panel:FindFirstChildOfClass("UIStroke")or Instance.new("UIStroke");border.Name=panel.Name=="SharedPanelSurface"and"Outline"or"UIStroke";border.Color=Color3.fromRGB(160,166,180);border.Thickness=1;border.BorderStrokePosition=Enum.BorderStrokePosition.Inner;border.Transparency=.65;border.Enabled=true;border:SetAttribute("AltairSurfaceOutline",true);border.Parent=panel
- local gradient=panel:FindFirstChildOfClass("UIGradient")or Instance.new("UIGradient");gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(230,232,238));gradient.Rotation=90;gradient.Offset=Vector2.zero;gradient.Parent=panel
+ panel:SetAttribute("AltairSurface",true);panel:SetAttribute("AltairDesignRole","surface")
+ if panel:GetAttribute("AltairDesignTransparencyOffset")==nil then panel:SetAttribute("AltairDesignTransparencyOffset",.03)end
+ panel.BackgroundColor3=root and root:GetAttribute("AltairOLED")and Color3.new(0,0,0)or Design.Surface;panel.BorderSizePixel=0
+ Design.corner(panel,18)
+ local border=Design.edge(panel,.86);border.Name=panel.Name=="SharedPanelSurface"and"Outline"or"UIStroke";border.Enabled=true;border:SetAttribute("AltairSurfaceOutline",true)
+ local gradient=panel:FindFirstChildOfClass("UIGradient")or Instance.new("UIGradient")
+ gradient.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,Color3.new(1,1,1)),ColorSequenceKeypoint.new(.55,Color3.fromRGB(244,244,244)),ColorSequenceKeypoint.new(1,Color3.fromRGB(224,224,224))});gradient.Rotation=110;gradient.Offset=Vector2.zero;gradient.Parent=panel
  return panel
 end
 local function styleHome(content)
- -- Console-style Home: top navigation, grouped surfaces and a recent-game shelf.
+ -- A bounded workspace: navigation, a calm session overview and focused directories.
  content:SetAttribute("AltairHomeRedesign",true)
  content.BackgroundTransparency=1
  local view={states={}};local motion=motionService()
- local font=Font.new(Font.fromEnum(Enum.Font.Roboto).Family,Enum.FontWeight.Medium)
- local bold=Font.new(font.Family,Enum.FontWeight.Bold)
+ local font=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium)
+ local bold=Font.new(font.Family,Enum.FontWeight.SemiBold)
+ local ink=Design.Ink;local mutedInk=Design.Muted
+ local function role(object,name)object:SetAttribute("AltairDesignRole",name);object:SetAttribute("AltairDesignManaged",true)end
  local function make(class,name,parent,props)
   local o=Instance.new(class);o.Name=name
   if o:IsA("GuiObject")then o.BorderSizePixel=0;o.BackgroundTransparency=1;o.ZIndex=24 end
@@ -4398,14 +6174,17 @@ local function styleHome(content)
  local function rect(o,x,y,w,h)o.AnchorPoint=Vector2.zero;o.Position=UDim2.fromOffset(x,y);o.Size=UDim2.fromOffset(w,h)end
  local function corner(o,r)make("UICorner","UICorner",o,{CornerRadius=UDim.new(0,r)})end
  local function text(parent,name,value,x,y,w,h,size,muted)
-  return make("TextLabel",name,parent,{Text=value,Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),FontFace=bold,TextSize=size or 14,TextColor3=muted and Color3.fromRGB(167,173,185)or Color3.fromRGB(242,244,249),TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+  local label=make("TextLabel",name,parent,{Text=value,Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),FontFace=muted and font or bold,TextSize=size or 14,TextColor3=muted and mutedInk or ink,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd});role(label,muted and"muted"or"ink");return label
  end
  local function button(parent,name,value,x,y,w,h)
-  local o=make("TextButton",name,parent,{Text="",Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),AutoButtonColor=false,BackgroundColor3=Color3.fromRGB(35,39,49),BackgroundTransparency=.35});corner(o,10)
+  local o=make("TextButton",name,parent,{Text="",Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),AutoButtonColor=false,BackgroundColor3=Design.Well,BackgroundTransparency=.24});corner(o,9);role(o,"control")
+  make("UIStroke","Outline",o,{Color=Design.Edge,Transparency=.9,Thickness=.6,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
   text(o,"Title",value,14,0,w-28,h,13)
   local motion=motionService();local scale=make("UIScale","HoverScale",o,{Scale=1})
   o.MouseEnter:Connect(function()motion:Create(o,TweenInfo.new(.18),{BackgroundTransparency=.05}):Play();motion:Create(scale,TweenInfo.new(.22,Enum.EasingStyle.Quint),{Scale=1.025}):Play()end)
-  o.MouseLeave:Connect(function()motion:Create(o,TweenInfo.new(.2),{BackgroundTransparency=o:GetAttribute("AltairHomeFade_BackgroundTransparency")or .35}):Play();motion:Create(scale,TweenInfo.new(.22,Enum.EasingStyle.Quint),{Scale=1}):Play()end)
+  o.MouseLeave:Connect(function()motion:Create(o,TweenInfo.new(.2),{BackgroundTransparency=o:GetAttribute("AltairHomeFade_BackgroundTransparency")or .24}):Play();motion:Create(scale,TweenInfo.new(.22,Enum.EasingStyle.Quint),{Scale=1}):Play()end)
+  o.MouseButton1Down:Connect(function()motion:Create(scale,TweenInfo.new(.08,Enum.EasingStyle.Quad),{Scale=.975}):Play()end)
+  o.MouseButton1Up:Connect(function()motion:Create(scale,TweenInfo.new(.24,Enum.EasingStyle.Back),{Scale=1}):Play()end)
   return o
  end
  local root=content:FindFirstAncestorOfClass("ScreenGui")
@@ -4420,22 +6199,28 @@ local function styleHome(content)
   end
  end
  local function surface(panel)
-  styleSurface(panel);panel:SetAttribute("AltairHomeSurface",true)
-  panel:SetAttribute("AltairHomeGlass",true);panel.BackgroundTransparency=math.min(.5,(root and root:GetAttribute("AltairPanelTransparency")or .1)+.12)
+  local material=panel
+  if panel:IsA("CanvasGroup")then material=make("Frame","Backdrop",panel,{Size=UDim2.fromScale(1,1),ZIndex=panel.ZIndex-1})end
+  styleSurface(material);material:SetAttribute("AltairHomeSurface",true)
+  material:SetAttribute("AltairHomeGlass",true);material:SetAttribute("AltairDesignTransparencyOffset",.08);role(material,"surface");material.BackgroundColor3=Design.Surface;material.BackgroundTransparency=Design.opacityAlpha(.18,root and root:GetAttribute("AltairPanelTransparency")or .1)
+ end
+ local function divider(parent,name,x,y,w)
+  local line=make("Frame",name,parent,{Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,1),BackgroundColor3=Design.Edge,BackgroundTransparency=.9});role(line,"divider");return line
  end
  local oldSidebar=content.Sidebar;local oldPages=content.Pages
  local sidebar=make("Frame","NewSidebar",content);rect(sidebar,0,0,1104,66)
- local pages=make("Frame","NewPages",content);rect(pages,0,84,1104,536)
- text(content,"HomeHeading","altair",22,15,120,36,25)
+ local pages=make("Frame","NewPages",content);rect(pages,0,84,1104,540);pages.ClipsDescendants=true
+ text(content,"HomeHeading","Your space.",22,24,226,32,25)
+ text(content,"WorkspaceLabel","ALTAIR",24,9,180,13,9,true)
  local sub=text(content,"HomeSubheading","",0,48,120,16,10,true);sub.Visible=false
  for i,name in ipairs({"Home","Games","Friends"})do
-  local nav=button(sidebar,name,({Home="Home",Friends="Friends",Games="Library"})[name],150+(i-1)*138,10,126,42)
+  local nav=button(sidebar,name,({Home="Home",Friends="Friends",Games="Library"})[name],282+(i-1)*140,14,128,40)
   accent(nav,({Home="Home",Games="Scripts",Friends="Playerlist"})[name])
   nav.BackgroundTransparency=1;nav.Title.Position=UDim2.fromOffset(44,0);nav.Title.Size=UDim2.fromOffset(78,42)
   local icon=make("ImageLabel","Icon",nav,{Position=UDim2.fromOffset(14,12),Size=UDim2.fromOffset(18,18)})
   applyIcon(icon,({Home="house",Friends="users",Games="gamepad-2"})[name])
  end
- local profile=make("Frame","Profile",sidebar);rect(profile,866,12,148,44)
+ local profile=make("Frame","Profile",sidebar);rect(profile,824,12,170,44)
  local avatar=make("ImageLabel","Avatar",profile,{Position=UDim2.fromOffset(0,6),Size=UDim2.fromOffset(32,32)});corner(avatar,16)
  text(profile,"DisplayName","You",43,5,113,20,12)
  text(profile,"Status","In game",43,26,113,16,10,true)
@@ -4447,6 +6232,8 @@ local function styleHome(content)
   return o
  end
  local header=section(content,"NavigationSurface",0,0,1104,68);header.ZIndex=19;surface(header)
+ make("ObjectValue","AltairContrastMaterial",content,{Value=header})
+ divider(header,"NavigationDivider",260,18,1).Size=UDim2.fromOffset(1,32)
  local function freshTemplate(list)
   local old=list:FindFirstChild("Template");if not old then return end
   local row=old:Clone();old:Destroy()
@@ -4460,38 +6247,43 @@ local function styleHome(content)
  end
  local home=make("CanvasGroup","Home",pages,{Size=UDim2.fromOffset(1104,540)});home:SetAttribute("AltairHomePageGroup",true)
  local oldHome=oldPages.Home
- local hero=section(home,"NowPlaying",0,0,712,300)
+ local hero=section(home,"NowPlaying",0,0,680,306)
  surface(hero)
  hero.ClipsDescendants=true
- local art=make("ImageLabel","Artwork",hero,{Size=UDim2.fromScale(1,1),ScaleType=Enum.ScaleType.Crop,ImageTransparency=.08,ZIndex=24});corner(art,18)
- local nextArt=art:Clone();nextArt.Name="NextArtwork";nextArt.ImageTransparency=1;nextArt.Parent=hero
- local shade=make("Frame","Readability",hero,{Size=UDim2.fromScale(1,1),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=0,ZIndex=25});corner(shade,18);shade:SetAttribute("AltairThemeIgnore",true)
- make("UIGradient","ReadabilityGradient",shade,{Rotation=90,Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,.65),NumberSequenceKeypoint.new(.48,.3),NumberSequenceKeypoint.new(1,.04)})})
+ local artViewport=make("CanvasGroup","ArtworkViewport",hero,{Position=UDim2.fromScale(0,0),Size=UDim2.fromScale(1,1),ClipsDescendants=true});corner(artViewport,18);artViewport:SetAttribute("AltairThemeIgnore",true)
+ local art=make("ImageLabel","Artwork",artViewport,{Size=UDim2.fromScale(1,1),ScaleType=Enum.ScaleType.Crop,ImageTransparency=.08,ZIndex=24})
+ local nextArt=art:Clone();nextArt.Name="NextArtwork";nextArt.ImageTransparency=1;nextArt.Parent=artViewport
+ local shade=make("Frame","Readability",artViewport,{Size=UDim2.fromScale(1,1),BackgroundColor3=Color3.new(0,0,0),BackgroundTransparency=0,ZIndex=25});shade:SetAttribute("AltairThemeIgnore",true)
+ make("UIGradient","ReadabilityGradient",shade,{Rotation=28,Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,.04),NumberSequenceKeypoint.new(.48,.15),NumberSequenceKeypoint.new(1,.58)})})
+ hero:SetAttribute("AltairArtworkForeground",true)
  for _,o in ipairs(hero:GetChildren())do if o:IsA("GuiObject")and o~=art and o~=nextArt and o~=shade then o.ZIndex=26 end end
  content.Parent.Dim.ZIndex=2;content.ZIndex=20;sidebar.ZIndex=40
- text(hero,"Eyebrow","CURRENT EXPERIENCE",24,22,500,20,11,true).ZIndex=26
- local gameIcon=make("ImageLabel","GameIcon",hero,{Position=UDim2.fromOffset(24,104),Size=UDim2.fromOffset(48,48)});corner(gameIcon,12)
+ text(hero,"Eyebrow","NOW PLAYING",24,23,330,16,10,true).ZIndex=26
+ local gameIcon=make("ImageLabel","GameIcon",hero,{Position=UDim2.fromOffset(24,66),Size=UDim2.fromOffset(40,40)});corner(gameIcon,10)
  gameIcon.ZIndex=26
- local gameName=text(hero,"GameName","Loading experience…",88,100,598,62,25)
+ local gameName=text(hero,"GameName","Loading experience…",78,62,288,74,27)
  gameName.ZIndex=26;gameName.TextWrapped=true;gameName.TextYAlignment=Enum.TextYAlignment.Top;gameName.TextTruncate=Enum.TextTruncate.None
- text(hero,"Creator","",24,178,654,20,13,true).ZIndex=26
- text(hero,"SessionPills","",24,208,654,20,12,true).ZIndex=26
- local resume=button(home,"Resume","Resume game",24,246,216,46)
+ text(hero,"Creator","",24,165,340,20,13,true).ZIndex=26
+ text(hero,"SessionPills","",24,196,340,20,12,true).ZIndex=26
+ divider(hero,"SessionDivider",24,222,338)
+ local resume=button(home,"Resume","Resume game",24,244,168,40)
+ resume:SetAttribute("AltairArtworkForeground",true)
  accent(resume,"Home");resume.BackgroundTransparency=.15
- local library=button(home,"BrowseLibrary","Explore library",254,246,178,46);accent(library,"Scripts")
- local playing=transplant(oldHome.NowPlaying,hero,"FriendsPlaying",430,18,250,28)
- if playing then playing.BackgroundTransparency=1;for _,o in ipairs(playing:GetChildren())do if o:IsA("GuiObject")then o.Visible=o.Name=="Summary"or o.Name=="ViewFriends" end end;rect(playing.Summary,0,0,250,28);playing.Summary.TextSize=10;rect(playing.ViewFriends,0,0,250,28)end
+ local library=button(home,"BrowseLibrary","Explore library",204,244,158,40);accent(library,"Scripts");library:SetAttribute("AltairArtworkForeground",true)
+ local playing=transplant(oldHome.NowPlaying,hero,"FriendsPlaying",24,136,340,22)
+ if playing then playing.BackgroundTransparency=1;for _,o in ipairs(playing:GetChildren())do if o:IsA("GuiObject")then o.Visible=o.Name=="Summary"or o.Name=="ViewFriends" end end;rect(playing.Summary,0,0,340,22);playing.Summary.TextSize=10;rect(playing.ViewFriends,0,0,340,22)end
  -- Keep the existing session model available to tick(), without dashboard cards.
  local status=section(home,"SessionStatus",0,0,1,1);status.Visible=false
  for _,name in ipairs({"Time","Date","Status","Game"})do text(status,name,"",0,0,1,1,11)end
- local server=section(home,"Server",736,0,368,300,"Your session")
- surface(server);rect(server.Title,24,22,280,24)
- text(server,"PlayerCount","",24,64,322,46,34)
- text(server,"CapacityLabel","PLAYERS IN THIS SERVER",24,110,322,16,10,true)
+ local server=section(home,"Server",700,0,404,306,"Session overview")
+ surface(server);rect(server.Title,24,22,356,24)
+ text(server,"PlayerCount","",24,65,160,46,38)
+ text(server,"CapacityLabel","PLAYERS IN THIS SERVER",24,114,356,16,9,true)
+ divider(server,"SessionDivider",24,145,356)
  for i,name in ipairs({"Ping","Uptime","Region"})do
-  local metric=section(server,name,24,150+(i-1)*42,322,34)
+  local metric=section(server,name,24,158+(i-1)*42,356,34)
   text(metric,"Label",({Ping="Latency",Uptime="Session time",Region="Region"})[name],0,0,124,30,12,true)
-  local value=text(metric,"Value","—",132,0,190,30,13);value.TextXAlignment=Enum.TextXAlignment.Right
+  local value=text(metric,"Value","—",132,0,224,30,13);value.TextXAlignment=Enum.TextXAlignment.Right
  end
  text(content,"HomeFooter","",22,628,1060,18,11,true)
  local function listSection(old,name,x,y,w,h,title,view)
@@ -4515,46 +6307,65 @@ local function styleHome(content)
   end
   return o
  end
- local recent=listSection(oldHome.RecentlyPlayed,"RecentlyPlayed",0,320,1104,216,"Jump back in","View all")
+ local recent=listSection(oldHome.RecentlyPlayed,"RecentlyPlayed",0,326,1104,210,"Continue exploring","View all")
  recent.Title.TextSize=17;accent(recent.ViewAll,"Scripts")
  surface(recent);rect(recent.Title,24,16,800,22);rect(recent.ViewAll,994,12,86,28)
- local shelf=recent.List;rect(shelf,24,54,1056,154);shelf.AutomaticCanvasSize=Enum.AutomaticSize.X;shelf.ScrollingDirection=Enum.ScrollingDirection.X
+ divider(recent,"ShelfDivider",24,49,1056)
+ local shelf=recent.List;rect(shelf,24,62,1056,140);shelf.AutomaticCanvasSize=Enum.AutomaticSize.X;shelf.ScrollingDirection=Enum.ScrollingDirection.X
  local layout=shelf:FindFirstChildOfClass("UIListLayout");if layout then layout.FillDirection=Enum.FillDirection.Horizontal;layout.Padding=UDim.new(0,18)end
  shelf.Template:Destroy()
- local tile=make("Frame","Template",shelf,{Size=UDim2.fromOffset(166,150),Visible=false})
- local tileArt=make("ImageLabel","Icon",tile,{Size=UDim2.fromOffset(166,104),ScaleType=Enum.ScaleType.Crop});corner(tileArt,12)
- text(tile,"Title","",0,112,166,20,13)
- text(tile,"LastPlayed","",0,134,166,14,10,true)
+ local tile=make("Frame","Template",shelf,{Size=UDim2.fromOffset(166,140),Visible=false,BackgroundColor3=Design.Raised,BackgroundTransparency=.2});corner(tile,12);role(tile,"inset")
+ local tileArt=make("ImageLabel","Icon",tile,{Position=UDim2.fromOffset(6,6),Size=UDim2.fromOffset(154,80),ScaleType=Enum.ScaleType.Crop});corner(tileArt,8)
+ text(tile,"Title","",10,94,146,20,13)
+ text(tile,"LastPlayed","",10,118,146,14,10,true)
  make("TextButton","Interact",tile,{Text="",Size=UDim2.fromScale(1,1),ZIndex=30})
  local friends=listSection(oldHome.Friends,"Friends",0,0,1,1,"Friends","View all");friends.Visible=false
  local activity=listSection(oldHome.RecentActivity,"RecentActivity",0,0,1,1,"Activity");activity.Visible=false
  -- Compact, responsive card directories replace the previous list/table views.
  local function tileFlow(list,kind)
   local old=list:FindFirstChildOfClass("UIListLayout");if old then old:Destroy()end
-  local queued=false;local last=0
+  local queued=false;local last=0;local rowMotion=setmetatable({},{__mode="k"})
+  local observed=setmetatable({},{__mode="k"})
+  local queue
   local function arrange()
    if not list.Parent then return end
-   local factor=root:GetAttribute("AltairDisplayScale")or 1;local width=list.AbsoluteSize.X/factor
+   local factor=1;local ancestor=list
+   while ancestor and ancestor~=root do local scale=ancestor:FindFirstChildOfClass("UIScale");if scale then factor*=scale.Scale end;ancestor=ancestor.Parent end
+   factor=math.max(.001,factor);local width=list.AbsoluteSize.X/factor
    if width<1 then return end
-   local cols=math.max(1,math.floor((width+12)/(kind=="Games"and 184 or 216)))
-   local cell=(width-12*(cols-1))/cols;local height=kind=="Games"and 184 or 144
-   local rows={};for _,o in ipairs(list:GetChildren())do if o:IsA("GuiObject")and o:GetAttribute("RuntimeEntry")then rows[#rows+1]=o end end
+   local cols=math.max(1,math.floor((width+12)/(kind=="Games"and 320 or 300)))
+   local cell=(width-12*(cols-1))/cols;local height=kind=="Games"and 148 or 124
+   local rows={}
+   for _,o in ipairs(list:GetChildren())do if o:IsA("GuiObject")and o:GetAttribute("RuntimeEntry")then
+    if not observed[o]then
+     observed[o]=true;o:GetPropertyChangedSignal("Visible"):Connect(function()if queue then queue()end end);o:GetPropertyChangedSignal("LayoutOrder"):Connect(function()if queue then queue()end end)
+    end
+    if o.Visible then rows[#rows+1]=o end
+   end end
    table.sort(rows,function(a,b)return a.LayoutOrder<b.LayoutOrder end)
    for i,row in ipairs(rows)do
     local position=UDim2.fromOffset(((i-1)%cols)*(cell+12),math.floor((i-1)/cols)*(height+12))
     local size=UDim2.fromOffset(cell,height)
     local visible=position.Y.Offset>=list.CanvasPosition.Y/factor-height and position.Y.Offset<=(list.CanvasPosition.Y+list.AbsoluteSize.Y)/factor+height
     if row:GetAttribute("AltairTilePlaced")and visible then
-     if row.Position~=position or row.Size~=size then motion:Create(row,TweenInfo.new(.2,Enum.EasingStyle.Quint),{Position=position,Size=size}):Play()end
-    else row.Position=position;row.Size=size;row:SetAttribute("AltairTilePlaced",true)end
+     if row.Position~=position or row.Size~=size then
+      local movement=motion:Create(row,TweenInfo.new(.2,Enum.EasingStyle.Quint),{Position=position,Size=size});rowMotion[row]=movement
+      movement.Completed:Once(function()if rowMotion[row]==movement then rowMotion[row]=nil end end);movement:Play()
+     end
+    else
+     local movement=rowMotion[row];if movement then movement:Cancel();rowMotion[row]=nil end
+     row.Position=position;row.Size=size;row:SetAttribute("AltairTilePlaced",true)
+    end
    end
-   list.CanvasSize=UDim2.fromOffset(0,math.ceil(#rows/cols)*(height+12));list:SetAttribute("AltairColumns",cols)
+   local canvasHeight=math.max(0,math.ceil(#rows/cols)*(height+12)-12)
+   list.CanvasSize=UDim2.fromOffset(0,canvasHeight);list:SetAttribute("AltairColumns",cols)
   end
-  local function queue()
+  queue=function()
    if queued then return end;queued=true
    task.delay(math.max(0,.04-(os.clock()-last)),function()queued=false;last=os.clock();arrange()end)
   end
-  list:GetPropertyChangedSignal("AbsoluteSize"):Connect(queue);list.ChildAdded:Connect(queue);list.ChildRemoved:Connect(queue)
+  list:GetPropertyChangedSignal("AbsoluteSize"):Connect(queue);list.ChildAdded:Connect(queue)
+  list.ChildRemoved:Connect(function(row)local movement=rowMotion[row];if movement then movement:Cancel();rowMotion[row]=nil end;observed[row]=nil;queue()end)
   list:GetPropertyChangedSignal("CanvasPosition"):Connect(queue);queue()
  end
  for _,name in ipairs({"Friends","Games"})do
@@ -4562,51 +6373,56 @@ local function styleHome(content)
   local page=make("CanvasGroup",name,pages,{Size=UDim2.fromOffset(1104,536),Visible=false});page:SetAttribute("AltairHomePageGroup",true)
   local browser=section(page,"Browser",0,0,1104,536,name=="Friends"and"Friends"or"Library");surface(browser)
   rect(browser.Title,20,18,450,28);browser.Title.TextSize=23
-  text(browser,"Subtitle",name=="Friends"and"Your people, wherever they are playing."or"Your next session starts here.",20,51,650,20,12,true).Size=UDim2.new(1,-360,0,20)
+  text(browser,"Subtitle",name=="Friends"and"Find your people. Pick up where they are."or"Saved experiences and recent places, together.",20,51,650,20,12,true).Size=UDim2.new(1,-360,0,20)
+  divider(browser,"BrowserDivider",20,78,1064).Size=UDim2.new(1,-40,0,1)
   local search=transplant(old.Browser,browser,"SearchBox",0,0,300,36)
-  search.Position=UDim2.new(1,-320,0,20);search.Size=UDim2.fromOffset(300,36);search.BackgroundColor3=Color3.fromRGB(42,42,46);search.BackgroundTransparency=.42;search.TextSize=13
+  search.Position=UDim2.new(1,-320,0,20);search.Size=UDim2.fromOffset(300,36);search.BackgroundColor3=Design.Well;search.BackgroundTransparency=.22;search.TextSize=13;search.FontFace=font;role(search,"control")
   local filters=transplant(old.Browser,browser,"Filters",20,88,650,30)
-  local index=0;for _,chip in ipairs(filters:GetChildren())do if chip:IsA("GuiButton")then rect(chip,index*130,0,120,30);chip.BackgroundColor3=Color3.fromRGB(48,48,53);local t=chip:FindFirstChild("Title");if t then t.TextSize=12 end;index+=1 end end
+  local index=0;for _,chip in ipairs(filters:GetChildren())do if chip:IsA("GuiButton")then rect(chip,index*112,0,102,30);chip.BackgroundColor3=Design.Well;chip.BackgroundTransparency=.35;role(chip,"control");local t=chip:FindFirstChild("Title");if t then t.TextSize=12;t.FontFace=font end;index+=1 end end
   local list=transplant(old.Browser,browser,"List",20,132,1064,384)
   list.Size=UDim2.new(1,-40,1,-152);list.BackgroundTransparency=1;list.ClipsDescendants=true;list.AutomaticCanvasSize=Enum.AutomaticSize.None;list.ScrollBarThickness=2
   local padding=list:FindFirstChildOfClass("UIPadding");if padding then padding:Destroy()end
   local oldTemplate=list:FindFirstChild("Template");if oldTemplate then oldTemplate:Destroy()end
-  local card=make("Frame","Template",list,{Size=UDim2.fromOffset(200,name=="Games"and 184 or 144),Visible=false,BackgroundColor3=Color3.fromRGB(30,30,34),BackgroundTransparency=.38});corner(card,12)
-  local outline=make("UIStroke","UIStroke",card,{Color=Color3.fromRGB(148,152,164),Transparency=.86,Thickness=1})
+  local card=make("Frame","Template",list,{Size=UDim2.fromOffset(340,name=="Games"and 148 or 124),Visible=false,BackgroundColor3=Design.Raised,BackgroundTransparency=.16});corner(card,12);role(card,"inset")
+  local outline=make("UIStroke","UIStroke",card,{Color=Design.Edge,Transparency=.9,Thickness=.6})
   make("TextButton","Interact",card,{Text="",Size=UDim2.fromScale(1,1),ZIndex=25})
   if name=="Games"then
-   local cover=make("ImageLabel","Icon",card,{Position=UDim2.fromOffset(8,8),Size=UDim2.new(1,-16,0,92),ScaleType=Enum.ScaleType.Crop});corner(cover,9)
-   text(card,"Title","",12,107,176,20,14).Size=UDim2.new(1,-24,0,20)
-   text(card,"Creator","",12,128,176,16,10,true).Size=UDim2.new(1,-24,0,16)
-   local played=text(card,"LastPlayed","",12,80,160,14,10);played.ZIndex=26
-   local play=button(card,"Play","Play",12,150,78,24);accent(play,"Playerlist");play.ZIndex=27
-   local favorite=button(card,"Favorite","Save",0,150,78,24);favorite.AnchorPoint=Vector2.new(1,0);favorite.Position=UDim2.new(1,-12,0,150);favorite.ZIndex=27
+   local cover=make("ImageLabel","Icon",card,{Position=UDim2.fromOffset(10,10),Size=UDim2.fromOffset(96,96),ScaleType=Enum.ScaleType.Crop});corner(cover,9);cover:SetAttribute("AltairThemeIgnore",true)
+   local title=text(card,"Title","",120,13,206,42,15);title.Size=UDim2.new(1,-132,0,42);title.TextWrapped=true;title.TextYAlignment=Enum.TextYAlignment.Top
+   text(card,"Creator","",120,61,206,16,10,true).Size=UDim2.new(1,-132,0,16)
+   local played=text(card,"LastPlayed","",120,84,206,14,10,true);played.Size=UDim2.new(1,-132,0,14);played.ZIndex=26
+   local play=button(card,"Play","Play",12,112,94,26);accent(play,"Playerlist");play.ZIndex=27
+   local favorite=button(card,"Favorite","Save",0,112,84,26);favorite.AnchorPoint=Vector2.new(1,0);favorite.Position=UDim2.new(1,-12,0,112);favorite.ZIndex=27
   else
    card:SetAttribute("AltairFriendTile",true)
-   local avatar=make("ImageLabel","Avatar",card,{Position=UDim2.fromOffset(12,14),Size=UDim2.fromOffset(44,44)});corner(avatar,22)
-   text(card,"DisplayName","",68,14,120,22,14).Size=UDim2.new(1,-80,0,22)
-   text(card,"Username","",68,38,120,16,10,true).Size=UDim2.new(1,-80,0,16)
-   local statusDot=make("Frame","StatusDot",card,{Position=UDim2.fromOffset(12,72),Size=UDim2.fromOffset(6,6),BackgroundColor3=Color3.fromRGB(144,154,168),BackgroundTransparency=0});corner(statusDot,3);statusDot:SetAttribute("AltairThemeIgnore",true)
-   text(card,"Status","",24,66,160,18,11,true).Size=UDim2.new(1,-38,0,18)
-   text(card,"Location","",12,87,170,16,10,true).Size=UDim2.new(1,-24,0,16)
+   local avatar=make("ImageLabel","Avatar",card,{Position=UDim2.fromOffset(12,14),Size=UDim2.fromOffset(44,44)});corner(avatar,14)
+   text(card,"DisplayName","",68,14,120,22,15).Size=UDim2.new(1,-80,0,22)
+   text(card,"Username","",68,40,120,16,10,true).Size=UDim2.new(1,-80,0,16)
+   local statusDot=make("Frame","StatusDot",card,{Position=UDim2.fromOffset(12,74),Size=UDim2.fromOffset(6,6),BackgroundColor3=Color3.fromRGB(144,154,168),BackgroundTransparency=0});corner(statusDot,3);statusDot:SetAttribute("AltairThemeIgnore",true)
+   text(card,"Status","",24,68,116,18,11,true)
+   text(card,"Location","",150,69,170,16,10,true).Size=UDim2.new(1,-162,0,16)
    local gameBadge=make("ImageLabel","GameIcon",card,{Visible=false,Position=UDim2.fromOffset(44,46),Size=UDim2.fromOffset(16,16),ZIndex=26});corner(gameBadge,4)
-   local join=button(card,"Join","Join",12,110,90,24);accent(join,"Playerlist");join.ZIndex=27
-   local more=button(card,"More","Profile",0,110,78,24);more.AnchorPoint=Vector2.new(1,0);more.Position=UDim2.new(1,-12,0,110);more.ZIndex=27
+   local join=button(card,"Join","Join",12,94,92,24);accent(join,"Playerlist");join.ZIndex=27
+   local more=button(card,"More","Profile",0,94,82,24);more.AnchorPoint=Vector2.new(1,0);more.Position=UDim2.new(1,-12,0,94);more.ZIndex=27
   end
   local states=transplant(old.Browser,browser,"States",20,132,1064,384);states.Size=UDim2.new(1,-40,1,-152)
   tileFlow(list,name)
-  local detailsSurface=make("CanvasGroup","DetailsSurface",page,{Position=UDim2.fromOffset(728,0),Size=UDim2.fromOffset(376,536),Visible=false,GroupTransparency=1});surface(detailsSurface)
-  local details=make("CanvasGroup","Details",page,{Position=UDim2.fromOffset(750,22),Size=UDim2.fromOffset(332,492),Visible=false,GroupTransparency=1})
+  local detailsSurface=make("CanvasGroup","DetailsSurface",page,{Position=UDim2.fromOffset(752,0),Size=UDim2.fromOffset(376,536),Visible=false,GroupTransparency=1});surface(detailsSurface)
+  text(detailsSurface,"SelectionHeading",name=="Games"and"EXPERIENCE"or"FRIEND",22,22,222,16,10,true)
+  divider(detailsSurface,"SelectionDivider",22,51,332)
+  local details=make("CanvasGroup","Details",page,{Position=UDim2.fromOffset(774,22),Size=UDim2.fromOffset(332,492),Visible=false,GroupTransparency=1})
+  make("ObjectValue","AltairContrastMaterial",details,{Value=detailsSurface.Backdrop})
   local close=button(detailsSurface,"CloseSelection","Back",278,14,78,28)
   local state={page=page,browser=browser,surface=detailsSurface,details=details,generation=0,internal=false};view.states[name]=state
   function view:SetSelection(key,selected,animate)
    local st=self.states[key];if not st then return end;st.generation+=1;local generation=st.generation
+   st.details:SetAttribute("AltairDetailVersion",(st.details:GetAttribute("AltairDetailVersion")or 0)+1)
    st.internal=true;st.surface.Visible=true;st.details.Visible=true;st.internal=false
    for _,group in ipairs({st.surface,st.details})do group:SetAttribute("AltairHomeFade_GroupTransparency",selected and 0 or 1);group:SetAttribute("AltairHomePageFade_GroupTransparency",selected and 0 or 1)end
    local duration=animate==false and 0 or .3
    motion:Create(st.browser,TweenInfo.new(duration,Enum.EasingStyle.Quint),{Size=UDim2.fromOffset(selected and 704 or 1104,536)}):Play()
-   motion:Create(st.surface,TweenInfo.new(duration),{GroupTransparency=selected and 0 or 1}):Play()
-   motion:Create(st.details,TweenInfo.new(duration),{GroupTransparency=selected and 0 or 1}):Play()
+   motion:Create(st.surface,TweenInfo.new(duration,Enum.EasingStyle.Quart),{Position=UDim2.fromOffset(selected and 728 or 752,0),GroupTransparency=selected and 0 or 1}):Play()
+   motion:Create(st.details,TweenInfo.new(duration,Enum.EasingStyle.Quart),{Position=UDim2.fromOffset(selected and 750 or 774,22),GroupTransparency=selected and 0 or 1}):Play()
    if not selected then task.delay(duration,function()if st.generation==generation and st.page.Parent then st.internal=true;st.surface.Visible=false;st.details.Visible=false;st.internal=false end end)end
   end
   if name=="Games"then
@@ -4615,18 +6431,18 @@ local function styleHome(content)
    text(details,"Creator","",0,270,332,18,12,true)
    button(details,"Play","Play experience",0,310,212,40);button(details,"Favorite","Save",224,310,108,40)
    text(details,"DescriptionTitle","ABOUT THIS EXPERIENCE",0,374,332,18,10,true)
-   local desc=text(details,"Description","",0,404,332,86,12,true);desc.TextWrapped=true;desc.TextYAlignment=Enum.TextYAlignment.Top;desc.TextTruncate=Enum.TextTruncate.None
+   local desc=text(details,"Description","",0,404,332,86,12,true);desc.TextWrapped=true;desc.TextYAlignment=Enum.TextYAlignment.Top;desc.TextTruncate=Enum.TextTruncate.AtEnd
   else
    local avatar=make("ImageLabel","Avatar",details,{Position=UDim2.fromOffset(0,40),Size=UDim2.fromOffset(64,64)});corner(avatar,32)
    text(details,"DisplayName","",78,42,254,30,21)
    text(details,"Username","",78,78,254,18,12,true)
-   local activity=section(details,"Activity",0,144,332,112)
-   local icon=make("ImageLabel","GameIcon",activity,{Size=UDim2.fromOffset(42,42)});corner(icon,10)
-   text(activity,"Status","",56,0,276,18,11,true);text(activity,"GameName","",56,22,276,22,14)
-   button(activity,"Join","Join experience",0,62,332,38)
+   local activity=section(details,"Activity",0,144,332,112);activity.BackgroundColor3=Design.Raised;activity.BackgroundTransparency=.2;corner(activity,12);role(activity,"inset")
+   local icon=make("ImageLabel","GameIcon",activity,{Position=UDim2.fromOffset(12,12),Size=UDim2.fromOffset(36,36)});corner(icon,9)
+   text(activity,"Status","",60,10,260,16,10,true);text(activity,"GameName","",60,29,260,22,14)
+   button(activity,"Join","Join experience",12,64,308,36)
    text(details,"Availability","",0,270,332,18,11,true)
    text(details,"AboutTitle","ABOUT",0,306,332,18,10,true)
-   local about=text(details,"About","",0,338,332,86,12,true);about.TextWrapped=true;about.TextYAlignment=Enum.TextYAlignment.Top;about.TextTruncate=Enum.TextTruncate.None
+   local about=text(details,"About","",0,338,332,86,12,true);about.TextWrapped=true;about.TextYAlignment=Enum.TextYAlignment.Top;about.TextTruncate=Enum.TextTruncate.AtEnd
    button(details,"ViewProfile","View profile",0,452,218,38);button(details,"More","More",230,452,102,38)
   end
  end
@@ -4681,10 +6497,10 @@ local function styleHome(content)
 end
 
 local function createSharedSurface(root)
- local shell=Instance.new("Frame");shell.Name="SharedPanelSurface";shell.Visible=false;shell.BorderSizePixel=0;shell.BackgroundColor3=Color3.fromRGB(25,26,29);shell.BackgroundTransparency=.1;shell.Parent=root
+ local shell=Instance.new("Frame");shell.Name="SharedPanelSurface";shell.Visible=false;shell.BorderSizePixel=0;shell.BackgroundColor3=Design.Surface;shell.BackgroundTransparency=.08;shell:SetAttribute("AltairDesignRole","surface");shell:SetAttribute("AltairDesignManaged",true);shell:SetAttribute("AltairDesignTransparencyOffset",.03);shell.Parent=root
  local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(0,18);corner.Parent=shell
- local stroke=Instance.new("UIStroke");stroke.Name="Outline";stroke.Color=Color3.fromRGB(160,166,180);stroke.Transparency=.65;stroke.Parent=shell
- local gradient=Instance.new("UIGradient");gradient.Name="Material";gradient.Parent=shell
+ local stroke=Instance.new("UIStroke");stroke.Name="Outline";stroke.Color=Design.Edge;stroke.Transparency=.86;stroke.Thickness=.6;stroke.BorderStrokePosition=Enum.BorderStrokePosition.Inner;stroke.Parent=shell
+ local gradient=Instance.new("UIGradient");gradient.Name="Material";gradient.Rotation=110;gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(224,224,224));gradient.Parent=shell
  local scale=Instance.new("UIScale");scale.Name="AltairDisplayScale";scale.Parent=shell
 end
 -- A rounded Gaussian atlas has fully transparent borders: its nine-slice never
@@ -4735,6 +6551,223 @@ local function buildExperimentalSection(parent,title,description)
  experimentalBadge(section)
  return section
 end
+-- Local preference discovery: bounded recycled rows, no polling or value indexing.
+local function buildSettingsSearch(context)
+ local panel=context.Panel;local native=game:GetService("TweenService");local inputService=game:GetService("UserInputService")
+ local function duration(time)
+  local root=panel:FindFirstAncestorOfClass("ScreenGui")
+  return root and root:GetAttribute("AltairReduceMotion")==true and math.min(time,.08)or time
+ end
+ local service={alive=true,Active=false,query="",matches={},entries=context.Entries or{},version=0,navigation=0,selected=1,rows={}}
+ local connections={};local animations=setmetatable({},{__mode="k"});local layoutAnimations=setmetatable({},{__mode="k"});local highlight,navigationPage
+ local z=panel.ZIndex+12;local font=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium)
+ local function make(class,parent,name,props)
+  local o=Instance.new(class);o.Name=name;if o:IsA("GuiObject")then o.BackgroundTransparency=1;o.BorderSizePixel=0;o.ZIndex=z end
+  for k,v in pairs(props or{})do o[k]=v end;o.Parent=parent;return o
+ end
+ local function round(parent,radius)make("UICorner",parent,"UICorner",{CornerRadius=UDim.new(0,radius)})end
+ local function connect(signal,fn)local c=signal:Connect(fn);connections[#connections+1]=c;return c end
+ local function animate(object,time,goal)
+  local old=animations[object];if old then old:Cancel()end
+  local tween=native:Create(object,TweenInfo.new(duration(time),Enum.EasingStyle.Quart,Enum.EasingDirection.Out),goal);animations[object]=tween
+  tween.Completed:Once(function()if animations[object]==tween then animations[object]=nil end end);tween:Play();return tween
+ end
+ local group=make("CanvasGroup",panel,"SettingsSearch",{Size=UDim2.fromScale(1,1),GroupTransparency=0});group:SetAttribute("AltairFadeGroup",true);group:SetAttribute("AltairThemeIgnore",true)
+ service.Root=group
+ local field=make("Frame",group,"Field",{Position=UDim2.fromOffset(18,62),Size=UDim2.fromOffset(148,32),BackgroundTransparency=.25});round(field,10)
+ local edge=make("UIStroke",field,"Outline",{Thickness=.65,Transparency=.85,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+ local icon=make("ImageLabel",field,"Icon",{Position=UDim2.fromOffset(9,9),Size=UDim2.fromOffset(14,14)});applyIcon(icon,"search")
+ local box=make("TextBox",field,"Input",{Position=UDim2.fromOffset(30,0),Size=UDim2.new(1,-56,1,0),Text="",PlaceholderText="Find a setting",ClearTextOnFocus=false,MultiLine=false,TextSize=11,FontFace=font,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+ local clear=make("ImageButton",field,"Clear",{Position=UDim2.new(1,-25,0,7),Size=UDim2.fromOffset(18,18),ImageTransparency=1,AutoButtonColor=false,Visible=false});applyIcon(clear,"x")
+ local results=make("CanvasGroup",group,"Results",{Position=UDim2.fromOffset(184,76),Size=UDim2.new(1,-198,1,-92),Visible=false,GroupTransparency=1,ClipsDescendants=true})
+ local scroll=make("ScrollingFrame",results,"List",{Size=UDim2.fromScale(1,1),CanvasSize=UDim2.new(),ScrollBarThickness=3,ScrollBarImageTransparency=.4,ScrollingDirection=Enum.ScrollingDirection.Y,AutomaticCanvasSize=Enum.AutomaticSize.None})
+ local empty=make("TextLabel",results,"Empty",{Position=UDim2.fromOffset(18,24),Size=UDim2.new(1,-36,0,80),Text="No settings found.\nTry a shorter name or another keyword.",TextSize=14,FontFace=font,TextWrapped=true,TextYAlignment=Enum.TextYAlignment.Top,Visible=false})
+ service.Input=box;service.Results=results;service.Scroll=scroll
+ function service:Layout(animated)
+  local goals={
+   [field]={Position=UDim2.fromOffset(18,62),Size=UDim2.fromOffset(148,32)},
+   [results]={Position=UDim2.fromOffset(184,76),Size=UDim2.new(1,-198,1,-92)},
+  }
+  for object,target in pairs(goals)do
+   local old=layoutAnimations[object];if old then old:Cancel()end
+   if animated and panel.Visible then local animation=native:Create(object,TweenInfo.new(duration(.28),Enum.EasingStyle.Quart,Enum.EasingDirection.Out),target);layoutAnimations[object]=animation;animation:Play()
+   else for property,value in pairs(target)do object[property]=value end end
+  end
+ end
+ local function allowed()return service.alive and panel.Parent and panel.Visible and not panel:GetAttribute("AltairClosing")end
+ local function factor()
+  local n=1;local object=scroll
+  while object and not object:IsA("ScreenGui")do local scale=object:FindFirstChildOfClass("UIScale");if scale then n*=scale.Scale end;object=object.Parent end
+  return math.max(.001,n)
+ end
+ local ink,muted,surface
+ local function paint(object,property,value)if object[property]~=value then object[property]=value end end
+ local function palette()
+  ink=panel.ContentTitle.TextColor3;local dark=ink.R+ink.G+ink.B>1.5
+  local material=panel.BackgroundColor3;local gradient=panel:FindFirstChildOfClass("UIGradient")
+  if gradient then local color=gradient.Color.Keypoints[#gradient.Color.Keypoints].Value;material=Color3.new(material.R*color.R,material.G*color.G,material.B*color.B)end
+  local hue,saturation,brightness=material:ToHSV();surface=Color3.fromHSV(hue,saturation*.8,dark and math.clamp(brightness+.035,.08,.23)or math.clamp(brightness-.04,.78,.95));muted=ink:Lerp(surface,.36)
+  paint(field,"BackgroundColor3",surface);paint(edge,"Color",ink);paint(icon,"ImageColor3",muted);paint(box,"TextColor3",ink);paint(box,"PlaceholderColor3",muted);paint(clear,"ImageColor3",muted);paint(empty,"TextColor3",muted);paint(scroll,"ScrollBarImageColor3",muted)
+  for _,slot in ipairs(service.rows)do paint(slot.row,"BackgroundColor3",surface);paint(slot.title,"TextColor3",ink);paint(slot.category,"TextColor3",muted);paint(slot.icon,"ImageColor3",muted);paint(slot.outline,"Color",ink)end
+ end
+ local stride=66
+ local function renderRows(animated,selectionMotion)
+  local first=math.max(1,math.floor(scroll.CanvasPosition.Y/factor()/stride)+1)
+  local count=math.min(14,math.max(4,math.ceil(scroll.AbsoluteSize.Y/factor()/stride)+2))
+  for index=1,count do
+   local slot=service.rows[index]
+   if not slot then
+    local row=make("TextButton",scroll,"Match"..index,{Text="",AutoButtonColor=false,Size=UDim2.new(1,-10,0,58),BackgroundTransparency=.52,Selectable=true});round(row,11)
+    local outline=make("UIStroke",row,"Outline",{Thickness=.6,Transparency=.92,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+    local title=make("TextLabel",row,"Title",{Position=UDim2.fromOffset(13,8),Size=UDim2.new(1,-44,0,21),TextSize=14,FontFace=font,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+    local category=make("TextLabel",row,"Category",{Position=UDim2.fromOffset(13,32),Size=UDim2.new(1,-44,0,16),TextSize=11,FontFace=font,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+    local arrow=make("ImageLabel",row,"Arrow",{Position=UDim2.new(1,-29,0,21),Size=UDim2.fromOffset(15,15)});applyIcon(arrow,"arrow-up-right")
+    slot={row=row,title=title,category=category,icon=arrow,outline=outline};service.rows[index]=slot
+    connect(row.Activated,function()if allowed()and service.Active and slot.entry then service:Navigate(slot.entry)end end)
+    connect(row.MouseEnter,function()if allowed()and service.Active then animate(row,.15,{BackgroundTransparency=.22});animate(outline,.15,{Transparency=.65})end end)
+    connect(row.MouseLeave,function()if service.alive then animate(row,.18,{BackgroundTransparency=.52});animate(outline,.18,{Transparency=.92})end end)
+   end
+   local number=first+index-1;local entry=service.matches[number];local replaced=slot.entry~=entry;slot.entry=entry;slot.row.Visible=entry~=nil
+   if entry then
+    slot.row.Position=UDim2.fromOffset(0,(number-1)*stride);slot.title.Text=entry.name
+    slot.category.Text=entry.category.name
+    local selected=number==service.selected;local alpha=selected and .3 or .52
+    if selectionMotion then animate(slot.row,.12,{BackgroundTransparency=alpha})
+    elseif replaced or slot.selected~=selected then local old=animations[slot.row];if old then old:Cancel();animations[slot.row]=nil end;slot.row.BackgroundTransparency=alpha end
+    slot.selected=selected
+    if animated then slot.title.TextTransparency=1;slot.category.TextTransparency=1;animate(slot.title,.18,{TextTransparency=0});animate(slot.category,.18,{TextTransparency=0})end
+   end
+  end
+  for index=count+1,#service.rows do service.rows[index].row.Visible=false;service.rows[index].entry=nil end
+  palette()
+ end
+ local function words(query)local t={};for value in query:lower():gmatch("%S+")do t[#t+1]=value end;return t end
+ local function search(query)
+  local tokens=words(query);local found={}
+  for order,entry in ipairs(service.entries)do if not entry.setting.hidden and not entry.category.hidden and entry.object and entry.object.Parent then
+   local score=0;local matches=true
+   for _,token in ipairs(tokens)do
+    if not entry.haystack:find(token,1,true)then matches=false;break end
+    score+=entry.name:lower():find(token,1,true)and 50 or 5
+   end
+   if matches then if entry.name:lower()==query:lower()then score+=1000 elseif entry.name:lower():sub(1,#query)==query:lower()then score+=200 end;found[#found+1]={entry=entry,score=score,order=order}end
+  end end
+  table.sort(found,function(a,b)return a.score==b.score and a.order<b.order or a.score>b.score end)
+  local entries={};for i,value in ipairs(found)do entries[i]=value.entry end;return entries
+ end
+ function service:SetEntries(entries)
+  self.entries=entries or{}
+  for _,entry in ipairs(self.entries)do
+   local keywords=entry.keywords or entry.setting.keywords or"";if type(keywords)=="table"then keywords=table.concat(keywords," ")end
+   entry.haystack=(entry.name.." "..entry.category.name.." "..tostring(entry.setting.id or"").." "..tostring(entry.setting.description or"").." "..keywords):lower()
+  end
+  if self.Active then self:SetQuery(self.query)end
+ end
+ function service:SetQuery(query)
+  if not self.alive then return end
+  local wasActive=self.Active
+  query=tostring(query or"")
+  if #query>128 then query=query:sub(1,128);while #query>0 and utf8.len(query)==nil do query=query:sub(1,-2)end end
+  self.version+=1;self:CancelNavigation();local version=self.version
+  local scrolling=animations[scroll];if scrolling then scrolling:Cancel();animations[scroll]=nil end
+  self.query=query:match("^%s*(.-)%s*$");self.Active=self.query~="";self.selected=1
+  if box.Text~=query then self.suppress=true;box.Text=query;self.suppress=false end
+  if highlight then highlight:Destroy();highlight=nil end
+  if self.Active then clear.Visible=true end;animate(clear,.12,{ImageTransparency=self.Active and .1 or 1})
+  if self.Active then
+   self.matches=search(self.query);self.renderPending=true;results.Interactable=false;scroll.CanvasPosition=Vector2.zero;scroll.CanvasSize=UDim2.fromOffset(0,#self.matches*stride)
+   local function mount()
+    if not self.alive or self.version~=version or not self.Active then return end
+    self.renderPending=false;empty.Visible=#self.matches==0;results.Visible=true;renderRows(false);results.Interactable=true;animate(results,.18,{GroupTransparency=0})
+   end
+   if wasActive then animate(results,.07,{GroupTransparency=1});task.delay(.075,mount)else mount()end
+  else
+   self.renderPending=false;self.matches={};results.Interactable=false;animate(results,.12,{GroupTransparency=1})
+   task.delay(.13,function()if self.alive and self.version==version and not self.Active then results.Visible=false;clear.Visible=false end end)
+  end
+  if context.OnSearch and not self.silent then context.OnSearch(self.Active,#self.matches,self.query)end
+ end
+ function service:Clear(release)
+  self:SetQuery("");if release~=false and box:IsFocused()then box:ReleaseFocus()end
+ end
+ function service:CancelNavigation()
+  self.navigation+=1
+  if navigationPage then local animation=animations[navigationPage];if animation then animation:Cancel();animations[navigationPage]=nil end;navigationPage=nil end
+  if highlight then highlight:Destroy();highlight=nil end
+ end
+ local function destinationVisible(entry)
+  if context.IsSelected and not context.IsSelected(entry)then return false end
+  local row=entry.object;local page=row and row.Parent
+  if not page or entry.setting.hidden or entry.category.hidden then return false end
+  local layout=page.Parent and page.Parent:FindFirstChildOfClass("UIPageLayout")
+  if layout and layout.CurrentPage~=page then return false end
+  local object=row
+  while object do
+   if object:IsA("GuiObject")and not object.Visible then return false end
+   if object:IsA("ScreenGui")and not object.Enabled then return false end
+   object=object.Parent
+  end
+  return true
+ end
+ function service:Navigate(entry)
+  if not allowed()or not entry or not entry.object or not entry.object.Parent or entry.setting.hidden or entry.category.hidden then return false end
+  local destination=entry.object.Parent
+  self:Clear(true);self.navigation+=1;local generation=self.navigation
+  if context.Navigate then context.Navigate(entry)end
+  task.delay(.27,function()
+   if not allowed()or generation~=self.navigation or entry.object.Parent~=destination or not destinationVisible(entry)then return end
+   local row,page=entry.object,entry.object.Parent
+   if page:IsA("ScrollingFrame")then
+    local scale=1;local ancestor=page;while ancestor and not ancestor:IsA("ScreenGui")do local s=ancestor:FindFirstChildOfClass("UIScale");if s then scale*=s.Scale end;ancestor=ancestor.Parent end
+    -- CanvasPosition and AbsoluteCanvasSize use rendered pixels, including
+    -- UIScale. Only the authored 12px inset needs scale conversion.
+    local target=page.CanvasPosition.Y+row.AbsolutePosition.Y-page.AbsolutePosition.Y-12*scale
+    local maximum=math.max(0,page.AbsoluteCanvasSize.Y-page.AbsoluteWindowSize.Y)
+    navigationPage=page;animate(page,.3,{CanvasPosition=Vector2.new(0,math.clamp(target,0,maximum))})
+   end
+   if highlight then highlight:Destroy()end
+   highlight=make("Frame",row,"SearchHighlight",{Size=UDim2.fromScale(1,1),BackgroundColor3=entry.category.color or Color3.fromRGB(120,160,230),BackgroundTransparency=1,ZIndex=row.ZIndex+8});highlight:SetAttribute("AltairThemeIgnore",true);round(highlight,10)
+   local rim=make("UIStroke",highlight,"Outline",{Color=entry.category.color or ink,Thickness=1,Transparency=1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+   local current=highlight;animate(highlight,.16,{BackgroundTransparency=.9});animate(rim,.16,{Transparency=.25})
+   task.delay(.65,function()if current.Parent then animate(current,.45,{BackgroundTransparency=1});animate(rim,.45,{Transparency=1})end end)
+   task.delay(1.15,function()if current.Parent then current:Destroy()end;if highlight==current then highlight=nil end end)
+  end)
+  return true
+ end
+ function service:Open()
+  if not self.alive then return end;group.Visible=true;self.silent=true;self:Clear(false);self.silent=false;animate(group,.18,{GroupTransparency=0});palette()
+ end
+ function service:Close()
+  self.navigation+=1;self:Clear(true);animate(group,.1,{GroupTransparency=1})
+ end
+ function service:Destroy()
+  if not self.alive then return end;self.alive=false;self.version+=1;self.navigation+=1
+  for _,c in ipairs(connections)do c:Disconnect()end;for _,t in pairs(animations)do t:Cancel()end;for _,t in pairs(layoutAnimations)do t:Cancel()end
+  if highlight then highlight:Destroy();highlight=nil end;if group.Parent then group:Destroy()end
+ end
+ connect(box:GetPropertyChangedSignal("Text"),function()if not service.suppress and allowed()then service:SetQuery(box.Text)end end)
+ connect(box.Focused,function()animate(edge,.15,{Transparency=.5})end);connect(box.FocusLost,function(enter)animate(edge,.18,{Transparency=.85});if enter and service.Active then service:Navigate(service.matches[service.selected])end end)
+ connect(box.InputBegan,function(event)
+  if event.KeyCode==Enum.KeyCode.Escape then service:Clear(true)
+  elseif service.Active and(event.KeyCode==Enum.KeyCode.Down or event.KeyCode==Enum.KeyCode.Up)then
+   service.selected=math.clamp(service.selected+(event.KeyCode==Enum.KeyCode.Down and 1 or -1),1,math.max(1,#service.matches))
+   if not service.renderPending then
+    animate(scroll,.16,{CanvasPosition=Vector2.new(0,math.max(0,(service.selected-2)*stride*factor()))});renderRows(false,true)
+   end
+  end
+ end)
+ connect(clear.Activated,function()service:Clear(true)end)
+ connect(scroll:GetPropertyChangedSignal("CanvasPosition"),function()if service.Active and not service.renderPending then renderRows(false)end end)
+ connect(scroll:GetPropertyChangedSignal("AbsoluteSize"),function()if service.Active and not service.renderPending then renderRows(false)end end)
+ connect(panel.ContentTitle:GetPropertyChangedSignal("TextColor3"),palette)
+ connect(panel:GetPropertyChangedSignal("BackgroundColor3"),palette)
+ local surfaceGradient=panel:FindFirstChildOfClass("UIGradient");if surfaceGradient then connect(surfaceGradient:GetPropertyChangedSignal("Color"),palette)end
+ connect(panel:GetAttributeChangedSignal("AltairClosing"),function()if panel:GetAttribute("AltairClosing")then service:Close()end end)
+ connect(panel:GetPropertyChangedSignal("Visible"),function()if not panel.Visible then service:Close()end end)
+ connect(panel.Destroying,function()service:Destroy()end)
+ panel.SettingTypes.Position=UDim2.fromOffset(14,104);panel.SettingTypes.Size=UDim2.new(0,158,1,-120)
+ service:Layout(false);service:SetEntries(service.entries);palette();return service
+end
 local function loadingMask(progress)
  local points={}
  for index=0,12 do
@@ -4783,7 +6816,7 @@ local function bindSoftShadows(root)
  addSurface=function(source,strength,color,padding,material,legacy)
   material=material or source
   local handle=source==root.Drag.Drag
-  local capsule=source:IsDescendantOf(root.TopCapsules)
+  local capsule=source:IsDescendantOf(root.TopCapsules)or source.Parent.Name=="CapsuleActivities"
   local authoredSize=source.Size
   local minimum=math.min(authoredSize.X.Offset,authoredSize.Y.Offset)
   local small=not handle and source.Parent~=root and not source:GetAttribute("AltairSurface")and smallAsset and minimum>0 and minimum<48
@@ -4792,7 +6825,7 @@ local function bindSoftShadows(root)
   if records[key]then return end
   records[key]=true;count+=1;local localConnections={};local ancestorConnections={};local shadow
   if asset then
-   shadow=Instance.new("ImageLabel");shadow.Name="SoftShadow";shadow:SetAttribute("AltairFeatheredShadow",true);shadow:SetAttribute("AltairShadowFor",source.Name)
+   shadow=Instance.new("ImageLabel");shadow.Name="SoftShadow";shadow:SetAttribute("AltairFeatheredShadow",true);shadow:SetAttribute("AltairShadowFor",source.Name);shadow:SetAttribute("AltairCapsuleShadow",capsule);if source:GetAttribute("ReferenceScriptSearch")then shadow:SetAttribute("AltairThemeIgnore",true)end
    atlas(shadow,small);if handle and dragAsset then shadow.Image=dragAsset;shadow.SliceCenter=Rect.new(64,0,192,64)end
    shadow.AnchorPoint=Vector2.new(.5,.5);shadow.ImageColor3=color;shadow.ImageTransparency=1;shadow.Parent=root
   else
@@ -4836,7 +6869,7 @@ local function bindSoftShadows(root)
    if asset then
     local position=source.AbsolutePosition-root.AbsolutePosition;local size=source.AbsoluteSize
     local factor=1;local parent=source
-    while parent and parent~=root do for _,child in ipairs(parent:GetChildren())do if child:IsA("UIScale")then factor*=child.Scale end end;parent=parent.Parent end
+    while parent and parent~=root do local component=parent:FindFirstChildOfClass("UIScale");if component then factor*=component.Scale end;parent=parent.Parent end
     shadow.Position=UDim2.fromOffset(position.X+size.X/2,position.Y+size.Y/2);shadow.Size=UDim2.fromOffset(size.X+padding*2*factor,size.Y+padding*2*factor)
     if handle and dragAsset then local vertical=size.Y>size.X;shadow.Rotation=(vertical and 90 or 0)+source.Rotation;shadow.Size=UDim2.fromOffset((vertical and size.Y or size.X)+128*factor,64*factor);shadow.SliceScale=factor else shadow.SliceScale=padding/(small and 24 or 48)*factor end
     shadow.ZIndex=legacy and legacy.ZIndex or math.max(0,source.ZIndex-1);shadow.ImageTransparency=1-opacity
@@ -4870,7 +6903,7 @@ local function bindSoftShadows(root)
    for _,c in ipairs(localConnections)do c:Disconnect()end;for _,c in ipairs(ancestorConnections)do c:Disconnect()end
    if shadow.Parent then shadow:Destroy()end
   end)
-  connect(connections,root.Destroying,function()for _,c in ipairs(localConnections)do c:Disconnect()end;for _,c in ipairs(ancestorConnections)do c:Disconnect()end end)
+  connect(localConnections,root.Destroying,function()for _,c in ipairs(localConnections)do c:Disconnect()end;for _,c in ipairs(ancestorConnections)do c:Disconnect()end end)
   ancestors()
  end
  local primary={Character=true,Scripts=true,Playerlist=true,Settings=true,ScriptSearch=true,CustomScriptPrompt=true,GameDetection=true,ModeratorDetectionPrompt=true,Disconnected=true,SecurityPrompt=true,SharedPanelSurface=true}
@@ -4878,11 +6911,16 @@ local function bindSoftShadows(root)
   if not object.Parent or object:GetAttribute("AltairFeatheredShadow")then return end
   if (object:IsA("ImageLabel") or object:IsA("ImageButton")) and (object.Name=="Shadow" or object.Name=="Glow")then replaceLegacy(object)
   elseif object:IsA("GuiObject")then
-   if object.Parent==root and primary[object.Name]and not object:FindFirstChild("Shadow")then addSurface(object,.05,Color3.fromRGB(160,166,180),48)
+   if object.Parent==root and object:GetAttribute("ReferenceScriptSearch")then addSurface(object,.05,Color3.fromRGB(160,166,180),48,object:FindFirstChild("Backdrop"))
+   elseif object.Parent==root and primary[object.Name]and not object:FindFirstChild("Shadow")then addSurface(object,.05,Color3.fromRGB(160,166,180),48,object:FindFirstChild("Backdrop")or object)
    elseif object.Name=="Content"and object.Parent.Name=="Home"and not object:GetAttribute("AltairHomeRedesign")then addSurface(object,.05,Color3.fromRGB(160,166,180),48)
-   elseif object==root.Drag.Drag then addSurface(object,.5,object.BackgroundColor3,30)
-   elseif object.Name=="Surface" and object.Parent.Name=="TopCapsules"then addSurface(object,.04,Color3.fromRGB(160,166,180),48)
-   elseif object.Name:match("^Notification_%d+$") or (object.Parent.Name=="Pills" and object.Parent.Parent.Name=="Compact")then
+   elseif object==root.Drag.Drag then addSurface(object,.2,object.BackgroundColor3,30)
+   elseif object.Name=="Surface" and object.Parent.Name=="TopCapsules"then return
+   elseif object.Name~="CapsuleReturnSlot"and(object.Parent.Name=="CapsuleActivities"or(object.Parent.Name=="Pills"and object.Parent.Parent.Name=="Compact"))then
+    local restore=object:FindFirstChild("Restore")
+    local visual=object:FindFirstChild("Visual")or(restore and restore:FindFirstChild("Visual"))
+    addSurface(object,.055,Color3.fromRGB(100,106,121),24,(visual and visual:FindFirstChild("Back"))or object:FindFirstChild("Back"))
+   elseif object.Name:match("^Notification_%d+$")then
     local restore=object:FindFirstChild("Restore")
     local visual=object:FindFirstChild("Visual")or(restore and restore:FindFirstChild("Visual"))
     addSurface(object,.07,Color3.fromRGB(75,81,96),24,object:FindFirstChild("CardBackground")or(visual and visual:FindFirstChild("Back")))
@@ -4901,6 +6939,10 @@ end
 
 local function styleSettings(root)
  local panel=root.Settings;local types=panel.SettingTypes
+ local medium=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium)
+ local semibold=Font.new(medium.Family,Enum.FontWeight.SemiBold)
+ local function role(object,name)object:SetAttribute("AltairDesignRole",name);object:SetAttribute("AltairDesignManaged",true)end
+ panel:SetAttribute("AltairDesignTransparencyOffset",.03);role(panel,"surface")
  if not types:IsA("ScrollingFrame")then
   local scroller=Instance.new("ScrollingFrame");scroller.Name="SettingTypes";scroller.BackgroundTransparency=1;scroller.BorderSizePixel=0;scroller.ZIndex=types.ZIndex;scroller.Visible=types.Visible
   scroller.ScrollingDirection=Enum.ScrollingDirection.Y;scroller.AutomaticCanvasSize=Enum.AutomaticSize.Y;scroller.CanvasSize=UDim2.new();scroller.ScrollBarThickness=2;scroller.ScrollBarImageTransparency=.5
@@ -4911,34 +6953,258 @@ local function styleSettings(root)
 	types.Position=UDim2.fromOffset(14,68);types.Size=UDim2.new(0,158,1,-84);types.ClipsDescendants=true
 	local padding=Instance.new("UIPadding");padding.PaddingLeft=UDim.new(0,4);padding.PaddingTop=UDim.new(0,3);padding.PaddingBottom=UDim.new(0,8);padding.Parent=types
 	local grid=types.UIGridLayout
-	grid.CellSize=UDim2.new(1,-8,0,40);grid.CellPadding=UDim2.fromOffset(0,6)
+	grid.CellSize=UDim2.new(1,-8,0,37);grid.CellPadding=UDim2.fromOffset(0,6)
 	grid.HorizontalAlignment=Enum.HorizontalAlignment.Center
 	grid.FillDirectionMaxCells=1;grid.SortOrder=Enum.SortOrder.LayoutOrder
-	template.UICorner.CornerRadius=UDim.new(0,11)
-	template.Title.Position=UDim2.fromOffset(38,10);template.Title.Size=UDim2.new(1,-43,0,20)
+	template.UICorner.CornerRadius=UDim.new(0,9)
+	template.Title.Position=UDim2.fromOffset(38,8.5);template.Title.Size=UDim2.new(1,-43,0,20)
 	template.Title.TextXAlignment=Enum.TextXAlignment.Left;template.Title.TextYAlignment=Enum.TextYAlignment.Center
-	template.Title.TextSize=11;template.Title.FontFace=Font.new(Font.fromEnum(Enum.Font.Roboto).Family,Enum.FontWeight.Medium)
-	template.Shadow.Visible=false;template.UIStroke.Thickness=1;template.UIStroke.Transparency=.4
+	template.Title.TextSize=13;template.Title.FontFace=medium;template.Title.TextColor3=Design.Ink;role(template.Title,"ink")
+	template.Shadow.Visible=false;template.UIStroke.Thickness=.6;template.UIStroke.Transparency=.9;template.UIStroke.Color=Design.Edge;role(template,"control")
 	local description=Instance.new("TextLabel")
 	description.Name="Description";description.BackgroundTransparency=1;description.Position=UDim2.fromOffset(47,35)
-	description.Size=UDim2.new(1,-59,0,15);description.TextSize=10;description.FontFace=Font.fromEnum(Enum.Font.Roboto)
-	description.TextColor3=Color3.fromRGB(210,210,218);description.TextXAlignment=Enum.TextXAlignment.Left
+	description.Size=UDim2.new(1,-59,0,15);description.TextSize=10;description.FontFace=medium
+	description.TextColor3=Design.Muted;description.TextXAlignment=Enum.TextXAlignment.Left
 	description.TextTruncate=Enum.TextTruncate.AtEnd;description.Text="";description.ZIndex=template.Title.ZIndex;description.Parent=template
- local icon=Instance.new("ImageLabel");icon.Name="CategoryIcon";icon.BackgroundTransparency=1;icon.Position=UDim2.fromOffset(11,12);icon.Size=UDim2.fromOffset(16,16);icon.ImageColor3=Color3.fromRGB(235,239,250);icon.ZIndex=template.Title.ZIndex;icon.Parent=template
+ local icon=Instance.new("ImageLabel");icon.Name="CategoryIcon";icon.BackgroundTransparency=1;icon.Position=UDim2.fromOffset(11,9.5);icon.Size=UDim2.fromOffset(18,18);icon.ImageColor3=Design.Ink;icon.ZIndex=template.Title.ZIndex;icon.Parent=template;role(icon,"ink")
  local header=icon:Clone();header.Name="HeaderIcon";header.Position=UDim2.fromOffset(18,15);header.Parent=panel;applyIcon(header,"settings-2")
- panel.Title.AnchorPoint=Vector2.zero;panel.Title.TextXAlignment=Enum.TextXAlignment.Left;panel.Subtitle.Visible=false;panel.Title.TextSize=16;panel.Title.Size=UDim2.fromOffset(122,22);panel.Subtitle.TextSize=11;panel.Subtitle.Size=UDim2.fromOffset(122,18);panel.ClipsDescendants=true
+ panel.Title.AnchorPoint=Vector2.zero;panel.Title.TextXAlignment=Enum.TextXAlignment.Left;panel.Subtitle.Visible=false;panel.Title.TextSize=16;panel.Title.FontFace=semibold;panel.Title.Size=UDim2.fromOffset(122,22);panel.Subtitle.TextSize=11;panel.Subtitle.FontFace=medium;panel.Subtitle.Size=UDim2.fromOffset(122,18);panel.ClipsDescendants=true;role(panel.Title,"ink")
  description.Visible=false
  panel.SettingLists.ClipsDescendants=true
  local pages=panel.SettingLists.UIPageLayout;pages.Animated=true;pages.TweenTime=.24;pages.EasingStyle=Enum.EasingStyle.Quint;pages.EasingDirection=Enum.EasingDirection.Out;pages.Padding=UDim.new(0,14);pages.ScrollWheelInputEnabled=false;pages.TouchInputEnabled=false
  panel.SettingLists.Position=UDim2.fromOffset(184,76);panel.SettingLists.Size=UDim2.new(1,-198,1,-92)
- local divider=Instance.new("Frame");divider.Name="SidebarDivider";divider.Position=UDim2.fromOffset(178,62);divider.Size=UDim2.new(0,1,1,-78);divider.BorderSizePixel=0;divider.BackgroundColor3=Color3.fromRGB(100,110,130);divider.BackgroundTransparency=.65;divider.ZIndex=panel.Title.ZIndex;divider.Parent=panel
- local title=panel.Title:Clone();title.Name="ContentTitle";title.AnchorPoint=Vector2.zero;title.TextXAlignment=Enum.TextXAlignment.Left;title.Position=UDim2.fromOffset(198,20);title.Size=UDim2.new(1,-220,0,24);title.Text="General";title.Parent=panel
- local subtitle=panel.Subtitle:Clone();subtitle.Name="ContentSubtitle";subtitle.AnchorPoint=Vector2.zero;subtitle.Visible=true;subtitle.TextXAlignment=Enum.TextXAlignment.Left;subtitle.Position=UDim2.fromOffset(198,46);subtitle.Size=UDim2.new(1,-220,0,18);subtitle.TextTruncate=Enum.TextTruncate.AtEnd;subtitle.Parent=panel
-
-
+ local divider=Instance.new("Frame");divider.Name="SidebarDivider";divider.Position=UDim2.fromOffset(179,22);divider.Size=UDim2.new(0,1,1,-44);divider.BorderSizePixel=0;divider.BackgroundColor3=Design.Edge;divider.BackgroundTransparency=.9;divider.ZIndex=panel.Title.ZIndex;divider.Parent=panel;role(divider,"divider")
+ local title=panel.Title:Clone();title.Name="ContentTitle";title.AnchorPoint=Vector2.zero;title.TextXAlignment=Enum.TextXAlignment.Left;title.Position=UDim2.fromOffset(200,17);title.Size=UDim2.new(1,-224,0,27);title.TextSize=22;title.Text="General";title.Parent=panel
+ local subtitle=panel.Subtitle:Clone();subtitle.Name="ContentSubtitle";subtitle.AnchorPoint=Vector2.zero;subtitle.Visible=true;subtitle.TextXAlignment=Enum.TextXAlignment.Left;subtitle.Position=UDim2.fromOffset(200,47);subtitle.Size=UDim2.new(1,-224,0,17);subtitle.TextColor3=Design.Muted;subtitle.TextTruncate=Enum.TextTruncate.AtEnd;subtitle.Parent=panel;role(subtitle,"muted")
+ local line=Instance.new("Frame");line.Name="ContentDivider";line.BorderSizePixel=0;line.Position=UDim2.fromOffset(200,69);line.Size=UDim2.new(1,-218,0,1);line.BackgroundColor3=Design.Edge;line.BackgroundTransparency=.9;line.ZIndex=panel.Title.ZIndex;line.Parent=panel;role(line,"divider")
+ for _,row in ipairs(panel.SettingLists.Template:GetChildren())do if row:IsA("Frame")and row.Name:find("Template",1,true)then
+  row.BackgroundColor3=Design.Raised;row.BackgroundTransparency=.12;role(row,"inset")
+  local rounding=row:FindFirstChildOfClass("UICorner");if rounding then rounding.CornerRadius=UDim.new(0,12)end
+  local outline=row:FindFirstChildOfClass("UIStroke");if outline then
+   outline.Color=Design.Edge;outline.Thickness=.6;outline.Transparency=.9
+   -- These are freshly authored templates. Rebase inherited clone metadata
+   -- before Theme captures it, so returning from a style restores this rim.
+   outline:SetAttribute("AltairThemeDefault_Color",Design.Edge)
+   outline:SetAttribute("AltairTheme_Color",Design.Edge)
+   outline:SetAttribute("AltairStyleBase_Color",Design.Edge)
+  end
+  for _,name in ipairs({"Title","Description","LicenseDisplay","Note"})do local text=row:FindFirstChild(name);if text and text:IsA("TextLabel")then text.FontFace=name=="Title"and semibold or medium;text.TextSize=name=="Title"and 13 or name=="Description"and 11 or 9;text.TextColor3=name=="Title"and Design.Ink or Design.Muted;role(text,name=="Title"and"ink"or"muted")end end
+ end end
 end
 
--- Capsule placement owns presentation only; media and clock state stay alive.
+local function bindSettingsLayout(context)
+ local service={alive=true,active=false,mode="Altair"}
+ function service:IsLiteral()return false end
+ function service:IsOverview()return false end
+ function service:GetRestSize()return UDim2.fromOffset(740,430)end
+ function service:Open()return false end
+ function service:Back()return false end
+ function service:HoverCategory()return false end
+ function service:Search()return false end
+ local defaultPositions={Title=UDim2.fromOffset(50,12),Subtitle=UDim2.fromOffset(50,35),ContentTitle=UDim2.fromOffset(200,17),ContentSubtitle=UDim2.fromOffset(200,47),SettingLists=UDim2.fromOffset(184,76)}
+ function service:GetPosition(name)return defaultPositions[name]end
+ function service:SelectCategory()return false end
+ function service:Apply(animated)
+  if not self.alive then return end
+  if context.Search and context.Search.Layout then context.Search:Layout(animated)end
+  if context.OnRestSize then context.OnRestSize(self:GetRestSize())end
+ end
+ function service:Destroy()self.alive=false end
+ service:Apply(false);return service
+end
+
+-- One dialog vocabulary, with the original action/data nodes kept intact.
+-- Runtime owns only the group opacity and pose, never individual text alphas.
+local dialogFeedbackBound=setmetatable({},{__mode="k"})
+local function dialogFeedback(panel)
+ local motion=motionService()
+ local function bind(button)
+  if not button:IsA("GuiButton")or dialogFeedbackBound[button]then return end
+  dialogFeedbackBound[button]=true
+  local scale=button:FindFirstChild("DialogFeedback")or Instance.new("UIScale");scale.Name="DialogFeedback";scale.Parent=button
+  local rest=button.BackgroundTransparency;local rim=button:FindFirstChildOfClass("UIStroke")
+  local imageRest=button:IsA("ImageButton")and button.ImageTransparency
+  local function release()
+   if not button.Parent then return end
+   motion:Create(button,TweenInfo.new(.2,Enum.EasingStyle.Quart),{BackgroundTransparency=rest}):Play()
+   if rim then motion:Create(rim,TweenInfo.new(.2),{Transparency=.86}):Play()end
+   if imageRest then motion:Create(button,TweenInfo.new(.2,Enum.EasingStyle.Quart),{ImageTransparency=imageRest,Rotation=0}):Play()end
+   motion:Create(scale,TweenInfo.new(.23,Enum.EasingStyle.Back),{Scale=1}):Play()
+  end
+  button.MouseEnter:Connect(function()
+   motion:Create(button,TweenInfo.new(.16,Enum.EasingStyle.Quart),{BackgroundTransparency=rest<.99 and math.max(0,rest-.16)or rest}):Play()
+   if rim then motion:Create(rim,TweenInfo.new(.16),{Transparency=.65}):Play()end
+   if imageRest then motion:Create(button,TweenInfo.new(.16),{ImageTransparency=0,Rotation=button.Name=="Close"and 90 or 0}):Play()end
+  end)
+  button.MouseLeave:Connect(release)
+  button.MouseButton1Down:Connect(function()motion:Create(scale,TweenInfo.new(.09,Enum.EasingStyle.Quad),{Scale=.97}):Play()end)
+  button.MouseButton1Up:Connect(function()motion:Create(scale,TweenInfo.new(.23,Enum.EasingStyle.Back),{Scale=1}):Play()end)
+ end
+ bind(panel);for _,object in ipairs(panel:GetDescendants())do bind(object)end
+end
+local function dialogAccent(panel,color)
+ if typeof(color)~="Color3"then return end
+ panel:SetAttribute("AltairDialogAccent",color)
+ local badge=panel:FindFirstChild("HeaderBadge");local icon=badge and badge:FindFirstChild("Icon")
+ if icon then motionService():Create(icon,TweenInfo.new(.18,Enum.EasingStyle.Quart),{ImageColor3=color}):Play()end
+end
+local function styleDialogs(root)
+ local motion=motionService()
+ local ink=Design.Ink;local muted=Design.Muted
+ local graphite=Design.Surface;local raised=Design.Raised;local well=Design.Well
+ local medium=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium)
+ local semibold=Font.new(medium.Family,Enum.FontWeight.SemiBold)
+ local function make(class,name,parent,props)
+  local object=Instance.new(class);object.Name=name
+  if object:IsA("GuiObject")then object.BackgroundTransparency=1;object.BorderSizePixel=0;object.ZIndex=parent.ZIndex+1 end
+  for key,value in pairs(props or{})do object[key]=value end;object.Parent=parent;return object
+ end
+ local function rect(object,x,y,w,h)object.AnchorPoint=Vector2.zero;object.Position=UDim2.fromOffset(x,y);object.Size=UDim2.fromOffset(w,h)end
+ local function rounded(object,radius)local c=object:FindFirstChildOfClass("UICorner")or Instance.new("UICorner");c.CornerRadius=UDim.new(0,radius);c.Parent=object end
+ local function role(object,name)object:SetAttribute("AltairDesignRole",name);object:SetAttribute("AltairDesignManaged",true)end
+ local function label(object,size,bold,color)
+  object.FontFace=bold and semibold or medium;object.TextSize=size;object.TextColor3=color or ink;object.TextTransparency=0;object.TextStrokeTransparency=1
+  object.BackgroundTransparency=1;object.TextXAlignment=Enum.TextXAlignment.Left;object.TextYAlignment=Enum.TextYAlignment.Center;object.TextTruncate=Enum.TextTruncate.AtEnd
+  if object.Parent and object.Parent:IsA("GuiObject")then object.ZIndex=math.max(object.ZIndex,object.Parent.ZIndex+1)end
+  role(object,color==muted and "muted"or"ink")
+ end
+ local function plate(parent,name,x,y,w,h)
+  local object=make("Frame",name,parent,{BackgroundColor3=well,BackgroundTransparency=.5});rect(object,x,y,w,h);rounded(object,12);role(object,"inset")
+  local outline=make("UIStroke","Outline",object,{Color=Design.Edge,Thickness=.6,Transparency=.9,ApplyStrokeMode=Enum.ApplyStrokeMode.Border});outline.BorderStrokePosition=Enum.BorderStrokePosition.Inner
+  return object
+ end
+ local function control(object,primary)
+  object.BorderSizePixel=0;object.BackgroundColor3=raised;object.BackgroundTransparency=primary and .08 or .28
+  rounded(object,9)
+  for _,child in ipairs(object:GetChildren())do if child:IsA("UIGradient")then child:Destroy()end end
+  local rim=object:FindFirstChildOfClass("UIStroke")or make("UIStroke","UIStroke",object);rim.Color=Design.Edge;rim.Thickness=.6;rim.Transparency=.86;rim.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;rim.BorderStrokePosition=Enum.BorderStrokePosition.Inner
+  if object:IsA("TextButton")then local alpha=object.BackgroundTransparency;label(object,13,true);object.TextXAlignment=Enum.TextXAlignment.Center;object.BackgroundTransparency=alpha end
+  role(object,"control");object:SetAttribute("AltairDesignRestAlpha",object.BackgroundTransparency)
+  if object:IsA("GuiButton")then
+   object.AutoButtonColor=false
+   dialogFeedback(object)
+  end
+ end
+ local function shell(name,width,height,iconName,status,accent)
+  local old=root[name];local panel=Instance.new("CanvasGroup")
+  for _,key in ipairs({"Name","AnchorPoint","Position","ZIndex","Visible","Active","Rotation"})do panel[key]=old[key]end
+  for key,value in pairs(old:GetAttributes())do panel:SetAttribute(key,value)end
+  if name=="SecurityPrompt"or name=="Disconnected"or name=="ModeratorDetectionPrompt"then
+   panel.Position=UDim2.new(panel.Position.X.Scale,panel.Position.X.Offset,.43,0);panel:SetAttribute("AltairDialogDensity",.84)
+  elseif name=="CustomScriptPrompt"then panel:SetAttribute("AltairDialogDensity",.92)end
+  panel.Size=UDim2.fromOffset(width,height);panel.BackgroundColor3=graphite;panel.BackgroundTransparency=1;panel.BorderSizePixel=0;panel.GroupTransparency=0;panel.ClipsDescendants=false
+  for _,child in ipairs(old:GetChildren())do child.Parent=panel end;old:Destroy();panel.Parent=root
+  panel:SetAttribute("AltairDialogManaged",true);panel:SetAttribute("AltairDialogSize",panel.Size);panel:SetAttribute("AltairDialogPosition",panel.Position);panel:SetAttribute("AltairDialogOpacity",.07);panel:SetAttribute("AltairDialogAccent",accent);panel:SetAttribute("AltairDesignTransparencyOffset",.02);role(panel,"surface")
+  rounded(panel,18)
+  local gradient=panel:FindFirstChildOfClass("UIGradient")or Instance.new("UIGradient");gradient.Name="UIGradient";gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(224,224,224));gradient.Transparency=NumberSequence.new(0);gradient.Rotation=110;gradient.Offset=Vector2.zero;gradient.Parent=panel
+  local outline=panel:FindFirstChildOfClass("UIStroke")or make("UIStroke","UIStroke",panel);outline.Color=Design.Edge;outline.Thickness=.6;outline.Transparency=.86;outline.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;outline.BorderStrokePosition=Enum.BorderStrokePosition.Inner
+  local backdrop=make("Frame","Backdrop",panel,{Size=UDim2.fromScale(1,1),BackgroundColor3=graphite,BackgroundTransparency=.07,ZIndex=panel.ZIndex});rounded(backdrop,18);role(backdrop,"surface");backdrop:SetAttribute("AltairSurface",true);backdrop:SetAttribute("AltairDesignTransparencyOffset",.02)
+  gradient.Parent=backdrop;outline.Parent=backdrop;panel:SetAttribute("AltairSurface",nil)
+  for _,legacy in ipairs({"CircleGradient","TitleGradient","Shadow","Stroke"})do local object=panel:FindFirstChild(legacy);if object then object:Destroy()end end
+  local badge=plate(panel,"HeaderBadge",24,22,38,38)
+  local icon=make("ImageLabel","Icon",badge,{Position=UDim2.fromOffset(9,9),Size=UDim2.fromOffset(20,20),ImageColor3=accent});applyIcon(icon,iconName);role(icon,"accent")
+  local eyebrow=make("TextLabel","Status",panel,{Text=status,Position=UDim2.fromOffset(76,9),Size=UDim2.new(1,-126,0,13)});label(eyebrow,9,true,muted)
+  local title=panel:FindFirstChild("Title");if title then rect(title,76,24,width-126,28);label(title,20,true)end
+  local divider=make("Frame","HeaderDivider",panel,{Position=UDim2.fromOffset(24,72),Size=UDim2.new(1,-48,0,1),BackgroundColor3=Design.Edge,BackgroundTransparency=.9});role(divider,"divider")
+  panel:GetAttributeChangedSignal("AltairDialogAccent"):Connect(function()local color=panel:GetAttribute("AltairDialogAccent");if typeof(color)=="Color3"then motion:Create(icon,TweenInfo.new(.18),{ImageColor3=color}):Play()end end)
+  return panel
+ end
+ local function closeButton(button,width)
+  rect(button,width-45,21,24,24);button.AnchorPoint=Vector2.zero;button.BackgroundTransparency=1;button.ImageTransparency=.3;button.ImageColor3=ink;button.AutoButtonColor=false;applyIcon(button,"x");role(button,"ink")
+  dialogFeedback(button)
+ end
+ do
+  local panel=shell("SecurityPrompt",520,270,"shield-check","SECURITY REVIEW",Color3.fromRGB(231,166,80))
+  rect(panel.Subtitle,24,83,472,34);label(panel.Subtitle,13,false,muted);panel.Subtitle.TextWrapped=true;panel.Subtitle.TextTruncate=Enum.TextTruncate.None
+  plate(panel,"LinkWell",24,126,472,58)
+  rect(panel.FoundLink,38,138,444,34);label(panel.FoundLink,12,false);panel.FoundLink.TextWrapped=true
+  rect(panel.Buttons,24,206,472,40);panel.Buttons.BackgroundTransparency=1
+  local layout=panel.Buttons:FindFirstChildOfClass("UIListLayout");layout.FillDirection=Enum.FillDirection.Horizontal;layout.Padding=UDim.new(0,8);layout.HorizontalAlignment=Enum.HorizontalAlignment.Left;layout.VerticalAlignment=Enum.VerticalAlignment.Center
+  -- UDim offsets truncate to integers. Round the inset outward so the final
+  -- action cannot extend beyond the row after applying the user's UI scale.
+  panel.Buttons.Template.Size=UDim2.new(1/3,-6,1,0);control(panel.Buttons.Template)
+ end
+ do
+  local panel=shell("Disconnected",470,222,"wifi-off","SESSION RECOVERY",Color3.fromRGB(231,166,80))
+  rect(panel.Content,24,84,422,54);label(panel.Content,13,false,muted);panel.Content.TextWrapped=true;panel.Content.TextTruncate=Enum.TextTruncate.None;panel.Content.TextYAlignment=Enum.TextYAlignment.Top
+  rect(panel.Action,314,158,132,40);control(panel.Action,true)
+  local dismiss=panel:FindFirstChild("Dismiss")or make("TextButton","Dismiss",panel,{Text="Dismiss"});rect(dismiss,192,158,110,40);control(dismiss)
+ end
+ do
+  local panel=shell("CustomScriptPrompt",340,308,"file-plus-2","YOUR LIBRARY",Color3.fromRGB(100,184,164));panel.Title.Text="Import a script"
+  panel.Backdrop.BackgroundTransparency=.02;panel.Backdrop:SetAttribute("AltairDesignTransparencyOffset",-.03);panel:SetAttribute("AltairDesignTransparencyOffset",-.03);panel:SetAttribute("AltairDialogOpacity",.02)
+  rect(panel.HeaderBadge,18,15,30,30);rect(panel.HeaderBadge.Icon,7,7,16,16)
+  rect(panel.Status,60,11,226,12);rect(panel.Title,60,25,226,24);panel.Title.TextSize=18
+  panel.HeaderDivider.Position=UDim2.fromOffset(18,58);panel.HeaderDivider.Size=UDim2.new(1,-36,0,1)
+  closeButton(panel.Close,340)
+  rect(panel.Subtitle,18,68,304,27);label(panel.Subtitle,12,false,muted);panel.Subtitle.Text="Add a local file or raw script link to your library.";panel.Subtitle.TextWrapped=true
+  for _,spec in ipairs({{"IDBox","IDTextBox","EXPERIENCE ID",104,40},{"DescBox","DescTextBox","DESCRIPTION",200,52},{"ScriptBox","ScriptTextBox","SOURCE URL OR LUA FILE",152,40}})do
+   local field=panel[spec[1]];field.Visible=true;rect(field,18,spec[4],304,spec[5]);field.BackgroundColor3=well;field.BackgroundTransparency=.24;rounded(field,9);role(field,"inset")
+   local rim=field:FindFirstChildOfClass("UIStroke")or make("UIStroke","Outline",field);rim.Color=Design.Edge;rim.Thickness=.6;rim.Transparency=.9
+   local heading=make("TextLabel","FieldLabel",field,{Text=spec[3],Position=UDim2.fromOffset(12,5),Size=UDim2.new(1,-24,0,12)});label(heading,8,true,muted)
+   local box=field[spec[2]];box.Visible=true;rect(box,12,20,280,spec[5]-23);label(box,12,false);box.ClearTextOnFocus=false;box.TextYAlignment=Enum.TextYAlignment.Top;box.TextTruncate=Enum.TextTruncate.None;box.PlaceholderColor3=muted
+   if spec[1]=="DescBox"then box.MultiLine=true;box.TextWrapped=true end
+   box.Focused:Connect(function()motion:Create(rim,TweenInfo.new(.16),{Transparency=.48}):Play()end);box.FocusLost:Connect(function()motion:Create(rim,TweenInfo.new(.2),{Transparency=.9}):Play()end)
+  end
+  rect(panel.Submit,216,266,106,28);control(panel.Submit,true);panel.Submit.Text="Save script"
+  local foot=make("TextLabel","FooterNote",panel,{Text="Stored locally in your Altair library",Position=UDim2.fromOffset(18,266),Size=UDim2.fromOffset(184,28)});label(foot,10,false,muted);foot.TextWrapped=true
+ end
+ do
+  local panel=shell("ModeratorDetectionPrompt",470,292,"shield-alert","SERVER NOTICE",Color3.fromRGB(230,153,99));closeButton(panel.Close,470)
+  rect(panel.Subtitle,24,82,422,25);label(panel.Subtitle,13,false,muted)
+  plate(panel,"PlayerWell",24,116,422,84)
+  rect(panel.Avatar,40,131,54,54);panel.Avatar.ImageTransparency=0;panel.Avatar.BackgroundTransparency=.7;rounded(panel.Avatar,16)
+  rect(panel.DisplayName,110,130,310,26);label(panel.DisplayName,18,true)
+  rect(panel.Rank,110,161,310,18);label(panel.Rank,12,false,muted)
+  rect(panel.Serverhop,24,226,250,40);control(panel.Serverhop,true)
+  rect(panel.ServersAvailableFade,24,204,422,16);label(panel.ServersAvailableFade,10,false,muted)
+  rect(panel.Leave,286,226,160,40);panel.Leave.BackgroundTransparency=1
+  rect(panel.Leave.Leave,0,0,160,40);control(panel.Leave.Leave);panel.Leave.Leave.Text="Leave game"
+ end
+ do
+  local panel=shell("GameDetection",460,164,"sparkles","EXPERIENCE SCRIPT",Color3.fromRGB(124,186,203))
+  panel.Position=UDim2.new(panel.Position.X.Scale,panel.Position.X.Offset,math.min(panel.Position.Y.Scale,.19),panel.Position.Y.Offset)
+  panel:SetAttribute("AltairDialogPosition",panel.Position)
+  panel.HeaderBadge.Visible=false;panel.HeaderDivider.Visible=false;panel.Status.Visible=false
+  panel:SetAttribute("AltairArtworkForeground",true)
+  local viewport=panel:FindFirstChild("ArtworkViewport")
+  if viewport then
+   rect(viewport,0,0,460,164);viewport.Size=UDim2.fromScale(1,1);rounded(viewport,20);viewport.ClipsDescendants=true;viewport.BackgroundTransparency=1
+   viewport:SetAttribute("AltairThemeIgnore",true)
+   for _,image in ipairs(viewport:GetChildren())do if image:IsA("ImageLabel")then
+    image.AnchorPoint=Vector2.zero;image.Position=UDim2.fromScale(0,0);image.Size=UDim2.fromScale(1,1);image.BackgroundTransparency=1;image.ImageColor3=Color3.new(1,1,1);image.ScaleType=Enum.ScaleType.Crop;image:SetAttribute("AltairThemeIgnore",true)
+   end end
+  end
+  local shade=panel:FindFirstChild("ArtworkShade")or make("Frame","ArtworkShade",panel,{})
+  shade.AnchorPoint=Vector2.zero;shade.Position=UDim2.new();shade.Size=UDim2.fromScale(1,1);shade.BackgroundColor3=Color3.new(0,0,0);shade.BackgroundTransparency=.2;shade.ZIndex=panel.ZIndex+1;rounded(shade,20);shade:SetAttribute("AltairThemeIgnore",true)
+  local shadeRamp=shade:FindFirstChildOfClass("UIGradient")or make("UIGradient","UIGradient",shade,{})
+  shadeRamp.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,.05),NumberSequenceKeypoint.new(1,.6)});shadeRamp.Rotation=0
+  local layer=panel.Layer;layer.Position=UDim2.new();layer.Size=UDim2.fromScale(1,1);layer.BackgroundTransparency=1
+  rect(panel.ScriptTitle,24,27,390,25);label(panel.ScriptTitle,17,true,Color3.new(1,1,1))
+  rect(layer.ScriptSubtitle,24,59,348,48);label(layer.ScriptSubtitle,12,false,Color3.fromRGB(220,223,230));layer.ScriptSubtitle.TextWrapped=true;layer.ScriptSubtitle.TextTruncate=Enum.TextTruncate.None;layer.ScriptSubtitle.TextYAlignment=Enum.TextYAlignment.Top
+  local run=layer.Run;control(run,true);run.AnchorPoint=Vector2.new(1,1);run.Position=UDim2.new(1,-18,1,-16);run.Size=UDim2.fromOffset(96,34);run.Text="Run";run.BackgroundColor3=Color3.fromRGB(45,68,110);run.BackgroundTransparency=.08
+  closeButton(layer.Close,460)
+  local warning=panel.Warning;warning.Visible=false;warning.BackgroundTransparency=1
+  for _,child in ipairs(warning:GetChildren())do if child:IsA("GuiObject")then child.Visible=false end end
+ end
+ -- Reused containers retain their legacy ZIndex. In Sibling mode a low
+ -- container places its entire subtree behind the new Backdrop, regardless
+ -- of a text leaf's own ZIndex. Give every content branch its own clear layer.
+ for _,name in ipairs({"SecurityPrompt","Disconnected","CustomScriptPrompt","ModeratorDetectionPrompt","GameDetection"})do
+  local panel=root[name];panel.Backdrop.ZIndex=panel.ZIndex
+  local function layer(object,depth)
+   if object:IsA("GuiObject")then object.ZIndex=panel.ZIndex+depth;depth+=1 end
+   for _,child in ipairs(object:GetChildren())do layer(child,depth)end
+  end
+  for _,child in ipairs(panel:GetChildren())do if child~=panel.Backdrop then layer(child,1)end end
+  if name=="GameDetection"then
+   local viewport=panel:FindFirstChild("ArtworkViewport");if viewport then viewport.ZIndex=panel.ZIndex+1 end
+   local shade=panel:FindFirstChild("ArtworkShade");if shade then shade.ZIndex=panel.ZIndex+2 end
+   layer(panel.ScriptTitle,3);layer(panel.Layer,3)
+  end
+ end
+end
+
 local function capsulePlacement(context,controller,root,host,scale,compact,surface)
  local input=game:GetService("UserInputService")
  local playerGui=game:GetService("Players").LocalPlayer:FindFirstChildOfClass("PlayerGui")
@@ -4963,12 +7229,11 @@ local function capsulePlacement(context,controller,root,host,scale,compact,surfa
   if object:IsA("TextLabel")or object:IsA("TextButton")or object:IsA("TextBox")then visual=visual or(object.Text~=""and object.TextTransparency<.94)end
   if not visual then return end
   local b=box(object);if not b then return end
-  if (b[3]-b[1])*(b[4]-b[2])>root.AbsoluteSize.X*root.AbsoluteSize.Y*.45 then return end
-  local parent=object.Parent
+  local parent=object
   while parent and parent~=playerGui do
    if parent:IsA("GuiObject")then
     if not parent.Visible or parent:IsA("CanvasGroup")and parent.GroupTransparency>.94 then return end
-    if parent.ClipsDescendants then
+    if parent~=object and parent.ClipsDescendants then
      local clip=box(parent);if not clip then return end
      b={math.max(b[1],clip[1]),math.max(b[2],clip[2]),math.min(b[3],clip[3]),math.min(b[4],clip[4])}
     end
@@ -4976,6 +7241,7 @@ local function capsulePlacement(context,controller,root,host,scale,compact,surfa
    parent=parent.Parent
   end
   if b[3]-b[1]<3 or b[4]-b[2]<3 then return end
+  if (b[3]-b[1])*(b[4]-b[2])>root.AbsoluteSize.X*root.AbsoluteSize.Y*.45 then return end
   return b
  end
  local function probe(rect,now)
@@ -5041,7 +7307,7 @@ local function capsulePlacement(context,controller,root,host,scale,compact,surfa
   local own={}
   for _,object in ipairs(obstacles)do local b=box(object);if b then table.insert(own,b)end end
   local desired={centerX-width/2,top,centerX+width/2,top+height}
-  local boxes=table.clone(own)
+  local boxes=mode=="Dynamic"and table.clone(own)or{}
   if mode=="Dynamic"and controller:IsEnabled()then
    probe(self.queryRect or desired,now)
    for i=#self.boxes,1,-1 do
@@ -5062,21 +7328,27 @@ local function capsulePlacement(context,controller,root,host,scale,compact,surfa
   local hidden=false
   if docked then
    local mouse=input:GetMouseLocation()
-   local held=(compact.Visible and box(compact))or(controller.view and box(surface))
+   local visual=controller:GetVisualObject()
+   local held=visual and box(visual)
+   local inset=root.IgnoreGuiInset and Vector2.zero or game:GetService("GuiService"):GetGuiInset()
+   mouse-=inset
    local active=controller.view~=nil or controller.picker or controller.dragging or self.hovering and self.hoverReady
    if self.target>0 and host.Visible and held and mouse.X>=held[1]-18 and mouse.X<=held[3]+18
     and mouse.Y>=held[2]-18 and mouse.Y<=held[4]+18 then active=true end
    if active and self.target>0 then self:Reveal()end
    hidden=not active and now>(controller.revealUntil or 0)or drag.dragging
    local center=drag.center
+   -- The compact row owns its anchor. Opening a view must not move that anchor.
+   local anchorWidth=(controller.compactWidth or 250)*factor
+   local anchorHeight=(controller.compactHeight or 32)*factor
    if hidden then controller.targetX=center.X;controller.targetY=center.Y
    elseif drag.dock=="left"or drag.dock=="right"then
     local side=drag.dock=="left"and 1 or -1
-    controller.targetX=math.clamp(center.X+side*(drag.size.X/2+12+width/2),left+width/2,math.max(left+width/2,right-width/2))
-    controller.targetY=math.clamp(center.Y-height/2,12,math.max(12,bottom-height))
+    controller.targetX=math.clamp(center.X+side*(drag.size.X/2+12+anchorWidth/2),left+anchorWidth/2,math.max(left+anchorWidth/2,right-anchorWidth/2))
+    controller.targetY=math.clamp(center.Y-anchorHeight/2,12,math.max(12,bottom-anchorHeight))
    else
-    controller.targetX=math.clamp(center.X,left+width/2,math.max(left+width/2,right-width/2))
-    controller.targetY=math.clamp(center.Y<viewport.Y/2 and center.Y+drag.size.Y/2+12 or center.Y-drag.size.Y/2-height-12,12,math.max(12,bottom-height))
+    controller.targetX=math.clamp(center.X,left+anchorWidth/2,math.max(left+anchorWidth/2,right-anchorWidth/2))
+    controller.targetY=math.clamp(center.Y<viewport.Y/2 and center.Y+drag.size.Y/2+12 or center.Y-drag.size.Y/2-anchorHeight-12,12,math.max(12,bottom-anchorHeight))
    end
    self.drag=drag
   else
@@ -5091,6 +7363,13 @@ local function capsulePlacement(context,controller,root,host,scale,compact,surfa
   if controller:IsEnabled()then notify(status,now)end
   controller.placementStatus=status;controller.presentationTarget=self.target
  end
+ -- Offset components are integer-valued in native UDim. Preserve the live
+ -- fractional pose so a trailing spring can converge rather than losing its
+ -- subpixel movement on every frame.
+ local function placeHost(point)
+  local viewport=root.AbsoluteSize
+  host.Position=UDim2.fromScale(point.X/math.max(1,viewport.X),point.Y/math.max(1,viewport.Y))
+ end
  function state:Step(dt,factor)
   local presentation=controller.dropPresentation
   if presentation and controller.dropProgress==presentation.progress then
@@ -5098,12 +7377,12 @@ local function capsulePlacement(context,controller,root,host,scale,compact,surfa
    local amount=presentation.amount+((presentation.merging and 0 or 1)-presentation.amount)*t
    self.amount=amount;self.velocity=0
    scale.Scale=factor*math.max(.025,amount)
-   if not controller.view then compact.GroupTransparency=0 end
+   if not controller.presentation then compact.GroupTransparency=0 end
    local start,control,destination=presentation.start,presentation.control,presentation.destination
    local position=start*(1-t)^2+control*(2*(1-t)*t)+destination*t*t
-   host.Position=UDim2.fromOffset(position.X,position.Y);host.Visible=amount>.001
+   placeHost(position);host.Visible=amount>.001
    if presentation.merging and not presentation.impacted then
-    local object=surface.Visible and surface or compact
+    local object=controller:GetVisualObject()
     local visualCenter=position+Vector2.new(0,object.AbsoluteSize.Y/2)
     if (visualCenter-destination).Magnitude<=8 or t>=.96 then presentation.impacted=true;controller:PulseDrag()end
    end
@@ -5116,14 +7395,14 @@ local function capsulePlacement(context,controller,root,host,scale,compact,surfa
   self.amount=self.target+(delta+j*step)*decay;self.velocity=(self.velocity-omega*j*step)*decay
   if math.abs(self.amount-self.target)<.001 then self.amount=self.target;self.velocity=0 end
   scale.Scale=factor*math.max(.025,self.amount)
-  if self.amount<.999 or previous<.999 then
-   compact.GroupTransparency=1-math.clamp(self.amount,0,1)
-  end
+  -- Drop/reveal is a physical scale transition, not an independent fade layer.
+  if not controller.presentation then compact.GroupTransparency=0 end
   host.Visible=self.amount>0
   local current=host.Position;local destination=Vector2.new(controller.targetX or root.AbsoluteSize.X/2,controller.targetY or 12)
   local origin=Vector2.new(current.X.Scale*root.AbsoluteSize.X+current.X.Offset,current.Y.Scale*root.AbsoluteSize.Y+current.Y.Offset)
   local nextPosition=origin:Lerp(destination,1-math.exp(-20*step))
-  host.Position=UDim2.fromOffset(nextPosition.X,nextPosition.Y)
+  if(nextPosition-destination).Magnitude<.01 then nextPosition=destination end
+  placeHost(nextPosition)
  end
  return state
 end
@@ -5134,9 +7413,9 @@ local function bindCapsules(context)
 	local runService, input = game:GetService("RunService"), game:GetService("UserInputService")
 	local tweenService, http = motionService(function() return root:GetAttribute("AltairReduceMotion")==true end), game:GetService("HttpService")
 	local lighting = game:GetService("Lighting")
-	local white, gray, amber, green = Color3.fromRGB(249,249,250), Color3.fromRGB(145,145,149), Color3.fromRGB(255,177,29), Color3.fromRGB(55,224,92)
-	local normal = Font.fromEnum(Enum.Font.Roboto)
-	local medium = Font.new(normal.Family, Enum.FontWeight.Bold)
+	local white, gray, amber, green = Design.Ink, Design.Muted, Color3.fromRGB(255,177,29), Color3.fromRGB(55,224,92)
+	local normal = Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium)
+	local medium = Font.new(normal.Family, Enum.FontWeight.SemiBold)
 	local controller = {alive=true, clock=Clock and Clock.new() or nil, view=nil, media={connected=false,title="Spotify",artist=""},
 		mediaAt=os.clock(), nextPoll=0, failures=0, connections={}, tweens=setmetatable({}, {__mode="k"}),
 		lastErrorAt=-math.huge, commandBusy=false, requestBusy=false, picker=false, layoutAt=0}
@@ -5172,26 +7451,30 @@ local function bindCapsules(context)
 	local function corner(parent, radius) make("UICorner",parent,{CornerRadius=UDim.new(0,radius)}) end
 	local function frame(parent,name,x,y,w,h,color,radius)
 		local object=make("Frame",parent,{Name=name,Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),
-			BackgroundColor3=color or Color3.fromRGB(28,28,29),BackgroundTransparency=color and 0 or 1,BorderSizePixel=0})
+			BackgroundColor3=color or Design.Surface,BackgroundTransparency=color and 0 or 1,BorderSizePixel=0})
 		if radius then corner(object,radius) end
 		return object
 	end
 	local function label(parent,name,text,x,y,w,h,size,color)
-		return make("TextLabel",parent,{Name=name,Text=text,Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),
+		local object=make("TextLabel",parent,{Name=name,Text=text,Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),
 			TextSize=size or 12,TextColor3=color or white,FontFace=normal,BackgroundTransparency=1,RichText=false,
 			TextTruncate=Enum.TextTruncate.AtEnd,TextXAlignment=Enum.TextXAlignment.Left})
+		if color==gray then object:SetAttribute("AltairDesignRole","muted")end
+		return object
 	end
 	local function button(parent,name,text,x,y,w,h,color,action)
 		local object=make("TextButton",parent,{Name=name,Text=text,Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),
-			FontFace=medium,TextSize=12,TextColor3=white,BackgroundColor3=color or Color3.fromRGB(28,28,29),
-			BackgroundTransparency=color and 0 or 1,BorderSizePixel=0,AutoButtonColor=false})
-		corner(object,math.min(12,h/2))
+			FontFace=medium,TextSize=12,TextColor3=white,BackgroundColor3=color or Design.Raised,
+			BackgroundTransparency=color and .08 or 1,BorderSizePixel=0,AutoButtonColor=false})
+		corner(object,math.min(9,h/2))
+		object:SetAttribute("AltairDesignRole","control")
 		local feedback=make("UIScale",object,{Name="ButtonFeedback",Scale=1})
+		local function feedbackFree()return not object:GetAttribute("AltairActiveCapsule")and not object:GetAttribute("AltairNeighbourTransform")end
 		connect(object.MouseButton1Down,function()
-			if not object:GetAttribute("NoHover")then tweenService:Create(feedback,TweenInfo.new(.07),{Scale=.88}):Play()end
+			if feedbackFree()and not object:GetAttribute("NoHover")then tweenService:Create(feedback,TweenInfo.new(.07),{Scale=.88}):Play()end
 		end)
 		connect(object.MouseButton1Up,function()
-			if not object:GetAttribute("NoHover")then tweenService:Create(feedback,TweenInfo.new(.24,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()end
+			if feedbackFree()and not object:GetAttribute("NoHover")then tweenService:Create(feedback,TweenInfo.new(.24,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()end
 		end)
 		connect(object.Activated,action)
 		if not color then object.BackgroundColor3=Color3.new(1,1,1) end
@@ -5199,7 +7482,7 @@ local function bindCapsules(context)
 			if not color and not object:GetAttribute("NoHover") then tweenService:Create(object,TweenInfo.new(.12),{BackgroundTransparency=.92}):Play() end
 		end)
 		connect(object.MouseLeave,function()
-			tweenService:Create(feedback,TweenInfo.new(.18),{Scale=1}):Play()
+			if feedbackFree()then tweenService:Create(feedback,TweenInfo.new(.18),{Scale=1}):Play()end
 			if not color and not object:GetAttribute("NoHover") then tweenService:Create(object,TweenInfo.new(.12),{BackgroundTransparency=1}):Play() end
 		end)
 		return object
@@ -5238,8 +7521,12 @@ local function bindCapsules(context)
 	local artworkSlot=0
 	local function updateArtwork(url)
 		url=type(url)=="string"and(url:match("^https://i%.scdn%.co/image/[a-zA-Z0-9]+$")or url:match("^altair%-desktop:[a-f0-9]+$"))and url or nil
-		if controller.artworkURL==url then return end
-		controller.artworkURL=url;controller.artworkGeneration=(controller.artworkGeneration or 0)+1
+		if controller.artworkURL==url then
+   if not url or artworkCache[url]or controller.artworkBusy or os.clock()<(controller.artworkRetryAt or 0)then return end
+  else
+   controller.artworkURL=url;controller.artworkGeneration=(controller.artworkGeneration or 0)+1
+   controller.artworkFailures=0;controller.artworkRetryAt=0
+  end
 		local generation=controller.artworkGeneration
 		showArtwork(url and artworkCache[url] or nil)
 		if not url or artworkCache[url] then return end
@@ -5273,7 +7560,10 @@ local function bindCapsules(context)
 				return result
 			end)
 			controller.artworkBusy=false
-			if controller.alive and generation==controller.artworkGeneration and ok and asset then showArtwork(asset) end
+			if controller.alive and generation==controller.artworkGeneration then
+    if ok and asset then controller.artworkFailures=0;controller.artworkRetryAt=0;showArtwork(asset)
+    else controller.artworkFailures=(controller.artworkFailures or 0)+1;controller.artworkRetryAt=os.clock()+math.min(30,2^math.min(5,controller.artworkFailures))end
+   end
 			if controller.alive and controller.artworkPending then
 				controller.artworkPending=false;local pending=controller.artworkURL;controller.artworkURL=nil;updateArtwork(pending)
 			end
@@ -5290,20 +7580,22 @@ local function bindCapsules(context)
 	local pillLayout=make("UIListLayout",strip,{FillDirection=Enum.FillDirection.Horizontal,HorizontalAlignment=Enum.HorizontalAlignment.Center,
 		VerticalAlignment=Enum.VerticalAlignment.Center,Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
 	local smartBar=root:FindFirstChild("SmartBar")
-	local barColor=smartBar and smartBar.BackgroundColor3 or Color3.fromRGB(30,30,30)
+	local barColor=smartBar and smartBar.BackgroundColor3 or Design.Surface
 	local baseColor=barColor
-	local controlColor=smartBar and smartBar.Back.BackgroundColor3:Lerp(baseColor,.35) or Color3.fromRGB(40,40,41)
-	local surface=frame(host,"Surface",0,0,300,24,baseColor,12)
-	surface.BackgroundTransparency=.08
+	local controlColor=smartBar and smartBar.Back.BackgroundColor3:Lerp(baseColor,.35) or Design.Raised
+	local surface=frame(host,"Surface",0,0,300,24,baseColor,18)
+	surface:SetAttribute("AltairDesignRole","surface")
+	surface.BackgroundTransparency=Design.materialAlpha(surface,.08)
 	surface.AnchorPoint,surface.Position,surface.Visible,surface.ClipsDescendants=Vector2.new(.5,0),UDim2.fromScale(.5,0),false,true
 	-- Share the SmartBar's charcoal finish and fine border across both capsule states.
 	local sourceStroke=smartBar and smartBar:FindFirstChildOfClass("UIStroke")
 	local outline=surface:FindFirstChild("CapsuleOutline") or (sourceStroke and sourceStroke:Clone()) or Instance.new("UIStroke")
 	outline:SetAttribute("AltairSurfaceOutline",nil);outline:SetAttribute("AltairInsetOutline",nil)
- outline.Name="CapsuleOutline";outline.Color=white;outline.Transparency=.88;outline.Thickness=.7
+ outline.Name="CapsuleOutline";outline.Color=Design.Edge;outline.Transparency=.9;outline.Thickness=.6
 	outline.Enabled=true;outline.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;outline.Parent=surface
 	local inner=frame(surface,"Back",5,5,0,0,smartBar and smartBar.Back.BackgroundColor3 or Color3.fromRGB(50,50,50),7)
-	inner.Size=UDim2.new(1,-10,1,-10);inner.BackgroundTransparency=.1
+	inner:SetAttribute("AltairInsetSurface",true)
+	inner.Size=UDim2.new(1,-10,1,-10);inner.BackgroundTransparency=Design.materialAlpha(inner,.1)
 	local innerStroke=make("UIStroke",inner,{Name="InnerOutline",Color=white,Thickness=.7,Transparency=.94,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
 	local accentOutlines={outline,innerStroke}
 	local function barTile(object,sourceName)
@@ -5319,21 +7611,9 @@ local function bindCapsules(context)
          if connection then object.Destroying:Once(function()connection:Disconnect()end)end
         end
 	end
-	-- The collapsing shell takes on the source pill's material before handoff.
-	local morphMaterial=frame(surface,"MorphMaterial",2,2,0,0,Color3.new(1,1,1),12)
-	morphMaterial.Size=UDim2.new(1,-4,1,-4);morphMaterial.BackgroundTransparency=1
-	local morphGradient=make("UIGradient",morphMaterial,{Name="MaterialGradient",Rotation=90,Color=ColorSequence.new(baseColor)})
-	local function syncMorphMaterial(source)
-		local visual=source and (source:FindFirstChild("Visual") or source)
-		local back=visual and visual:FindFirstChild("Back")
-		local gradient=back and back:FindFirstChildOfClass("UIGradient")
-		morphMaterial.BackgroundColor3=back and back.BackgroundColor3 or baseColor
-		morphGradient.Color=gradient and gradient.Color or ColorSequence.new(baseColor)
-		morphGradient.Rotation=gradient and gradient.Rotation or 90
-	end
 	local views,pills={},{}
 	local function view(name,w,h)
-		local v=make("CanvasGroup",surface,{Name=name,Size=UDim2.fromOffset(w,h),BackgroundTransparency=1,GroupTransparency=1,Visible=false})
+		local v=make("CanvasGroup",name=="duration"and views.center or surface,{Name=name,Size=UDim2.fromOffset(w,h),BackgroundTransparency=1,GroupTransparency=1,Visible=false})
 		views[name]=v;return v
 	end
 	local center=view("center",300,180)
@@ -5345,167 +7625,253 @@ local function bindCapsules(context)
 	morphChevron.AnchorPoint=Vector2.new(.5,.5);morphChevron.Position=UDim2.fromScale(.5,.5);morphChevron.ImageTransparency=1
 	local sizes={}
 	local pillNames={center="ControlCenter",music="Music",timer="Timer",watch="Stopwatch",duration="Timer"}
+ local pillOrders={ControlCenter=1,Music=2,Timer=3,Stopwatch=4}
 	for name,group in pairs(views) do sizes[name]=Vector2.new(group.Size.X.Offset,group.Size.Y.Offset) end
+	local templateSurface=surface
+ local syncCompactBounds
+ controller.Views=views;controller.TemplateSurface=templateSurface
+ local function capsuleRect(object)
+  if not object or not object.Parent then return end
+  local factor=math.max(.001,scale.Scale)
+  local position=(object.AbsolutePosition-host.AbsolutePosition)/factor
+  local size=object.AbsoluteSize/factor
+  return{x=position.X+size.X*.5,y=position.Y,width=math.max(1,size.X),height=math.max(1,size.Y)}
+ end
+ local function mixRect(a,b,alpha)
+  return{x=a.x+(b.x-a.x)*alpha,y=a.y+(b.y-a.y)*alpha,width=a.width+(b.width-a.width)*alpha,height=a.height+(b.height-a.height)*alpha}
+ end
+ local function ownOpacity(object)
+  local saved={}
+  for _,child in ipairs({object,table.unpack(object:GetDescendants())})do
+   local properties=child:IsA("UIStroke")and{"Transparency"}or(child:IsA("TextLabel")or child:IsA("TextButton")or child:IsA("TextBox"))and{"BackgroundTransparency","TextTransparency","TextStrokeTransparency"}or(child:IsA("ImageLabel")or child:IsA("ImageButton"))and{"BackgroundTransparency","ImageTransparency"}or child:IsA("GuiObject")and{"BackgroundTransparency"}
+   if properties then for _,property in ipairs(properties)do saved[#saved+1]={child,property,child[property]}end end
+  end
+  return saved
+ end
+ local function restoreOpacity(saved)
+  -- ownOpacity captures rendered values, including the current material finish.
+  for _,entry in ipairs(saved or{})do if entry[1].Parent then entry[1][entry[2]]=entry[3]end end
+ end
+ local function facePart(object)
+  if not object then return end
+  return{object=object,position=object.Position,size=object.Size,anchor=object.AnchorPoint,visible=object.Visible,textSize=(object:IsA("TextLabel")or object:IsA("TextButton"))and object.TextSize or nil,opacity=ownOpacity(object)}
+ end
+ local function restoreFace(part)
+  if not part or not part.object.Parent then return end
+  local object=part.object;object.Position=part.position;object.Size=part.size;object.AnchorPoint=part.anchor
+  if object.Name~="Artwork"and object.Name~="Note"then object.Visible=part.visible end
+  if part.textSize then object.TextSize=part.textSize end
+  restoreOpacity(part.opacity)
+ end
+ local function tintSequence(a,b,alpha)
+  local first,last=a.Keypoints[1].Value,a.Keypoints[#a.Keypoints].Value
+  return ColorSequence.new(first:Lerp(b.Keypoints[1].Value,alpha),last:Lerp(b.Keypoints[#b.Keypoints].Value,alpha))
+ end
+ local function sourceMaterial(object)
+  local visual=object and(object:FindFirstChild("Visual")or object)
+  local back=visual and visual:FindFirstChild("Back")
+  local gradient=back and back:FindFirstChildOfClass("UIGradient")
+  return visual,back,gradient
+ end
+ local capsuleButtonNames={ControlCenter="Settings",Music="Playerlist",Timer="Scripts",Stopwatch="Character"}
+ local function compactGradient(object,fallback)
+  local _,_,gradient=sourceMaterial(object)
+  if object==pills.music and gradient and gradient:GetAttribute("AltairAlbumDriven")and controller.albumColors then return ColorSequence.new(controller.albumColors[1],controller.albumColors[2])end
+  local name=object and capsuleButtonNames[object.Name];local button=name and smartBar and smartBar.Back.Buttons:FindFirstChild(name)
+  local source=button and button:FindFirstChildOfClass("UIGradient")
+  return source and source.Color or fallback or(gradient and gradient.Color)or ColorSequence.new(baseColor)
+ end
+ local neighbourScales=setmetatable({}, {__mode="k"})
+ controller.neighbourScales=neighbourScales
+ local function effectiveCapsuleScale(object,name)
+  local value=object:FindFirstChildOfClass("UIScale")
+  if not value then value=Instance.new("UIScale");value.Name=name or"ButtonFeedback";value.Scale=1;value.Parent=object end
+  for _,child in ipairs(object:GetChildren())do
+   if child:IsA("UIScale")and child~=value and(child.Name=="CapsuleShellScale"or child.Name=="CapsuleNeighbourScale"or child.Name=="InteractionScale")then child:Destroy()end
+  end
+  return value
+ end
+ local function shellGeometry(object,rect,fit)
+  local width,height=math.max(1,host.Size.X.Offset),math.max(1,host.Size.Y.Offset)
+  object.Position=UDim2.fromScale(rect.x/width,rect.y/height)
+  object.Size=UDim2.fromScale(math.max(1,rect.width)/math.max(.001,fit)/width,math.max(1,rect.height)/math.max(.001,fit)/height)
+ end
+ local function neighbourScale(object)
+  local record=neighbourScales[object]
+  if record and record.scale.Parent then
+   if not record.owned then tweenService:Create(record.scale,TweenInfo.new(0),{Scale=record.scale.Scale}):Play();record.owned=true end
+   return record.scale
+  end
+  local value=effectiveCapsuleScale(object,"CapsuleNeighbourScale")
+  tweenService:Create(value,TweenInfo.new(0),{Scale=value.Scale}):Play()
+  neighbourScales[object]={scale=value,owned=true};return value
+ end
+ connect(strip.ChildAdded,function(object)if object:IsA("GuiObject")and controller.presentation then controller.presentation.dirty=true end end)
+ local function expandedTarget(p)
+  local width,height=p.expandedSize.X,p.expandedSize.Y
+  local factor=math.max(.001,controller.baseScale or scale.Scale)
+  local origin=host.AbsolutePosition-root.AbsolutePosition;local viewport=root.AbsoluteSize
+  local minX,maxX=(8-origin.X)/factor+width*.5,(viewport.X-8-origin.X)/factor-width*.5
+  local minY,maxY=(8-origin.Y)/factor,(viewport.Y-8-origin.Y)/factor-height
+  local viewportMinY,viewportMaxY=minY,maxY
+  local desiredX,desiredY=host.Size.X.Offset*.5,p.anchorY or p.collapsedRect.y
+  local drag=controller.docked and context.GetDragState and context.GetDragState()
+  if drag then
+   if drag.dock=="top"then minY=math.max(minY,(drag.center.Y+drag.size.Y/2+12-origin.Y)/factor)
+   elseif drag.dock=="bottom"then maxY=math.min(maxY,(drag.center.Y-drag.size.Y/2-12-origin.Y)/factor-height)
+   elseif drag.dock=="left"then local boundary=(drag.center.X+drag.size.X/2+12-origin.X)/factor+width*.5;if boundary<=maxX then minX=math.max(minX,boundary)end
+   elseif drag.dock=="right"then local boundary=(drag.center.X-drag.size.X/2-12-origin.X)/factor-width*.5;if boundary>=minX then maxX=math.min(maxX,boundary)end end
+  end
+  if minY>maxY then minY,maxY=viewportMinY,viewportMaxY end
+  return{x=math.clamp(desiredX,minX,math.max(minX,maxX)),y=math.clamp(desiredY,minY,math.max(minY,maxY)),width=width,height=height}
+ end
+ function controller:GetVisualObject()
+  local p=self.presentation
+  return p and p.shell and p.shell.Parent and p.shell or compact
+ end
+ function controller:GetPresentationRect()
+  local p=self.presentation
+  return p and p.rect or capsuleRect(compact)
+ end
+ function controller:GetPresentationSourceBounds()
+  local p=self.presentation
+  local object=p and(p.returnSource and p.returnSource~=p.source and p.returnSource or p.slot)
+  local rect=capsuleRect(object or compact);if not rect then return end
+  local factor=math.max(.001,scale.Scale);local origin=host.AbsolutePosition-root.AbsolutePosition
+  return{origin.X+(rect.x-rect.width*.5)*factor,origin.Y+rect.y*factor,origin.X+(rect.x+rect.width*.5)*factor,origin.Y+(rect.y+rect.height)*factor}
+ end
+ function controller:SetSurfaceOpacity(alpha)
+  self.surfaceOpacity=math.clamp(tonumber(alpha)or .1,0,1)
+  if self.presentation then self.presentation.dirty=true end
+ end
+ function controller:GetViewSize(name)return sizes[name]end
+ function controller:SetViewSize(name,size,duration)
+  assert(sizes[name]and typeof(size)=="Vector2"and size.X>0 and size.Y>0,"Unknown capsule view size")
+  sizes[name]=size;views[name].Size=UDim2.fromOffset(size.X,size.Y)
+  local p=self.presentation
+  if p and p.view==name then
+   p.expandedSize=size;p.resize={from=table.clone(p.expandedRect),phase=0,velocity=0,duration=duration or .22};p.dirty=true
+  end
+  self.layoutAt=0
+ end
+ local function restorePresentation(p)
+  if not p then return end
+  local observerSet={}
+  for _,connection in ipairs(p.materialObservers or{})do connection:Disconnect();observerSet[connection]=true end
+  for index=#controller.connections,1,-1 do if observerSet[controller.connections[index]]then table.remove(controller.connections,index)end end
+  for object,record in pairs(neighbourScales)do record.owned=false;if record.scale.Parent then record.scale.Scale=1;object:SetAttribute("AltairNeighbourTransform",nil)end end
+  for _,group in pairs(views)do
+   if not group:GetAttribute("AltairInlineView")then group.Visible=false;group.GroupTransparency=1;group.Parent=templateSurface end
+  end
+  for _,part in pairs(p.face)do restoreFace(part)end
+  if p.visual and p.visual~=p.source then p.visual.Position=UDim2.new();p.visual.Size=UDim2.fromScale(1,1);p.visual.GroupTransparency=0 end
+  p.shellScale.Scale=1
+  p.source.AnchorPoint=p.original.anchor;p.source.Position=p.original.position;p.source.Size=p.slot.Parent and p.slot.Size or p.original.size
+  p.source.BackgroundColor3=p.original.color;p.source.BackgroundTransparency=Design.materialAlpha(p.source,p.original.transparency);p.source.ClipsDescendants=p.original.clips
+  p.source.UICorner.CornerRadius=p.original.corner;p.source:SetAttribute("NoHover",p.original.noHover);p.source:SetAttribute("AltairActiveCapsule",nil)
+  if p.back then p.back.Position=p.original.backPosition;p.back.Size=p.original.backSize;p.back.BackgroundColor3=p.original.backColor;p.back.BackgroundTransparency=Design.materialAlpha(p.back,p.original.backTransparency);if p.back:FindFirstChildOfClass("UICorner")then p.back.UICorner.CornerRadius=p.original.backCorner end end
+  if p.gradient then p.gradient.Color=p.original.gradient end
+  if p.edge then p.edge.Position=p.original.edgePosition;p.edge.Size=p.original.edgeSize;if p.edge:FindFirstChildOfClass("UICorner")then p.edge.UICorner.CornerRadius=p.original.edgeCorner end end
+  if p.source.Name=="Music"and p.face.Title then p.face.Title.object.Size=UDim2.fromOffset(math.max(1,p.source.Size.X.Offset-35),24)end
+  p.source.Parent=p.original.parent and p.original.parent.Parent and p.original.parent or strip
+  if p.source==pills.music then p.source.Visible=controller.musicShown else p.source.Visible=p.original.visible end
+  if p.source==pills.timer and not clock.timer or p.source==pills.watch and not clock.watch.active then p.source.Visible=false end
+  if p.destinationOpacity then restoreOpacity(p.destinationOpacity);if p.returnSource and p.returnSource:FindFirstChild("Chevron")then p.returnSource.Chevron.ImageTransparency=0 end end
+  morphChevron.Parent=templateSurface;morphChevron.ImageTransparency=1;morphChevron.Position=UDim2.fromScale(.5,.5)
+  if p.slot.Parent then p.slot:Destroy()end
+  compact.Visible=true;compact.GroupTransparency=0;compact.Interactable=true;templateSurface.Visible=false
+  controller.presentation=nil;controller.activityMorphSource=nil;controller.activityClosePosition=nil;controller.layoutAt=0
+  syncCompactBounds()
+ end
+ local function startPresentation(source,name)
+  local rect=capsuleRect(source);if not rect then return end
+  local visual,back,gradient=sourceMaterial(source)
+  local slot=Instance.new("Frame");slot.Name="CapsuleReturnSlot";slot.BackgroundTransparency=1;slot.BorderSizePixel=0;slot.Size=source.Size;slot.LayoutOrder=source.LayoutOrder;slot.Visible=true;slot.Parent=source.Parent
+  local fit=rect.width/math.max(1,source.Size.X.Offset)
+  local p={source=source,shell=source,slot=slot,view=name,phase=0,targetPhase=1,velocity=0,rect=table.clone(rect),collapsedRect=table.clone(rect),anchorY=rect.y,expandedSize=sizes[name],generation=controller.transition,face={},startFit=fit,dirty=true,visual=visual,back=back,gradient=gradient}
+  p.expandedRect=expandedTarget(p)
+  p.original={parent=source.Parent,position=source.Position,size=source.Size,anchor=source.AnchorPoint,color=source.BackgroundColor3,transparency=source:GetAttribute("AltairMaterialRestAlpha")or source:GetAttribute("AltairSolidRestAlpha")or source.BackgroundTransparency,clips=source.ClipsDescendants,corner=source.UICorner.CornerRadius,noHover=source:GetAttribute("NoHover"),visible=source.Visible}
+  if back then p.original.backPosition=back.Position;p.original.backSize=back.Size;p.original.backColor=back.BackgroundColor3;p.original.backTransparency=back:GetAttribute("AltairMaterialRestAlpha")or back:GetAttribute("AltairSolidRestAlpha")or back.BackgroundTransparency;p.original.backCorner=back.UICorner.CornerRadius end
+  p.edge=visual and visual:FindFirstChild("Edge")
+  if p.edge then p.original.edgePosition=p.edge.Position;p.original.edgeSize=p.edge.Size;p.original.edgeCorner=p.edge:FindFirstChildOfClass("UICorner")and p.edge.UICorner.CornerRadius end
+  p.original.gradient=gradient and gradient.Color
+  p.materialObservers={}
+  local function observe(object,property)
+   if not object then return end
+   local connection=connect(object:GetPropertyChangedSignal(property),function()if controller.presentation==p then p.dirty=true end end)
+   if connection then p.materialObservers[#p.materialObservers+1]=connection end
+  end
+  if smartBar then
+   observe(smartBar,"BackgroundColor3");observe(smartBar.Back,"BackgroundColor3")
+   for _,button in ipairs(smartBar.Back.Buttons:GetChildren())do if button:IsA("GuiObject")then observe(button:FindFirstChildOfClass("UIGradient"),"Color")end end
+  end
+  for _,key in ipairs({"Value","Chevron","ClockIcon","Title","Artwork","Note"})do local part=visual and visual:FindFirstChild(key);if part then p.face[key]=facePart(part)end end
+  local origin=source.AbsolutePosition-root.AbsolutePosition;local size=source.AbsoluteSize
+  controller.hoverSourceBounds={origin.X,origin.Y,origin.X+size.X,origin.Y+size.Y}
+  source.Parent=host;source.Visible=true;source.AnchorPoint=Vector2.new(.5,0);source.ClipsDescendants=true;source:SetAttribute("NoHover",true);source:SetAttribute("AltairActiveCapsule",true)
+  local shellScale=effectiveCapsuleScale(source,"ButtonFeedback");p.shellScale=shellScale
+  local cancelledFeedback=tweenService:Create(shellScale,TweenInfo.new(0),{Scale=fit})
+  cancelledFeedback:Play();cancelledFeedback:Cancel();shellScale.Scale=fit
+  shellGeometry(source,rect,fit)
+  tweenService:Create(source,TweenInfo.new(0),{Position=source.Position,Size=source.Size}):Play()
+  if visual and visual~=source then tweenService:Create(visual,TweenInfo.new(0),{Position=UDim2.new(),Size=UDim2.fromScale(1,1),GroupTransparency=0}):Play()end
+  controller.presentation=p;controller.origin={x=rect.x,y=rect.y,width=rect.width,source=source}
+  compact.Visible=true;compact.Interactable=false;templateSurface.Visible=false
+  return p
+ end
 	function controller:Open(name)
 		assert(name==nil or sizes[name],"Unknown capsule view")
-		if self.picker and name~="duration" then return end
+  if name=="duration"and views.duration:GetAttribute("AltairInlineView")then
+   if not self.picker and self.BeginTimerEntry then self:BeginTimerEntry();return end
+   name="center"
+  end
+		if self.picker and name~="center"and name~="duration"then
+   if name==nil then self:EndTimerEntry(false,true)else return end
+  end
 		if name and not self:IsEnabled()then return end
 		if name==self.view then return end
-		self.hoverGraceUntil=name and os.clock()+.85 or nil
-		self.hoverReachedSurface=false
-        if self.restoreMusicCarry then self.restoreMusicCarry();self.restoreMusicCarry=nil end
-        if self.restoreReturningMusic then self.restoreReturningMusic();self.restoreReturningMusic=nil end
-        if self.restoreNeighbors then self.restoreNeighbors();self.restoreNeighbors=nil end
-        if self.musicCarry then self.musicCarry:Destroy();self.musicCarry=nil end
-        if self.circleCarry then self.circleCarry:Destroy();self.circleCarry=nil end
-        local liveMusic=views.music
-        if liveMusic:FindFirstChild("Title") then liveMusic.Title.Visible=true end
-        if liveMusic:FindFirstChild("Artwork") then liveMusic.Artwork.Visible=true end
-		local previous=self.view
-		if previous=="music"and name==nil then self.musicHoldUntil=os.clock()+.65 end
-		self.view=name;self.transition=(self.transition or 0)+1
-		local transition=self.transition
-		self.finishMorph=nil
-		if self.cancelDrag then self.cancelDrag() end
-		for key,group in pairs(views) do
-			if key~=name then
-				tween(group,.12,{GroupTransparency=1})
-				task.delay(.12,function() if self.alive and self.view~=key then group.Visible=false end end)
-			end
-		end
-		if not name then
-			compact.Visible=false;compact.GroupTransparency=1
-			local origin=self.origin or {x=150,width=24}
-			syncMorphMaterial(origin.source)
-            if previous=="music" and origin.source and origin.source.Name=="Music" then
-             local carry=Instance.new("Frame");carry.Name="ClosingMusicContent";carry.BackgroundTransparency=1;carry.Size=UDim2.fromScale(1,1);carry.ZIndex=surface.ZIndex+5;carry.Parent=surface;self.musicCarry=carry
-             local sourceVisual=origin.source:FindFirstChild("Visual");local records={}
-             for _,key in ipairs({"Title","Artwork"}) do
-              local original=views.music:FindFirstChild(key);local actual=sourceVisual and sourceVisual:FindFirstChild(key)
-              if original and actual then
-               local record={object=actual,parent=actual.Parent,position=actual.Position,size=actual.Size,z={}}
-               for _,v in ipairs({actual,table.unpack(actual:GetDescendants())})do if v:IsA("GuiObject")then record.z[v]=v.ZIndex;v.ZIndex=carry.ZIndex+1 end end
-               if key=="Title"then record.textSize=actual.TextSize;actual.TextSize=original.TextSize end
-               records[#records+1]=record;actual.Parent=carry;actual.Position=original.Position;actual.Size=original.Size;original.Visible=false
-               if key=="Title"then tween(actual,.38,{Position=UDim2.fromOffset(27,0),Size=record.size,TextSize=record.textSize})
-               else tween(actual,.38,{Position=UDim2.fromOffset(3,3),Size=UDim2.fromOffset(18,18)}) end
-              end
-             end
-             self.restoreMusicCarry=function()
-              for _,record in ipairs(records)do
-               local actual=record.object;actual.Parent=record.parent;actual.Position=record.position;actual.Size=record.size
-               if record.textSize then actual.TextSize=record.textSize end
-               for object,z in pairs(record.z)do if object.Parent then object.ZIndex=z end end
-              end
-             end
-             local circle=strip.ControlCenter:Clone();circle.Name="ReturningCircle";circle.AnchorPoint=Vector2.new(.5,0);circle.ZIndex=surface.ZIndex+4;circle.Parent=host;circle.Position=UDim2.fromOffset(surface.Position.X.Offset-surface.Size.X.Offset/2-17,0);self.circleCarry=circle
-             for _,object in ipairs({circle,table.unpack(circle:GetDescendants())}) do
-              local goal={}
-              if object:IsA("GuiObject") then goal.BackgroundTransparency=object.BackgroundTransparency;object.BackgroundTransparency=1;object.ZIndex=circle.ZIndex end
-              if object:IsA("ImageLabel") then goal.ImageTransparency=object.ImageTransparency;object.ImageTransparency=1 end
-              if object:IsA("UIStroke") then goal.Transparency=object.Transparency;object.Transparency=1 end
-              if next(goal) then tween(object,.12,goal) end
-             end
-            end
-
-
-            -- Borrow every neighbouring capsule for the return, not just Spotify.
-            -- Their layout slots stay reserved while the real visuals glide home.
-            local returning={};local factor=math.max(.001,scale.Scale)
-            for _,actual in ipairs(strip:GetChildren())do
-             if actual:IsA("GuiObject")and actual.Visible and actual.Name~="ControlCenter"and actual~=origin.source then
-              local record={object=actual,parent=strip,position=actual.Position,size=actual.Size,anchor=actual.AnchorPoint,z={}}
-              local width=actual.AbsoluteSize.X/factor
-              local slot=Instance.new("Frame");slot.Name="NeighbourReturnSlot";slot.Size=actual.Size;slot.LayoutOrder=actual.LayoutOrder;slot.BackgroundTransparency=1;slot.Parent=strip
-              record.slot=slot
-              local target=(slot.AbsolutePosition+Vector2.new(slot.AbsoluteSize.X/2,0)-host.AbsolutePosition)/factor
-              local carry=Instance.new("CanvasGroup");carry.Name="ReturningNeighbour";carry.BackgroundTransparency=1;carry.GroupTransparency=1
-              carry.AnchorPoint=Vector2.new(.5,0);carry.Size=UDim2.fromOffset(width,24);carry.ZIndex=surface.ZIndex+5
-              carry.Position=UDim2.fromOffset(surface.Position.X.Offset+surface.Size.X.Offset/2+width/2+8+#returning*12,6);carry.Parent=host
-              record.carry=carry
-              for _,object in ipairs({actual,table.unpack(actual:GetDescendants())})do if object:IsA("GuiObject")then record.z[object]=object.ZIndex;object.ZIndex=carry.ZIndex+1 end end
-              actual.Parent=carry;actual.AnchorPoint=Vector2.zero;actual.Position=UDim2.fromOffset(0,0);actual.Size=UDim2.fromScale(1,1)
-              task.defer(function()
-               runService.Heartbeat:Wait()
-               if self.alive and self.transition==transition and carry.Parent and slot.Parent then
-                local destination=(slot.AbsolutePosition+Vector2.new(slot.AbsoluteSize.X/2,0)-host.AbsolutePosition)/math.max(.001,scale.Scale)
-                tween(carry,.32,{Position=UDim2.fromOffset(destination.X,destination.Y),GroupTransparency=0},Enum.EasingStyle.Quart)
-               end
-              end)
-              returning[#returning+1]=record
-             end
-            end
-            self.restoreNeighbors=function()
-             for _,record in ipairs(returning)do
-              local actual=record.object
-              if actual.Parent then
-               actual.Parent=record.parent;actual.Position=record.position;actual.Size=record.size;actual.AnchorPoint=record.anchor
-               for object,z in pairs(record.z)do if object.Parent then object.ZIndex=z end end
-              end
-              record.slot:Destroy();record.carry:Destroy()
-             end
-            end
-
-			tween(morphMaterial,.14,{BackgroundTransparency=origin.source and .18 or 1})
-			-- Remove the inner material before the outer shell reaches its circle.
-			tween(inner,.06,{BackgroundTransparency=1})
-            task.delay(.065,function()if self.alive and transition==self.transition and not self.view then inner.Visible=false end end)
-			tween(innerStroke,.1,{Transparency=1})
-			tween(morphChevron,.24,{ImageTransparency=origin.width<=26 and 0 or 1})
-			tween(surface.UICorner,.28,{CornerRadius=UDim.new(0,6)})
-            tween(morphMaterial.UICorner,.28,{CornerRadius=UDim.new(0,6)})
-            self.morphTarget={x=origin.x,y=origin.y or 0,width=origin.width,height=24}
-			tween(surface,.2,{BackgroundTransparency=.08})
-			tween(outline,.38,{Transparency=.88})
-			self.finishMorph=function()
-				if self.alive and transition==self.transition then
-					compact.Visible=true;compact.GroupTransparency=1
-                    if self.restoreMusicCarry then self.restoreMusicCarry();self.restoreMusicCarry=nil end
-                    if self.restoreReturningMusic then self.restoreReturningMusic();self.restoreReturningMusic=nil end
-                    if self.restoreNeighbors then self.restoreNeighbors();self.restoreNeighbors=nil end
-                    compact.GroupTransparency=0;surface.Visible=false
-                    if self.musicCarry then self.musicCarry:Destroy();self.musicCarry=nil end
-                    if self.circleCarry then self.circleCarry:Destroy();self.circleCarry=nil end
-				end
-			end
-		else
-			if not previous or name=="center" then
-				local source=strip:FindFirstChild(pillNames[name] or "ControlCenter")
-				local factor=math.max(.01,scale.Scale)
-				local x=source and ((source.AbsolutePosition.X+source.AbsoluteSize.X/2-host.AbsolutePosition.X)/factor) or 150
-				local width=source and source.AbsoluteSize.X/factor or 24
-				self.origin={x=x,y=source and(source.AbsolutePosition.Y-host.AbsolutePosition.Y)/factor or 0,width=width,source=source}
-				if not previous then syncMorphMaterial(source);morphMaterial.BackgroundTransparency=source and .18 or 1 end
-				if not surface.Visible then surface.Size=UDim2.fromOffset(width,24);surface.Position=UDim2.fromOffset(x,self.origin.y);self.morphState=nil end
-				surface.BackgroundTransparency=0
-			end
-			compact.Visible=true
-            tween(compact,.1,{GroupTransparency=1})
-            task.delay(.12,function() if self.alive and transition==self.transition and self.view~=nil then compact.Visible=false end end)
-			tween(morphMaterial,.12,{BackgroundTransparency=1})
-			inner.Visible=true
-			tween(inner,.24,{Position=UDim2.fromOffset(5,5),Size=UDim2.new(1,-10,1,-10),BackgroundTransparency=.1})
-			tween(innerStroke,.36,{Transparency=.94})
-			if not previous then morphChevron.ImageTransparency=self.origin.width<=26 and 0 or 1 end
-			tween(morphChevron,.16,{ImageTransparency=1})
-			local size=sizes[name]
-			surface.Visible=true;views[name].Visible=true;views[name].GroupTransparency=1
-			tween(surface.UICorner,.28,{CornerRadius=UDim.new(0,14)})
-            tween(morphMaterial.UICorner,.28,{CornerRadius=UDim.new(0,14)})
-            self.morphTarget={x=host.Size.X.Offset*.5,y=0,width=size.X,height=size.Y}
-			tween(surface,.24,{BackgroundTransparency=.08})
-			tween(outline,.28,{Transparency=.88})
-			task.delay(.06,function()
-				if self.alive and transition==self.transition then tween(views[name],.22,{GroupTransparency=0}) end
-			end)
-		end
-		self.layoutAt=0
+  local previous=self.view;local p=self.presentation
+  self.transition=(self.transition or 0)+1;self.view=name
+  self.hoverGraceUntil=name and os.clock()+.85 or nil;self.hoverReachedSurface=false
+  if previous=="music"and not name then self.musicHoldUntil=os.clock()+.65 end
+  if self.cancelDrag then self.cancelDrag()end
+  if not name then
+   if not p then return end
+   p.targetPhase=0;p.generation=self.transition;p.dirty=true
+   local destination=self.origin and self.origin.source
+   if destination and destination.Parent and destination~=p.source then
+    p.returnSource=destination;p.destinationOpacity=ownOpacity(destination);p.destinationBackground=destination.BackgroundTransparency
+    morphChevron.Parent=p.shell;morphChevron.Visible=true
+   end
+   return
+  end
+  if not p then
+   local source=self.docked and self.activityIndicators and(name=="timer"and self.activityIndicators[1]or name=="watch"and self.activityIndicators[2])or pills[name]or pills.center
+   p=startPresentation(source,name);if not p then self.view=nil;return end
+  else
+   p.targetPhase=1;p.generation=self.transition;p.dirty=true
+   if p.destinationOpacity then restoreOpacity(p.destinationOpacity);p.destinationOpacity=nil;p.returnSource=nil;morphChevron.Parent=templateSurface;morphChevron.ImageTransparency=1 end
+   if p.view~=name or p.expandedSize~=sizes[name]then p.previousView=p.view~=name and p.view or nil;p.pageAt=os.clock();p.resize={from=table.clone(p.expandedRect),phase=0,velocity=0,duration=.24}end
+   p.view=name;p.expandedSize=sizes[name]
+  end
+  for key,group in pairs(views)do
+   if not group:GetAttribute("AltairInlineView")then
+    if key==name or key==p.previousView then group.Parent=p.shell;group.Visible=true
+    else group.Visible=false;group.GroupTransparency=1;group.Parent=templateSurface end
+   end
+  end
+  self.layoutAt=0
 	end
+
 	local function pill(name,text,width,color,action)
 		local p=button(strip,name,text,0,0,width,24,barColor,function(event)
+			if controller.presentation and controller.presentation.source.Name==name and controller.view then return end
 			if event and event.UserInputType==Enum.UserInputType.Touch then action() end
 		end)
 		connect(p.MouseEnter,function()
+			if controller.presentation and controller.presentation.source==p and controller.view then controller.hoverSession=true;controller.hoverLeftAt=nil;return end
+			local position=p.AbsolutePosition-root.AbsolutePosition;local size=p.AbsoluteSize
+			controller.hoverSourceBounds={position.X,position.Y,position.X+size.X,position.Y+size.Y}
 			controller.hoverSource=p
 			controller.hoverSession=true;controller.hoverLeftAt=nil;action()
 		end)
@@ -5515,19 +7881,22 @@ local function bindCapsules(context)
 			visual=make("CanvasGroup",p,{Name="Visual",Size=UDim2.fromOffset(width,24),BackgroundColor3=barColor,
 				BackgroundTransparency=.08,BorderSizePixel=0,GroupTransparency=1})
 			corner(visual,8)
-		else p.BackgroundTransparency=.08 end
+			visual:SetAttribute("AltairDesignRole","surface")
+			visual.BackgroundTransparency=Design.materialAlpha(visual,.08)
+		else p.BackgroundTransparency=Design.materialAlpha(p,.08)end
 		local back=frame(visual,"Back",2,2,0,0,controlColor,7);back.Size=UDim2.new(1,-4,1,-4)
 		barTile(back,({ControlCenter="Settings",Music="Playerlist",Timer="Scripts",Stopwatch="Character"})[name])
-		back.BackgroundTransparency=.18
+		back:SetAttribute("AltairInsetSurface",true)
+		back.BackgroundTransparency=Design.materialAlpha(back,.18)
 		local edge=frame(visual,"Edge",1,1,0,0,nil,8);edge.Size=UDim2.new(1,-2,1,-2)
-		accentOutlines[#accentOutlines+1]=make("UIStroke",edge,{Name="PillOutline",Color=white,Thickness=.7,
-			Transparency=.88,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+		accentOutlines[#accentOutlines+1]=make("UIStroke",edge,{Name="PillOutline",Color=Design.Edge,Thickness=.6,
+			Transparency=.9,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
 		if name~="Music" then
 			p.Text=""
 			local value=label(visual,"Value",text,0,0,width,24,8,white)
 			value.TextXAlignment=Enum.TextXAlignment.Center;value.FontFace=medium
 		end
-		p.LayoutOrder=#strip:GetChildren();p.TextSize=8;p.TextColor3=color or white
+		p.LayoutOrder=pillOrders[name]or #strip:GetChildren();p.TextSize=8;p.TextColor3=color or white
 		p.UICorner.CornerRadius=UDim.new(0,6)
 		return p,visual
 	end
@@ -5569,6 +7938,15 @@ local function bindCapsules(context)
 	musicPill.Size=UDim2.fromOffset(0,24)
 	local function animateMusic(active,width)
         if controller.iconOnly then width=24 end
+		local presentation=controller.presentation
+		if presentation and presentation.source==musicPill then
+			local changed=controller.musicWidth~=width
+			controller.musicShown=active;controller.musicWidth=width
+			if presentation.slot.Parent then presentation.slot.Size=UDim2.fromOffset(width,24)end
+			compactTitle.Size=UDim2.fromOffset(math.max(1,width-35),24)
+			if changed then presentation.dirty=true;syncCompactBounds()end
+			return
+		end
 		if active~=controller.musicShown then
 			controller.musicShown=active;controller.musicTransition+=1
 			local generation=controller.musicTransition
@@ -5594,11 +7972,11 @@ local function bindCapsules(context)
 		end
 		if active then
 			musicVisual.Size=UDim2.fromOffset(width,24)
-			if not controller.musicCarry then compactTitle.Size=UDim2.fromOffset(width-35,24) end
+			compactTitle.Size=UDim2.fromOffset(width-35,24)
 		end
 	end
 	timerPill.Visible,watchPill.Visible=false,false
-	local function syncCompactBounds()
+	syncCompactBounds=function()
 		if root.AbsoluteSize.X<=0 then return end
 		local factor=math.max(.0001,scale.Scale*compactFit.Scale)
 		local width=math.max(24,pillLayout.AbsoluteContentSize.X/factor)
@@ -5610,6 +7988,7 @@ local function bindCapsules(context)
 		set(compact,"Position",UDim2.new(.5,0,0,-4*compactFit.Scale))
 		controller.compactWidth=(width+8)*compactFit.Scale
         controller.compactHeight=(height+8)*compactFit.Scale
+		if controller.presentation then controller.presentation.dirty=true end
 	end
  controller.externalHandles={}
  function controller:RegisterExternal(options)
@@ -5617,15 +7996,23 @@ local function bindCapsules(context)
   local group=Instance.new("CanvasGroup");group.Name="ExternalCapsule"..self.externalSerial;group.BackgroundTransparency=1
   group.Size=UDim2.fromOffset(0,24);group.GroupTransparency=1;group.Visible=false;group.ClipsDescendants=true;group.LayoutOrder=100+self.externalSerial;group.ZIndex=291;group.Parent=strip
   local button=musicPill:Clone();button.Name="Restore";button.Position=UDim2.fromOffset(0,0);button.Size=UDim2.fromScale(1,1);button.Visible=true;button.Parent=group
+  -- The real music pill may currently own an expanded page. External capsules
+  -- clone only its compact face, never its mounted controls or animation scale.
+  for _,child in ipairs(button:GetChildren())do if views[child.Name]or child.Name=="CapsuleShellScale"or child.Name=="CapsuleNeighbourScale"then child:Destroy()end end
+  button:SetAttribute("AltairActiveCapsule",nil);button:SetAttribute("NoHover",nil);button.BackgroundTransparency=1;button.UICorner.CornerRadius=UDim.new(0,6)
   local visual=button.Visual;visual.Size=UDim2.fromScale(1,1);visual.GroupTransparency=0
+  visual.Position=UDim2.new();visual.BackgroundTransparency=.08;visual.UICorner.CornerRadius=UDim.new(0,8)
+  visual.Back.Position=UDim2.fromOffset(2,2);visual.Back.Size=UDim2.new(1,-4,1,-4);visual.Back.BackgroundTransparency=.18;visual.Back.UICorner.CornerRadius=UDim.new(0,7)
+  visual.Edge.Position=UDim2.fromOffset(1,1);visual.Edge.Size=UDim2.new(1,-2,1,-2);visual.Edge.UICorner.CornerRadius=UDim.new(0,8)
+  visual.Artwork.BackgroundTransparency=0;visual.Artwork.Cover.ImageTransparency=0
   local variants={"Scripts","Character","Playerlist","Home","Settings"}
   barTile(visual.Back,variants[(self.externalSerial-1)%#variants+1])
-  local title=visual.Title;title.Text=tostring(options.Title or "Rayfield");title.TextSize=compactTitle.TextSize;title.TextTruncate=Enum.TextTruncate.None;title.Size=UDim2.new(1,-35,1,0)
+  local title=visual.Title;title.Text=tostring(options.Title or "Rayfield");title.TextSize=compactTitle.TextSize;title.TextTransparency=0;title.TextStrokeTransparency=1;title.TextTruncate=Enum.TextTruncate.None;title.Size=UDim2.new(1,-35,1,0)
   local cover=visual.Artwork.Cover;cover.Image=type(options.Icon)=="string"and options.Icon:match("^rbx")and options.Icon or "";cover.Visible=cover.Image~=""
   local note=visual:FindFirstChild("Note");if note then note.Visible=false end
   if not cover.Visible then applyIcon(cover,"square-terminal");cover.Visible=true;visual.Artwork.Visible=true end
   local outline=visual.Edge:FindFirstChildOfClass("UIStroke");if outline then table.insert(accentOutlines,outline)end
-  local press=Instance.new("UIScale");press.Name="InteractionScale";press.Parent=button
+  local press=effectiveCapsuleScale(button,"ButtonFeedback");press.Scale=1
   local handle={group=group,generation=0,width=math.clamp(#title.Text*4+35,62,220),connections={}}
   local function animate(object,duration,goals,style)tweenService:Create(object,TweenInfo.new(duration,style or Enum.EasingStyle.Quint,Enum.EasingDirection.Out),goals):Play()end
   function handle:TargetWidth()return controller.iconOnly and 24 or self.width end
@@ -5654,10 +8041,10 @@ local function bindCapsules(context)
   end
   function handle:Destroy()controller.externalHandles[self]=nil;for _,connection in ipairs(self.connections)do connection:Disconnect()end;group:Destroy();syncCompactBounds()end
   local function listen(signal,callback)table.insert(handle.connections,signal:Connect(callback))end
-  listen(button.MouseEnter,function()animate(press,.18,{Scale=1.025});if outline then animate(outline,.18,{Transparency=.68})end end)
+  listen(button.MouseEnter,function()if controller.view then return end;animate(press,.18,{Scale=1.025});if outline then animate(outline,.18,{Transparency=.68})end end)
   listen(button.MouseLeave,function()animate(press,.3,{Scale=1},Enum.EasingStyle.Back);if outline then animate(outline,.2,{Transparency=.88})end end)
   listen(button.MouseButton1Down,function()animate(press,.1,{Scale=.94})end)
-  listen(button.Activated,function()animate(press,.35,{Scale=1},Enum.EasingStyle.Back);if controller.alive and options.Restore then options.Restore()end end)
+  listen(button.Activated,function()if controller.view then return end;animate(press,.35,{Scale=1},Enum.EasingStyle.Back);if controller.alive and options.Restore then options.Restore()end end)
   task.spawn(function()
    local params=Instance.new("GetTextBoundsParams");params.Font=title.FontFace;params.Size=title.TextSize;params.Text=title.Text;params.Width=1000
    local ok,bounds=pcall(game:GetService("TextService").GetTextBoundsAsync,game:GetService("TextService"),params);params:Destroy()
@@ -5674,18 +8061,19 @@ local function bindCapsules(context)
 		controller.lastErrorAt=os.clock();context.Notify("Spotify",message,nil)
 	end
 	function controller:ShowSetup()
-		context.Notify("Spotify setup","Run Companion/StartSpotify.cmd once, open Spotify desktop and play something, then choose Connect Spotify. Volt pairs automatically and saves the connection. No developer app is needed for local desktop playback. For other devices use your public Spotify Client ID and approve in the browser. Unlink asks before removing the saved connection.",nil,{Duration=12})
+		context.Notify("Spotify setup","1. Run Companion/StartSpotify.cmd and keep the companion running. 2. Play something in Spotify desktop. 3. Choose Connect Spotify. Volt pairs automatically; no developer app is needed. These steps also appear in Settings > Experimental > Spotify. Other-device playback is optional under Spotify - Advanced.",nil,{Duration=12})
 	end
 	local function bridgeRequest(method,path,body)
 		if context.MediaAdapter then return context.MediaAdapter(method,path,body) end
-		assert(type(context.Request)=="function","This executor has no HTTP request function")
+		if type(context.Request)~="function" then error({status="unsupported_executor",message="This executor has no HTTP request function. Spotify needs an executor with local HTTP support."},0) end
 		local key=tostring(get("Spotify Bridge Key","")):match("^%s*(.-)%s*$")
-		assert(#key>=32,"Paste the companion key into Spotify Bridge Key in Settings")
+		if #key<32 then error({status="pairing_required",message="Run the companion, then choose Connect Spotify to import pairing. Outside Volt, enter its local key in Spotify - Advanced."},0) end
 		local port=math.clamp(math.floor(tonumber(get("Spotify Bridge Port",43827)) or 43827),1024,65535)
 		local response=context.Request({Url="http://127.0.0.1:"..port.."/v1/"..path,Method=method,Timeout=method=="GET" and 3 or 15,
 			Headers={Authorization="Bearer "..key,["Content-Type"]="application/json"},Body=body and http:JSONEncode(body) or nil})
 		assert(type(response)=="table","The Spotify companion did not respond")
 		local status=tonumber(response.StatusCode or response.Status) or 0
+		if status==401 or status==403 then error({status="pairing_required",message="Companion pairing was rejected. Choose Connect Spotify to reload pairing; check the Bridge Key and Port if using manual setup."},0) end
 		local ok,data=pcall(http.JSONDecode,http,response.Body or "")
 		assert(ok and type(data)=="table","The companion returned an invalid response")
 		assert(status>=200 and status<300,data.error or "Spotify companion request failed")
@@ -5694,8 +8082,10 @@ local function bindCapsules(context)
 	controller.commands={};controller.mediaGeneration=0
 	function controller:Enqueue(path,body,previous)
 		if not self.alive then return false end
+		if path=="control"and body.action=="seek"and self.navigationPending then return false end
 		if path~="control" then
 			table.clear(self.commands)
+			self.navigationPending=nil
 			self.accountGeneration=(self.accountGeneration or 0)+1
 		elseif body.action=="seek" or body.action=="volume" then
 			for i=#self.commands,1,-1 do
@@ -5704,8 +8094,16 @@ local function bindCapsules(context)
 			end
 		end
 		if #self.commands>=8 then notifyError("Playback controls are busy. Try again in a moment.");return false end
+		local navigation
+		if path=="control"and(body.action=="next"or body.action=="previous")then
+			-- A seek made against the outgoing track must never follow navigation
+			-- into another track, including one that was already waiting to send.
+			for i=#self.commands,1,-1 do local job=self.commands[i];if job.path=="control"and job.body.action=="seek"then table.remove(self.commands,i)end end
+			navigation={identity=self.mediaIdentity};self.navigationPending=navigation
+			if self.cancelSeek then self.cancelSeek("navigation")end
+		end
 		self.mediaGeneration+=1
-		self.commands[#self.commands+1]={path=path,body=body,previous=previous,generation=self.mediaGeneration}
+		self.commands[#self.commands+1]={path=path,body=body,previous=previous,generation=self.mediaGeneration,navigation=navigation}
 		if self.commandBusy then return true end
 		self.commandBusy=true
 		task.defer(function()
@@ -5714,65 +8112,166 @@ local function bindCapsules(context)
 				local ok,result=pcall(bridgeRequest,"POST",job.path,job.body)
 				if not self.alive then return end
 				if ok then
+					if job.navigation and self.navigationPending==job.navigation then
+						job.navigation.completedAt=os.clock();job.navigation.expiresAt=os.clock()+5;self.nextPoll=0
+					end
 					if job.path=="unlink" then
 						self:SetMedia({connected=false,linked=false,title="Spotify"})
-						context.Notify("Spotify","Unlinked. Saved account tokens were removed. Use Link Spotify to connect again.",nil)
+						context.Notify("Spotify","Unlinked. Saved account tokens were removed. Use Connect Spotify to connect again.",nil)
 					elseif job.path=="link" then context.Notify("Spotify",result.linked and "Saved Spotify connection restored. It will reconnect automatically."or"Approve Spotify in your browser once. The connection will be saved.",nil) end
 				else
+					if job.navigation and self.navigationPending==job.navigation then self.navigationPending=nil end
 					if job.previous and job.generation==self.mediaGeneration then self:SetMedia(job.previous) end
-					notifyError(tostring(result))
+					notifyError(type(result)=="table" and result.message or tostring(result))
 				end
 			end
 			self.commandBusy=false;self.nextPoll=0
 		end)
 		return true
 	end
+    local function spotifyStatus(m)
+     if not get("Spotify Connection",false) then return "Updates paused","Turn on Spotify Connection to resume updates. Your saved link is unchanged." end
+     if m.status=="pairing_required" or m.status=="unsupported_executor" then return "Spotify setup needed",m.message or "Run the companion and choose Connect Spotify. Manual pairing is under Spotify - Advanced." end
+     if m.reauth_required or m.status=="authorization_required" then return "Spotify approval needed","Choose Connect Spotify to approve again in your browser." end
+     if m.status=="waiting_for_spotify" then return "Waiting for Spotify",m.message or "Open Spotify desktop and play something. Your saved link is retained." end
+     if m.status=="unlinked" then return "Connect Spotify","Run Companion/StartSpotify.cmd, play something in Spotify desktop, then choose Connect Spotify." end
+     if m.available==false or m.status=="reconnecting" then return "Reconnecting Spotify",m.message or "Waiting for the companion. Keep it running; Altair will retry automatically." end
+     if m.web_reauth_required and m.connected then return "Desktop playback ready","Desktop playback is available. Web API playback needs browser approval; choose Connect Spotify with your Client ID to restore it." end
+     if m.connected then return m.playing and "Spotify connected" or "Spotify paused",m.message or "Your saved connection is ready. Resume playback in Spotify when you want to listen." end
+     if m.linked then return "Spotify linked",m.message or "Your link is saved. Open Spotify and play something." end
+     return "Connect Spotify","Run Companion/StartSpotify.cmd, play something in Spotify desktop, then choose Connect Spotify."
+    end
     function controller:ShowSpotifyStatus()
-     local m=self.media
-     local message=m.reauth_required and "Spotify requires browser approval again. Choose Connect Spotify."
-      or m.linked and(m.available==false and "Account saved and linked. Updates are retrying automatically; no relink is needed. "..tostring(m.message or "")or"Account saved and connected. Altair reruns do not remove this link.")
-      or "Run the companion once, then choose Connect Spotify."
-     context.Notify("Spotify connection",message,nil)
+     local title,message=spotifyStatus(self.media)
+     context.Notify(title,message,nil)
     end
 	function controller:LinkSpotify()
         if context.EnableSpotify then context.EnableSpotify()end
         self.nextPoll=0
 		return self:Enqueue("link",{clientId=tostring(get("Spotify Client ID","")):match("^%s*(.-)%s*$")})
 	end
-	local unlinkDialog=make("TextButton",root,{Name="SpotifyUnlinkConfirmation",Text="",AutoButtonColor=false,
-		Size=UDim2.fromScale(1,1),BackgroundColor3=Color3.new(),BackgroundTransparency=.35,Visible=false,ZIndex=650})
-	local unlinkCard=frame(unlinkDialog,"Card",0,0,380,184,Color3.fromRGB(20,20,22),18)
-	unlinkCard.AnchorPoint=Vector2.new(.5,.5);unlinkCard.Position=UDim2.fromScale(.5,.5);unlinkCard.Size=UDim2.new(1,-32,0,184);unlinkCard.Active=true
-	make("UISizeConstraint",unlinkCard,{Name="Bounds",MaxSize=Vector2.new(380,184)})
-	make("UIStroke",unlinkCard,{Color=white,Transparency=.94,Thickness=.7})
-	local unlinkTitle=label(unlinkCard,"Title","Disconnect Spotify?",22,20,336,24,18,white)
-	local unlinkBody=label(unlinkCard,"Description","",22,56,336,54,13,gray)
-	unlinkBody.TextWrapped=true;unlinkBody.TextTruncate=Enum.TextTruncate.None;unlinkBody.Size=UDim2.new(1,-44,0,54)
-	local function closeUnlink(confirmed)
-		local pending=controller.pendingDisconnect
-		if not pending or not controller.alive then return false end
-		controller.pendingDisconnect=nil;unlinkDialog.Visible=false
-		if confirmed then pending() end
-		return true
-	end
-	local cancel=button(unlinkCard,"Cancel","Cancel",22,128,158,36,Color3.fromRGB(40,40,43),function() closeUnlink(false) end)
-	local confirm=button(unlinkCard,"Confirm","Disconnect",190,128,168,36,Color3.fromRGB(118,42,48),function() closeUnlink(true) end)
-	cancel.Size=UDim2.new(.5,-27,0,36);confirm.Position=UDim2.new(.5,5,0,128);confirm.Size=UDim2.new(.5,-27,0,36)
-	unlinkCard.ZIndex=651
-	for _,object in ipairs(unlinkCard:GetDescendants()) do if object:IsA("GuiObject") then object.ZIndex=652 end end
-	connect(unlinkDialog.Activated,function() closeUnlink(false) end)
-	connect(input.InputBegan,function(event) if event.KeyCode==Enum.KeyCode.Escape then closeUnlink(false) end end)
-	function controller:ResolveSpotifyDisconnect(confirmed) return closeUnlink(confirmed==true) end
-	function controller:ConfirmSpotifyDisconnect(action,pauseOnly)
-		if not self.alive then return false end
-		if self.pendingDisconnect then return true end
-		self.pendingDisconnect=action;unlinkDialog.Visible=true
-		unlinkTitle.Text=pauseOnly and "Pause Spotify connection?" or "Disconnect Spotify?"
-		unlinkBody.Text=pauseOnly and "Stop Spotify updates in Altair? Your saved account link will remain available when you turn it back on."
-			or "Remove this computer's saved Spotify link? You will need to approve Spotify again to reconnect."
-		confirm.Text=pauseOnly and "Pause connection" or "Disconnect"
-		return true
-	end
+ -- One modal owner: account decisions stay separate from their presentation.
+ local unlinkPrompt=(function()
+  local width,height=380,224
+  local overlay=make("TextButton",root,{Name="SpotifyUnlinkConfirmation",Text="",AutoButtonColor=false,
+   Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Visible=false,Active=true,ZIndex=650})
+  local scrim=frame(overlay,"Scrim",0,0,0,0,Color3.new())
+  scrim.Size=UDim2.fromScale(1,1);scrim.BackgroundTransparency=1;scrim.ZIndex=650;scrim.Active=false
+  scrim:SetAttribute("AltairThemeIgnore",true)
+  local card=make("CanvasGroup",overlay,{Name="Card",AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),
+   Size=UDim2.fromOffset(width,height),BackgroundTransparency=1,GroupTransparency=1,BorderSizePixel=0,Active=true,ZIndex=651})
+  card:SetAttribute("AltairDesignManaged",true);card:SetAttribute("AltairDesignTransparencyOffset",.02)
+  corner(card,18)
+  local scale=make("UIScale",card,{Name="PresentationScale",Scale=1})
+  local backdrop=frame(card,"Backdrop",0,0,width,height,Design.Surface,18)
+  backdrop.BackgroundTransparency=.07;backdrop.ZIndex=651;backdrop:SetAttribute("AltairSurface",true)
+  backdrop:SetAttribute("AltairDesignRole","surface");backdrop:SetAttribute("AltairDesignManaged",true)
+  make("UIStroke",backdrop,{Name="UIStroke",Color=Design.Edge,Transparency=.88,Thickness=.6,ApplyStrokeMode=Enum.ApplyStrokeMode.Border,BorderStrokePosition=Enum.BorderStrokePosition.Inner})
+  local badge=frame(card,"LinkBadge",20,18,32,32,Design.Well,9)
+  badge.BackgroundTransparency=.1;badge:SetAttribute("AltairDesignRole","inset")
+  icon(badge,"Icon","link-2",8,8,16,Design.Muted)
+  label(card,"Eyebrow","SPOTIFY",62,16,296,13,9,Design.Muted)
+  local title=label(card,"Title","Disconnect Spotify?",62,31,296,24,18,Design.Ink);title.FontFace=medium
+  local rule=frame(card,"BodyRule",20,66,340,1,Design.Edge)
+  rule.BackgroundTransparency=.92;rule:SetAttribute("AltairDesignRole","divider")
+  local body=label(card,"Description","",20,82,340,60,13,Design.Muted)
+  body.TextWrapped=true;body.TextTruncate=Enum.TextTruncate.None;body.TextYAlignment=Enum.TextYAlignment.Top
+  local state={version=0,open=false,alive=true,tweens={}}
+  local prompt={};local controls={}
+  local function cancelTweens()
+   for animation in pairs(state.tweens)do animation:Cancel()end;table.clear(state.tweens)
+  end
+  local function animate(object,time,goal,style)
+   local animation=tweenService:Create(object,TweenInfo.new(time,style or Enum.EasingStyle.Quart,Enum.EasingDirection.Out),goal)
+   state.tweens[animation]=true
+   animation.Completed:Once(function()state.tweens[animation]=nil end)
+   animation:Play();return animation
+  end
+  local function fittedScale()
+   local size=root.AbsoluteSize
+   return math.max(.25,math.min(root:GetAttribute("AltairPreferredScale")or root:GetAttribute("AltairDisplayScale")or 1,
+    (math.max(1,size.X)-32)/width,(math.max(1,size.Y)-32)/height))
+  end
+  local function opacity()
+   return Design.opacityAlpha(.12,root:GetAttribute("AltairPanelTransparency")or .1)
+  end
+  local function present(open)
+   state.version+=1;state.open=open;cancelTweens()
+   local version=state.version;local base=fittedScale();local cold=not overlay.Visible
+   if open then
+    if cold then scrim.BackgroundTransparency=1;card.GroupTransparency=1;scale.Scale=base*.965 end
+    backdrop.BackgroundTransparency=opacity();overlay.Visible=true;card.Interactable=true
+    for _,control in ipairs(controls)do
+     animate(control.object,.14,{BackgroundTransparency=.08});animate(control.rim,.14,{Transparency=.9});animate(control.scale,.18,{Scale=1})
+    end
+    animate(scrim,.18,{BackgroundTransparency=.58});animate(card,.2,{GroupTransparency=0})
+    animate(scale,.24,{Scale=base},Enum.EasingStyle.Back)
+   else
+    card.Interactable=false
+    animate(scrim,.18,{BackgroundTransparency=1});animate(card,.18,{GroupTransparency=1})
+    animate(scale,.21,{Scale=base*.975})
+    task.delay(.22,function()if state.alive and state.version==version then overlay.Visible=false end end)
+   end
+   return version,cold
+  end
+  function prompt:Resolve(confirmed)
+   local action=controller.pendingDisconnect
+   if not action or not controller.alive or not state.alive then return false end
+   controller.pendingDisconnect=nil;present(false)
+   if confirmed then action()end
+   return true
+  end
+  local function control(name,text,x,w,color,action)
+   local object=make("TextButton",card,{Name=name,Text=text,Position=UDim2.fromOffset(x,166),Size=UDim2.fromOffset(w,38),
+    BackgroundColor3=color,BackgroundTransparency=.08,BorderSizePixel=0,AutoButtonColor=false,TextSize=13,FontFace=medium,TextColor3=Design.Ink,ZIndex=652})
+   corner(object,9);object:SetAttribute("AltairDesignRole","control")
+   local rim=make("UIStroke",object,{Name="UIStroke",Color=Design.Edge,Transparency=.9,Thickness=.6,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+   local feedback=make("UIScale",object,{Name="ButtonFeedback",Scale=1})
+   controls[#controls+1]={object=object,rim=rim,scale=feedback}
+   connect(object.Activated,action)
+   connect(object.MouseEnter,function()if not state.open then return end;animate(object,.14,{BackgroundTransparency=0});animate(rim,.14,{Transparency=.65})end)
+   connect(object.MouseLeave,function()animate(object,.18,{BackgroundTransparency=.08});animate(rim,.18,{Transparency=.9});animate(feedback,.2,{Scale=1})end)
+   connect(object.MouseButton1Down,function()if state.open then animate(feedback,.09,{Scale=.97})end end)
+   connect(object.MouseButton1Up,function()animate(feedback,.23,{Scale=1},Enum.EasingStyle.Back)end)
+   return object
+  end
+  control("Cancel","Cancel",20,164,Design.Raised,function()prompt:Resolve(false)end)
+  local confirm=control("Confirm","Disconnect",192,168,Color3.fromRGB(118,42,48),function()prompt:Resolve(true)end)
+  for _,object in ipairs(card:GetDescendants())do if object:IsA("GuiObject")and object~=backdrop then object.ZIndex=652 end end
+  local function copy(pauseOnly,version,cold)
+   local heading=pauseOnly and "Pause Spotify connection?"or"Disconnect Spotify?"
+   local description=pauseOnly and "Stop Spotify updates in Altair? Your saved account link will remain available when you turn it back on."
+    or"Remove this computer's saved Spotify link? Desktop playback can be connected again; Web API playback will need browser approval."
+   local caption=pauseOnly and "Pause connection"or"Disconnect"
+   local function apply()
+    title.Text=heading;body.Text=description;confirm.Text=caption
+    animate(title,.12,{TextTransparency=0});animate(body,.12,{TextTransparency=0});animate(confirm,.12,{TextTransparency=0})
+   end
+   if not cold and(title.Text~=heading or body.Text~=description or confirm.Text~=caption)then
+    animate(title,.07,{TextTransparency=1});animate(body,.07,{TextTransparency=1});animate(confirm,.07,{TextTransparency=1})
+    task.delay(.075,function()if state.alive and state.open and state.version==version then apply()end end)
+   else apply()end
+  end
+  function prompt:Show(action,pauseOnly)
+   if not state.alive or not controller.alive or type(action)~="function"then return false end
+   controller.pendingDisconnect=action
+   local version,cold=present(true);copy(pauseOnly,version,cold)
+   return true
+  end
+  function prompt:Destroy()
+   if not state.alive then return end
+   state.alive=false;state.version+=1;controller.pendingDisconnect=nil;cancelTweens();overlay:Destroy()
+  end
+  connect(overlay.Activated,function()prompt:Resolve(false)end)
+  connect(input.InputBegan,function(event)if event.KeyCode==Enum.KeyCode.Escape then prompt:Resolve(false)end end)
+  connect(root:GetPropertyChangedSignal("AbsoluteSize"),function()if state.open then animate(scale,.18,{Scale=fittedScale()})end end)
+  connect(root:GetAttributeChangedSignal("AltairPreferredScale"),function()if state.open then animate(scale,.18,{Scale=fittedScale()})end end)
+  connect(root:GetAttributeChangedSignal("AltairPanelTransparency"),function()if state.open then animate(backdrop,.18,{BackgroundTransparency=opacity()})end end)
+  return prompt
+ end)()
+ function controller:ResolveSpotifyDisconnect(confirmed)return unlinkPrompt:Resolve(confirmed==true)end
+ function controller:ConfirmSpotifyDisconnect(action,pauseOnly)return unlinkPrompt:Show(action,pauseOnly)end
+
 	function controller:UnlinkSpotify()
 		return self:ConfirmSpotifyDisconnect(function() self:Enqueue("unlink",{}) end,false)
 	end
@@ -5783,6 +8282,7 @@ local function bindCapsules(context)
 			return false
 		end
 		if self.media.controls and self.media.controls[action]==false then notifyError("Spotify does not currently support that control.");return false end
+		if action=="seek"and self.navigationPending then notifyError("The track is changing. Seeking will be available after playback updates.");return false end
 		if action=="seek" or action=="volume" then
 			if type(value)~="number" or value~=value or math.abs(value)==math.huge then return false end
 			if action=="seek" and (self.media.duration or 0)<=0 then return false end
@@ -5800,10 +8300,17 @@ local function bindCapsules(context)
 		self:SetMedia(optimistic)
 		return true
 	end
-	function controller:SetMedia(state)
+	function controller:SetMedia(state,freshObservation)
 		if type(state)~="table" then return end
         if state.linked and state.available==false then
          local merged=table.clone(self.media or{})
+         if freshObservation==true then
+          -- Preserve cached track details during an outage, but not the old
+          -- observation's playback, permission or error state. Missing fields
+          -- in a fresh snapshot clear those values instead of reviving them.
+          for _,key in ipairs({"connected","linked","available","playing","source","status","message",
+           "reauth_required","web_reauth_required","stale","retry_after","web_retry_after","controls"})do merged[key]=nil end
+         end
          for key,value in pairs(state)do merged[key]=value end
          state=merged
         else state=table.clone(state)end
@@ -5814,6 +8321,18 @@ local function bindCapsules(context)
 		state.artist=tostring(state.artist or ""):sub(1,300)
         state.connected=state.connected==true;state.playing=state.playing==true
         if state.linked==nil then state.linked=state.connected or(self.media and self.media.linked)or false end
+  local identifier=state.trackId or state.track_id or state.uri
+  local identity=identifier~=nil and tostring(identifier)~=""and tostring(identifier)or(state.title.."\n"..state.artist.."\n"..math.floor(state.duration))
+  local navigation=self.navigationPending
+  if navigation and navigation.completedAt and freshObservation==true and state.available~=false then
+   if identity~=navigation.identity or os.clock()>=navigation.expiresAt then self.navigationPending=nil
+   else self.nextPoll=math.min(self.nextPoll,os.clock()+.15)end
+  end
+  if identity~=self.mediaIdentity then
+   self.trackRevision=(self.trackRevision or 0)+1
+   if self.cancelSeek then self.cancelSeek("track")end
+   self.seekPreview=nil;self.mediaIdentity=identity
+  end
 		local trackChanged=self.media.title~=state.title and self.media.title~="Spotify"
         self.media,self.mediaAt=state,os.clock()
         if trackChanged and self.AnimateTrack then self:AnimateTrack(self.trackDirection or 1,true)end
@@ -5830,47 +8349,92 @@ local function bindCapsules(context)
 		return math.clamp(m.progress or 0,0,m.duration or 0)+(m.playing and math.min(os.clock()-controller.mediaAt,math.max(0,(m.duration or 0)-(m.progress or 0))) or 0)
 	end
 	local dragCancels={}
+ local mediaSliders={}
+ controller.rulerSliders={};controller.linearSliders={}
+ local function refreshSliderInteraction()
+  local busy=controller.pickerDrag~=nil
+  for _,state in ipairs(mediaSliders)do if state.IsDragging()then busy=true;break end end
+  controller.dragging=busy
+ end
 	controller.cancelDrag=function() for _,cancel in ipairs(dragCancels) do cancel() end;controller.seekPreview=nil end
 	local function slider(parent,name,x,y,w,h,color,callback)
-		local bar=frame(parent,name,x,y,w,h,Color3.fromRGB(43,43,44),h/2);bar.ClipsDescendants=true
-		local fill=frame(bar,"Fill",0,0,0,h);fill.ClipsDescendants=true
-		frame(fill,"Color",0,0,w,h,color,h/2)
-		local hit=button(bar,"Input","",0,0,w,h,nil,function() end)
-		hit:SetAttribute("NoHover",true)
-		local dragging,lastPosition=false,nil
-		local state={bar=bar,fill=fill,value=0}
-		local function ratio(position)
+  local seeking=name=="Seek";local owner=parent==music and "music"or "center"
+  local bar=frame(parent,name,x,y,w,h,Color3.fromRGB(43,43,44),h/2);bar.ClipsDescendants=true
+  local fill=frame(bar,"Fill",0,0,0,h);fill.ClipsDescendants=true
+  frame(fill,"Color",0,0,w,h,color,h/2)
+  local hit=button(bar,"Input","",0,0,w,h,nil,function()end);hit:SetAttribute("NoHover",true)
+  local level
+  if not seeking then
+   level=label(bar,"Level","0%",5,8,w-10,14,8,white);level.Size=UDim2.new(1,-10,0,14);level.TextXAlignment=Enum.TextXAlignment.Center;level.FontFace=medium;level.ZIndex=bar.ZIndex+2
+   level.BackgroundColor3=Design.Surface;level.BackgroundTransparency=.18;corner(level,4)
+   level:SetAttribute("AltairDesignRole","control");level:SetAttribute("AltairDesignManaged",true);level:SetAttribute("AltairThemeIgnore",true)
+  end
+   local dragging,lastPosition=false,nil
+   local visibilityConnections={}
+  local state={bar=bar,fill=fill,Input=hit,value=0,maximum=seeking and 1 or 100,seek=seeking,owner=owner}
+  state.IsDragging=function()return dragging~=false end
+  local function shown()
+    if not controller.alive or controller.view~=owner or not bar.Parent
+     or(seeking and(not controller.media.connected or(controller.media.duration or 0)<=0 or controller.navigationPending))then return false end
+    local object=bar
+    while object do
+     if object:IsA("GuiObject")and not object.Visible then return false
+     elseif object:IsA("ScreenGui")then return object.Enabled end
+     object=object.Parent
+    end
+    return false
+  end
+  function state:Set(ratio,animate,total)
+   self.value=math.clamp(tonumber(ratio)or 0,0,1)
+   self.maximum=seeking and math.max(1,tonumber(total)or controller.media.duration or 1)or 100
+   if level then set(level,"Text",tostring(math.floor(self.value*100+.5)).."%")end
+   local size=bar:GetAttribute("AltairVertical")and UDim2.fromScale(1,self.value)or UDim2.fromScale(self.value,1)
+   if animate then tween(fill,.12,{Size=size})else fill.Size=size end
+  end
+  function state:Cancel()
+   dragging=false;self.session=nil
+    for _,connection in ipairs(visibilityConnections)do connection:Disconnect()end;table.clear(visibilityConnections)
+   if seeking then controller.seekPreview=nil end
+   refreshSliderInteraction()
+  end
+  local function ratio(position)
    if bar:GetAttribute("AltairVertical")then return math.clamp(1-(position.Y+root.AbsolutePosition.Y-bar.AbsolutePosition.Y)/math.max(1,bar.AbsoluteSize.Y),0,1)end
    return math.clamp((position.X+root.AbsolutePosition.X-bar.AbsolutePosition.X)/math.max(1,bar.AbsoluteSize.X),0,1)
   end
-		local function move(position,finished)
-			lastPosition=position;state.value=ratio(position)
-			fill.Size=bar:GetAttribute("AltairVertical")and UDim2.fromScale(1,state.value)or UDim2.fromScale(state.value,1);callback(state.value,finished)
-		end
-		local function cancel() dragging=false;controller.dragging=false end
-		dragCancels[#dragCancels+1]=cancel
-		connect(hit.InputBegan,function(event)
-			if dragging then return end
-			if event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch then
-				controller.dragging=true;dragging=event
-				move(event.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation(),false)
-			end
-		end)
-		connect(input.InputChanged,function(event)
-			if dragging and (event==dragging or (dragging.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseMovement)) then
-				move(event.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation(),false)
-			end
-		end)
-		connect(input.InputEnded,function(event)
-			if dragging and (event==dragging or (dragging.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseButton1)) then
-				local position=dragging.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation()
-				dragging=false;controller.dragging=false;move(position or lastPosition,true)
-			end
-		end)
-		connect(input.WindowFocusReleased,function() cancel();controller.seekPreview=nil end)
-		state.IsDragging=function() return dragging~=false end
-		return state
+  local function move(position,finished)
+   if not shown()or not state.session or(seeking and state.session.revision~=(controller.trackRevision or 0))then state:Cancel();return end
+   lastPosition=position;state:Set(ratio(position),false);callback(state.value,finished)
+  end
+  dragCancels[#dragCancels+1]=function()state:Cancel()end
+  mediaSliders[#mediaSliders+1]=state;controller.linearSliders[#controller.linearSliders+1]=state
+  connect(hit.InputBegan,function(event)
+   if dragging or not shown()then return end
+   if event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch then
+    dragging=event;state.session={revision=controller.trackRevision or 0};refreshSliderInteraction()
+     local ancestor=bar
+     while ancestor do
+      local property=ancestor:IsA("GuiObject")and"Visible"or ancestor:IsA("ScreenGui")and"Enabled"
+      if property then visibilityConnections[#visibilityConnections+1]=ancestor:GetPropertyChangedSignal(property):Connect(function()if not shown()then state:Cancel()end end)end
+      ancestor=ancestor.Parent
+     end
+    move(event.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation(),false)
+   end
+  end)
+  connect(input.InputChanged,function(event)
+   if dragging and(event==dragging or(dragging.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseMovement))then
+    move(event.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation(),false)
+   end
+  end)
+  connect(input.InputEnded,function(event)
+   if dragging and(event==dragging or(dragging.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseButton1))then
+    local position=dragging.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation()
+     dragging=false;move(position or lastPosition,true);state:Cancel()
+   end
+  end)
+  connect(input.WindowFocusReleased,function()state:Cancel()end)
+  return state
 	end
+ controller.cancelSeek=function(reason)for _,state in ipairs(mediaSliders)do if state.seek then state:Cancel(reason)end end end
 	local function playbackGlyph(parent,kind,color)
 		parent.Text=""
 		local glyph=frame(parent,"Glyph",0,0,16,16)
@@ -5914,16 +8478,17 @@ local function bindCapsules(context)
 			local seconds=value*(controller.media.duration or 0)
 			if finished then controller:Control("seek",seconds);controller.seekPreview=nil else controller.seekPreview=seconds end
 		end)
-		-- A larger invisible hit target retains the thin reference progress bar.
+		-- Keep the reference track thin while preserving a forgiving hit target.
 		seek.bar.ClipsDescendants=false
-		local seekInput=seek.bar.Input;seekInput.Size=UDim2.new(1,0,0,16);seekInput.Position=UDim2.fromOffset(0,-6)
+		seek.Input.Size=UDim2.new(1,0,0,16);seek.Input.Position=UDim2.fromOffset(0,-6)
 		local elapsed=label(group,"Elapsed","0:00",11,54,65,12,9,gray)
 		local duration=label(group,"Duration","--:--",w-76,54,65,12,9,gray);duration.TextXAlignment=Enum.TextXAlignment.Right
 		playbackGlyph(previous,"previous",white);playbackGlyph(nextButton,"next",white)
-		playerViews[#playerViews+1]={title=title,artist=artist,play=play,renderPlay=playbackGlyph(play,"play",white),seek=seek,elapsed=elapsed,duration=duration}
+		playerViews[#playerViews+1]={group=group,title=title,artist=artist,play=play,renderPlay=playbackGlyph(play,"play",white),seek=seek,elapsed=elapsed,duration=duration}
 	end
     controller.trackRest=setmetatable({}, {__mode="k"})
  function controller:AnimateTrack(direction,arriving)
+  self.trackAnimationVersion=(self.trackAnimationVersion or 0)+1;local version=self.trackAnimationVersion
   for _,player in ipairs(playerViews)do
    for _,object in ipairs({player.title,player.artist})do
     local rest=self.trackRest[object]or object.Position;self.trackRest[object]=rest
@@ -5932,72 +8497,115 @@ local function bindCapsules(context)
      tween(object,.3,{Position=rest},Enum.EasingStyle.Quart)
     else
      tween(object,.1,{Position=rest+UDim2.fromOffset(-direction*5,0)})
-     task.delay(.11,function()if self.alive and object.Parent then tween(object,.3,{Position=rest},Enum.EasingStyle.Back)end end)
+     task.delay(.11,function()if self.alive and object.Parent and self.trackAnimationVersion==version then tween(object,.3,{Position=rest},Enum.EasingStyle.Back)end end)
     end
    end
   end
  end
 	local originalBrightness=lighting.Brightness
-	local brightnessChanged=false
+	local brightnessChanged=false;local ownedBrightness
 	local brightness=slider(center,"Brightness",11,71,136,22,white,function(value)
-		brightnessChanged=true;lighting.Brightness=value*3
+		brightnessChanged=true;lighting.Brightness=value*3;ownedBrightness=lighting.Brightness
 	end)
 	icon(center,"BrightnessIcon","sun",20,77,12,Color3.fromRGB(194,148,35))
-	brightness.fill.Size=brightness.bar:GetAttribute("AltairVertical")and UDim2.fromScale(1,math.clamp(originalBrightness/3,0,1))or UDim2.fromScale(math.clamp(originalBrightness/3,0,1),1)
+	brightness:Set(math.clamp(originalBrightness/3,0,1),false)
 	local volume=slider(center,"SpotifyVolume",153,71,136,22,white,function(value,finished)
 		if finished then controller:Control("volume",value) end
 	end)
 	local speaker=icon(center,"VolumeIcon","volume-2",163,77,12,gray)
 	local mute=icon(center,"VolumeMute","volume-x",163,77,12,gray)
 	local timerSummary,timerCancel
-	controller.timerDraft=300;controller.timerUnit=60;controller.rulerTarget=5;controller.rulerDisplay=5
+	-- Timer setup extends the current control centre; it never opens a second shell.
+	duration:SetAttribute("AltairInlineView",true)
+	duration.Parent=center;duration.Position=UDim2.fromOffset(0,180);duration.Size=UDim2.fromOffset(300,64)
+	duration.Visible=false;duration.GroupTransparency=1
+	controller.timerDraft=300
 	local timerEntry=make("TextBox",duration,{Name="Duration",Text="05:00",ClearTextOnFocus=false,
 		Position=UDim2.fromOffset(11,32),Size=UDim2.fromOffset(278,30),BackgroundTransparency=1,
-		TextColor3=amber,TextSize=24,FontFace=medium,TextXAlignment=Enum.TextXAlignment.Center})
-	label(duration,"Title","Set timer",12,9,135,16,11,white)
-	local minutesButton,secondsButton
+		TextColor3=amber,TextSize=24,FontFace=medium,TextXAlignment=Enum.TextXAlignment.Center,Visible=false})
+	local divider=frame(duration,"Divider",11,0,278,1,white);divider.BackgroundTransparency=.94
+	local draftReadout=label(duration,"DraftReadout","05:00",222,5,67,17,13,amber);draftReadout.TextXAlignment=Enum.TextXAlignment.Center;draftReadout.FontFace=medium
+	local durationControl,startTimer
 	local function syncDraft()
 		if input:GetFocusedTextBox()~=timerEntry then timerEntry.Text=Clock.Format(controller.timerDraft,false,true) end
-		controller.rulerTarget=controller.timerUnit==60 and math.floor(controller.timerDraft/60) or controller.timerDraft%60
+  draftReadout.Text=Clock.Format(controller.timerDraft,false,true)
+  if startTimer then startTimer.Text="Start "..(controller.timerDraft%60==0 and tostring(controller.timerDraft/60).."min"or Clock.Format(controller.timerDraft,false,true))end
+  if durationControl and not durationControl.IsDragging()then durationControl:Sync(false)end
 	end
 	function controller:SetTimerDraft(seconds)
 		if type(seconds)~="number" or seconds~=seconds then return end
 		self.timerDraft=math.clamp(math.floor(seconds+.5),1,86400);syncDraft()
 	end
-	local function selectUnit(unit)
-		controller.timerUnit=unit;syncDraft();controller.rulerDisplay=controller.rulerTarget
-		for _,spec in {{minutesButton,60},{secondsButton,1}} do
-			local selected=unit==spec[2]
-			tween(spec[1],.16,{BackgroundColor3=selected and white or Color3.fromRGB(32,32,33),TextColor3=selected and Color3.fromRGB(20,20,20) or gray})
-		end
-	end
-	minutesButton=button(duration,"Minutes","Min",196,8,42,19,white,function() selectUnit(60) end)
-	secondsButton=button(duration,"Seconds","Sec",244,8,42,19,Color3.fromRGB(32,32,33),function() selectUnit(1) end)
-	minutesButton.TextColor3=Color3.fromRGB(20,20,20);minutesButton.TextSize=9;secondsButton.TextSize=9
-	local pickerRuler=frame(duration,"Ruler",11,76,278,35);pickerRuler.ClipsDescendants=true
-	local rulerInput=button(pickerRuler,"Input","",0,0,278,35,nil,function() end);rulerInput:SetAttribute("NoHover",true)
-	rulerInput.ZIndex=295
-	local pickerTicks={}
-	for i=1,61 do
-		local tick=frame(pickerRuler,"Tick"..i,0,0,1,9,amber)
-		local caption=label(pickerRuler,"Label"..i,"",0,16,26,12,8,gray);caption.TextXAlignment=Enum.TextXAlignment.Center
-		pickerTicks[i]={tick=tick,label=caption}
-	end
-	icon(duration,"Selection","chevron-down",145,64,10,amber)
-	label(duration,"Hint","Drag the ruler or scroll to adjust",11,109,278,12,8,gray).TextXAlignment=Enum.TextXAlignment.Center
-	function controller:EndTimerEntry(start)
-		self.picker=false;self.dragging=false;self.pickerDrag=nil
+	local pickerRuler=frame(duration,"Ruler",11,5,202,43);pickerRuler.ClipsDescendants=false
+	local rulerInput=button(pickerRuler,"Input","",0,0,202,43,nil,function()end);rulerInput:SetAttribute("NoHover",true);rulerInput.Visible=false;rulerInput.Active=false;rulerInput.Interactable=false
+	local durationHint=label(duration,"Hint","Drag minutes · tap for seconds",11,49,202,12,9,gray);durationHint.TextXAlignment=Enum.TextXAlignment.Center
+ if not context.BuildOnly then
+  durationControl={bar=pickerRuler,held=false}
+  durationControl.IsDragging=function()local r=durationControl.ruler;return durationControl.held or r and(r:IsDragging()or r:IsCoasting()or r.InputStage=="snap")or false end
+  function durationControl:Cancel()
+   self.held=false;controller.pickerDrag=nil
+   if self.ruler then self.ruler:Cancel(true)end;refreshSliderInteraction()
+  end
+  function durationControl:Sync(animated)
+   if not self.ruler then return end
+   local value=controller.timerDraft
+   if self.ruler.suspended or math.abs(self.ruler:GetValue()-value)>1e-5 then self.ruler:Set(value,animated==true)end
+  end
+  function durationControl:ApplyStyle(animated)
+   if not self.ruler then return end
+   local precision=self.ruler.precision
+   self.ruler:Configure({Range={1,86400},Value=controller.timerDraft,Step=60,TickStep=60,PrecisionStep=1,PrecisionZoom=60,PrecisionLabel="",SnapOrigin=0,
+    Color=Color3.fromRGB(240,158,30),FutureColor=Color3.fromRGB(76,52,17),MarkerColor=Color3.fromRGB(180,126,42),Animate=animated==true})
+   if controller.picker and controller.view=="center"then self.ruler:SetPrecision(precision,false)else self.ruler:Cancel(true)end
+  end
+  local function allowed()return controller.alive and controller.picker and controller.view=="center"and duration.Visible end
+  local function capture()
+   controller.dragging=true
+  end
+  durationControl.ruler=buildRuler(pickerRuler,{Name="RulerControl",Skin="Altair",Range={1,86400},Value=300,Step=60,TickStep=60,PrecisionStep=1,PrecisionZoom=60,PrecisionLabel="",SnapOrigin=0,Scale=.4,PoolLimit=96,Size=UDim2.fromScale(1,1),CanInteract=allowed,
+   OnChanged=function(value)
+    if not allowed()then return end
+    controller:SetTimerDraft(value);refreshSliderInteraction()
+   end,
+   OnCommit=function()
+    durationControl.held=false;syncDraft();refreshSliderInteraction()
+   end,
+  })
+  connect(durationControl.ruler.Zoom.Changed,function(zoom)
+   durationHint.Text=zoom>1.01 and"Drag seconds · tap for minutes"or"Drag minutes · tap for seconds"
+  end)
+  durationControl:ApplyStyle(false)
+  connect(durationControl.ruler.Input.InputBegan,function(event)
+   if allowed()and(event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch)then durationControl.held=event;capture()end
+  end)
+  connect(input.InputEnded,function(event)local held=durationControl.held;if held and(held==event or(held.UserInputType==Enum.UserInputType.MouseButton1 and event.UserInputType==Enum.UserInputType.MouseButton1))then durationControl.held=false;refreshSliderInteraction()end end)
+  connect(input.WindowFocusReleased,function()durationControl:Cancel()end)
+  dragCancels[#dragCancels+1]=function()durationControl:Cancel()end
+  mediaSliders[#mediaSliders+1]=durationControl;controller.rulerSliders[#controller.rulerSliders+1]=durationControl;controller.timerRuler=durationControl
+ end
+	function controller:EndTimerEntry(start,closingShell)
+  self.timerEntryGeneration=(self.timerEntryGeneration or 0)+1;local generation=self.timerEntryGeneration
+  if durationControl then durationControl:Cancel()end
+		self.picker=false;self.pickerDrag=nil;refreshSliderInteraction()
 		if input:GetFocusedTextBox()==timerEntry then timerEntry:ReleaseFocus() end
 		if start then clock:StartTimer(self.timerDraft) end
-		self.hoverLeftAt=nil;self:Open("center")
+		self.hoverLeftAt=nil
+  if closingShell then sizes.center=Vector2.new(300,180)end
+  tween(duration,.10,{GroupTransparency=1})
+  task.delay(.12,function()
+   if not self.alive or generation~=self.timerEntryGeneration or self.picker then return end
+   duration.Visible=false;if not closingShell then self:SetViewSize("center",Vector2.new(300,180),.28)end
+  end)
 	end
 	function controller:BeginTimerEntry()
+  self.timerEntryGeneration=(self.timerEntryGeneration or 0)+1
 		self.picker=true;self.hoverLeftAt=nil
 		self:SetTimerDraft(clock.timer and clock:Remaining() or self.timerDraft)
-		self:Open("duration")
+		self:Open("center");self:SetViewSize("center",Vector2.new(300,244),.30)
+  duration.Visible=true;duration.GroupTransparency=1;tween(duration,.16,{GroupTransparency=0})
+  if durationControl then durationControl:Sync(false)end
 	end
-	button(duration,"Cancel","Cancel",11,128,136,27,Color3.fromRGB(32,32,33),function() controller:EndTimerEntry(false) end).TextSize=10
-	local startTimer=button(duration,"Start","Start timer",153,128,136,27,amber,function() controller:EndTimerEntry(true) end)
+	startTimer=button(duration,"Start","Start 5min",222,26,67,27,amber,function() controller:EndTimerEntry(true) end)
 	startTimer.TextSize=10;startTimer.TextColor3=Color3.fromRGB(25,20,10)
 	connect(timerEntry.FocusLost,function(enter)
 		if not controller.picker then return end
@@ -6017,43 +8625,12 @@ local function bindCapsules(context)
 			context.Notify("Timer","Enter minutes:seconds, from 00:01 to 1440:00.")
 		end
 	end)
-	local function changeRuler(position)
-		local drag=controller.pickerDrag;if not drag then return end
-		local value=drag.value-(position.X-drag.x)/(7*math.max(.01,scale.Scale))
-		value=math.clamp(value,0,controller.timerUnit==60 and 1440 or 59)
-		local rounded=math.floor(value+.5)
-		local total=controller.timerUnit==60 and rounded*60+drag.remainder or drag.minutes*60+rounded
-		controller:SetTimerDraft(total);controller.rulerTarget=value
-	end
-	connect(rulerInput.InputBegan,function(event)
-		if event.UserInputType~=Enum.UserInputType.MouseButton1 and event.UserInputType~=Enum.UserInputType.Touch then return end
-		local position=event.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation()
-		controller.pickerDrag={input=event,x=position.X,value=controller.rulerTarget,remainder=controller.timerDraft%60,minutes=math.floor(controller.timerDraft/60)}
-		controller.dragging=true
-	end)
-	connect(input.InputChanged,function(event)
-		local drag=controller.pickerDrag
-		if drag and (event==drag.input or event.UserInputType==Enum.UserInputType.MouseMovement) then
-			changeRuler(event.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation())
-		end
-	end)
-	connect(input.InputEnded,function(event)
-		local drag=controller.pickerDrag
-		if drag and (event==drag.input or event.UserInputType==Enum.UserInputType.MouseButton1) then
-			changeRuler(event.UserInputType==Enum.UserInputType.Touch and event.Position or input:GetMouseLocation())
-			controller.pickerDrag=nil;controller.dragging=false;syncDraft()
-		end
-	end)
-	connect(rulerInput.InputChanged,function(event)
-		if event.UserInputType==Enum.UserInputType.MouseWheel then controller:SetTimerDraft(controller.timerDraft+event.Position.Z*controller.timerUnit) end
-	end)
-	connect(input.WindowFocusReleased,function() controller.pickerDrag=nil;controller.dragging=false;syncDraft() end)
 	local timerTile=button(center,"TimerTile","",11,102,136,33,controlColor,function()
-		if clock.timer then controller:Open("timer") else controller:BeginTimerEntry() end
+		if controller.picker then controller:EndTimerEntry(false)elseif clock.timer then controller:Open("timer") else controller:BeginTimerEntry() end
 	end)
 	label(timerTile,"Label","Timer",10,3,90,12,9,gray)
 	timerSummary=label(timerTile,"Value","Set",10,15,90,15,12,white);timerSummary.FontFace=medium
-	timerCancel=button(timerTile,"Cancel","",110,7,20,20,Color3.fromRGB(40,40,41),function() clock:CancelTimer() end)
+	timerCancel=button(timerTile,"Cancel","",110,7,20,20,Color3.fromRGB(40,40,41),function()if controller.picker then controller:EndTimerEntry(false)else clock:CancelTimer()end end)
 	icon(timerCancel,"Close","x",5,5,10,white);timerCancel.Visible=false
 
 	local watchTile=button(center,"WatchTile","",153,102,136,33,controlColor,function()
@@ -6067,24 +8644,37 @@ local function bindCapsules(context)
 	for _,tile in {timerTile,watchTile} do
 		barTile(tile,tile==timerTile and "Scripts" or "Playerlist")
 		tile.Label.TextColor3=white:Lerp(gray,.15)
-		accentOutlines[#accentOutlines+1]=make("UIStroke",tile,{Name="InsetOutline",Color=white,Thickness=.7,
-			Transparency=.9,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
+		accentOutlines[#accentOutlines+1]=make("UIStroke",tile,{Name="InsetOutline",Color=Design.Edge,Thickness=.6,
+			Transparency=.92,ApplyStrokeMode=Enum.ApplyStrokeMode.Border})
 	end
-	label(timer,"Title","Timer",11,8,100,12,9,gray)
+	local timerTitle=label(timer,"Title","Timer",11,8,100,12,9,gray)
 	local timerTime=label(timer,"Time","05:00",11,22,120,21,18,amber);timerTime.FontFace=medium
-	local timerPause=button(timer,"Pause","Ⅱ",153,11,22,22,Color3.fromRGB(65,45,7),function() clock:ToggleTimer() end)
+	local function canToggleTimer()
+		local current=clock.timer
+		return current~=nil and not current.finished and clock:Remaining()>0
+	end
+	local timerPause=button(timer,"Pause","Ⅱ",153,11,22,22,Color3.fromRGB(65,45,7),function()if canToggleTimer()then clock:ToggleTimer()end end)
 	timerPause.TextColor3=amber;timerPause.TextSize=15
+	timerPause.Active=false;timerPause.Interactable=false;timerPause.Selectable=false;timerPause.Visible=false
 	local renderTimerPause=playbackGlyph(timerPause,"pause",amber)
-	local timerClose=button(timer,"Cancel","",179,11,22,22,Color3.fromRGB(35,35,36),function() clock:CancelTimer();controller:Open(nil) end)
+ local function closeStoppedActivity()
+  local factor=math.max(.01,scale.Scale);local source=menuPill
+  controller.origin={x=(source.AbsolutePosition.X+source.AbsoluteSize.X/2-host.AbsolutePosition.X)/factor,y=(source.AbsolutePosition.Y-host.AbsolutePosition.Y)/factor,width=24,source=source}
+  controller:Open(nil)
+ end
+	local timerClose=button(timer,"Cancel","",179,11,22,22,Color3.fromRGB(35,35,36),function() clock:CancelTimer();closeStoppedActivity() end)
 	icon(timerClose,"Close","x",6,6,10,white)
 	local ruler=frame(timer,"Ruler",11,51,186,10);ruler.ClipsDescendants=true
 	local rulerStrip=frame(ruler,"Ticks",0,0,230,10)
-	for index=0,60 do frame(rulerStrip,"Tick"..index,index*3.7, index%5==0 and 0 or 2,1,index%5==0 and 9 or 6,amber) end
+	for index=0,60 do
+  local tick=frame(rulerStrip,"Tick"..index,index*3.7,index%5==0 and 2 or 3,2,index%5==0 and 6 or 4,amber,1)
+  tick:SetAttribute("AltairDesignRole","indicator")
+ end
 	label(watch,"Title","Stopwatch",11,8,100,12,9,gray)
 	local watchTime=label(watch,"Time","00:00",11,22,100,21,18,green);watchTime.FontFace=medium
 	local fraction=label(watch,"Fraction",".00",68,27,40,14,11,green)
 	local lapButton=button(watch,"Lap","Lap",130,11,43,22,Color3.fromRGB(42,42,43),function()
-		if clock.watch.started then clock:Lap() else clock:ResetWatch();controller:Open(nil) end
+		if clock.watch.started then clock:Lap() else clock:ResetWatch();closeStoppedActivity() end
 	end);lapButton.TextSize=10
 	local watchPause=button(watch,"Pause","Ⅱ",179,11,22,22,Color3.fromRGB(11,67,25),function() clock:ToggleWatch() end)
 	watchPause.TextColor3=green;watchPause.TextSize=15
@@ -6095,6 +8685,7 @@ local function bindCapsules(context)
 		local row=frame(watch,"Lap"..index,11,49+(index-1)*13,186,12)
 		lapRows[index]={root=row,title=label(row,"Label","",0,0,35,12,9,gray),bar=frame(row,"Bar",39,4,0,4,green,2),
 			value=label(row,"Value","",135,0,51,12,9,white)}
+  lapRows[index].bar:SetAttribute("AltairDesignRole","indicator")
 		lapRows[index].value.TextXAlignment=Enum.TextXAlignment.Right
 	end
     if context.BuildOnly then
@@ -6116,7 +8707,7 @@ local function bindCapsules(context)
     end
     -- Control Centre-inspired asymmetric grid: a media tile and two tall faders.
  local mediaShelf=frame(center,"MediaShelf",10,10,180,118,controlColor,12)
- mediaShelf.BackgroundTransparency=.18
+ mediaShelf.BackgroundTransparency=.1
  if context.BuildOnly then
   for _,name in ipairs({"Artwork","Note","Title","Artist","Previous","PlayPause","Next","Seek","Elapsed","Duration"})do
    local object=center:FindFirstChild(name)
@@ -6147,21 +8738,23 @@ local function bindCapsules(context)
 
  for index,tile in ipairs({timerTile,watchTile})do
   tile:SetAttribute("AltairInsetSurface",true)
+  tile:SetAttribute("AltairDesignRole","inset")
   tile.BackgroundColor3=tile:GetAttribute("AltairTheme_BackgroundColor3")or controlColor
-  tile.BackgroundTransparency=.18;tile.TileGradient.Enabled=false
-  tile.UICorner.CornerRadius=UDim.new(0,8);tile.Size=UDim2.fromOffset(136,36)
+  tile.BackgroundTransparency=.1;tile.TileGradient.Enabled=false
+  tile.UICorner.CornerRadius=UDim.new(0,9);tile.Size=UDim2.fromOffset(136,36)
   tile.Label.Position=UDim2.fromOffset(38,4);tile.Value.Position=UDim2.fromOffset(38,17)
   local badge=frame(tile,"UtilityAccent",6,6,24,24,white,7)
   barTile(badge,index==1 and "Scripts"or "Character")
   icon(badge,"UtilitySymbol",index==1 and "timer"or "play",5,5,14,white)
  end
+ local utilityDivider=frame(center,"UtilityDivider",11,132,278,1,Design.Edge);utilityDivider.BackgroundTransparency=.92;utilityDivider:SetAttribute("AltairDesignRole","divider")
  -- Dark album-derived materials stay legible independently of interface lightness.
  mediaShelf:SetAttribute("AltairThemeIgnore",true);music:SetAttribute("AltairThemeIgnore",true)
  mediaShelf.BackgroundColor3=white
- local albumBackdrop=frame(music,"AlbumBackdrop",0,0,248,132,white,14);albumBackdrop.ZIndex=music.ZIndex-1
- local albumGradient=make("UIGradient",albumBackdrop,{Name="AlbumGradient",Rotation=0,Color=ColorSequence.new(Color3.fromRGB(17,19,24),Color3.fromRGB(36,39,46))})
+ local albumBackdrop=frame(music,"AlbumBackdrop",0,0,248,132,white,18);albumBackdrop.ZIndex=music.ZIndex-1;albumBackdrop.BackgroundTransparency=.1
+ local albumGradient=make("UIGradient",albumBackdrop,{Name="AlbumGradient",Rotation=18,Color=ColorSequence.new(Design.Surface,Design.Raised)})
  local shelfGradient=make("UIGradient",mediaShelf,{Name="AlbumGradient",Rotation=0,Color=albumGradient.Color})
- controller.albumColors={Color3.fromRGB(17,19,24),Color3.fromRGB(36,39,46)}
+ controller.albumColors={Design.Surface,Design.Raised}
  controller.albumTargets=table.clone(controller.albumColors)
  function controller:ApplyPalette(palette)
   local valid=type(palette)=="table"and type(palette[1])=="table"and type(palette[2])=="table"
@@ -6173,7 +8766,7 @@ local function bindCapsules(context)
    local h,s,v=Color3.fromRGB(rgb[1],rgb[2],rgb[3]):ToHSV()
    colors[index]=Color3.fromHSV(h,s*.72,math.clamp(v*(index==1 and .11 or .4),index==1 and .035 or .09,.4))
   end end
-  self.albumTargets=valid and colors or {Color3.fromRGB(17,19,24),Color3.fromRGB(36,39,46)}
+  self.albumTargets=valid and colors or {Design.Surface,Design.Raised}
   musicVisual.Back.TileGradient:SetAttribute("AltairAlbumDriven",valid)
   if not valid and smartBar then musicVisual.Back.TileGradient.Color=smartBar.Back.Buttons.Playerlist.UIGradient.Color end
  end
@@ -6188,9 +8781,10 @@ local function bindCapsules(context)
    local gradient=ColorSequence.new(first,second)
    albumGradient.Color=gradient;shelfGradient.Color=gradient
    if musicVisual.Back.TileGradient:GetAttribute("AltairAlbumDriven")then musicVisual.Back.TileGradient.Color=gradient end
+   local p=self.presentation;if p and p.source==musicPill then p.original.gradient=gradient;p.dirty=true end
   end
  end
- controller.placement=capsulePlacement(context,controller,root,host,scale,compact,surface)
+  controller.placement=capsulePlacement(context,controller,root,host,scale,compact,surface)
  local placement=controller.placement
  local dragHandle=root:FindFirstChild("Drag")
  if dragHandle and dragHandle:FindFirstChild("Interact")then
@@ -6258,6 +8852,7 @@ local function bindCapsules(context)
  local activityScale=make("UIScale",activityShelf,{Name="ActivityScale",Scale=1})
  local activityLayout=make("UIListLayout",activityShelf,{FillDirection=Enum.FillDirection.Horizontal,HorizontalAlignment=Enum.HorizontalAlignment.Center,VerticalAlignment=Enum.VerticalAlignment.Center,Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
  local indicators={}
+ controller.activityIndicators=indicators
  for index,spec in ipairs({{"Timer",timerPill,"timer","Scripts"},{"Stopwatch",watchPill,"watch","Character"}})do
   local indicator=activityShelf:FindFirstChild(spec[1])
   if context.BuildOnly then indicator=spec[2]:Clone();indicator.Name=spec[1];indicator.Parent=activityShelf end
@@ -6267,40 +8862,70 @@ local function bindCapsules(context)
   barTile(indicator.Back,spec[4]);indicators[index]=indicator
   connect(indicator.MouseEnter,function()placement:Reveal();controller.hoverSession=true;controller:Open(spec[3])end)
   connect(indicator.Activated,function()placement:Reveal();controller:Open(spec[3])end)
-  connect(indicator.MouseButton1Down,function()tween(indicator.ButtonFeedback,.08,{Scale=.9})end)
-  connect(indicator.MouseButton1Up,function()tween(indicator.ButtonFeedback,.24,{Scale=1},Enum.EasingStyle.Back)end)
+  connect(indicator.MouseButton1Down,function()if not indicator:GetAttribute("AltairActiveCapsule")and not indicator:GetAttribute("AltairNeighbourTransform")then tween(indicator.ButtonFeedback,.08,{Scale=.9})end end)
+  connect(indicator.MouseButton1Up,function()if not indicator:GetAttribute("AltairActiveCapsule")and not indicator:GetAttribute("AltairNeighbourTransform")then tween(indicator.ButtonFeedback,.24,{Scale=1},Enum.EasingStyle.Back)end end)
  end
  function controller:StepActivities(dt)
   local timerActive=clock.timer~=nil
   local watchActive=clock.watch.active
-  local wanted=self:IsEnabled()and self.docked and(timerActive or watchActive)
+  self.activityChipAlpha=self.activityChipAlpha or {0,0}
+  self.activityPainted=self.activityPainted or{}
+  self.activitySelectedLast=self.activitySelectedLast or{}
+  local live={timerActive,watchActive};local fading=false
+  for index,indicator in ipairs(indicators)do
+   local alpha=self.activityChipAlpha[index];local previousAlpha=alpha;alpha+=((live[index]and 1 or 0)-alpha)*(1-math.exp(-18*math.min(dt,.1)))
+   if math.abs(alpha-(live[index]and 1 or 0))<.002 then alpha=live[index]and 1 or 0 end
+   self.activityChipAlpha[index]=alpha;fading=fading or alpha>0
+   if not indicator:GetAttribute("ActivityOpacityReady")then
+    local values={};for _,object in ipairs(indicator:GetDescendants())do
+     local property=object:IsA("TextLabel")and "TextTransparency"or(object:IsA("ImageLabel")and "ImageTransparency"or(object:IsA("UIStroke")and "Transparency"or(object:IsA("Frame")and "BackgroundTransparency"or nil)))
+     if property then values[#values+1]={object,property,object[property]}end
+    end;indicator:SetAttribute("ActivityOpacityReady",true);self.activityFadeProperties=self.activityFadeProperties or {};self.activityFadeProperties[index]=values
+   end
+   local selected=self.presentation and self.presentation.source==indicator
+   if not selected and(alpha~=previousAlpha or self.activitySelectedLast[index]or not self.activityPainted[index])then
+    for _,entry in ipairs(self.activityFadeProperties[index])do if entry[1].Parent then set(entry[1],entry[2],1-(1-entry[3])*alpha)end end
+    set(indicator,"BackgroundTransparency",1-.92*alpha)
+    set(indicator,"Visible",alpha>0)
+    if not live[index]or alpha<1 or previousAlpha<1 then indicator.ButtonFeedback.Scale=.85+.15*alpha end
+    self.activityPainted[index]=true
+   end
+   self.activitySelectedLast[index]=selected==true
+  end
+  local wanted=self:IsEnabled()and self.docked and self.view==nil and(timerActive or watchActive or fading)
   if not wanted and(self.activityAlpha or 0)==0 then self.activityVisible=false;return end
   self.activityAlpha=(self.activityAlpha or 0)+((wanted and 1 or 0)-(self.activityAlpha or 0))*(1-math.exp(-18*math.min(dt,.1)))
   if math.abs(self.activityAlpha-(wanted and 1 or 0))<.001 then self.activityAlpha=wanted and 1 or 0 end
-  activityShelf.Visible=self.activityAlpha>0;activityShelf.GroupTransparency=1-self.activityAlpha
+  set(activityShelf,"Visible",self.activityAlpha>0);set(activityShelf,"GroupTransparency",1-self.activityAlpha)
   self.activityVisible=activityShelf.Visible
   if not activityShelf.Visible then return end
-  indicators[1].Visible=timerActive;indicators[2].Visible=watchActive
-  indicators[1].Value.Text="    "..Clock.Format(clock:Remaining(),false,true)
-  indicators[2].Value.Text="    "..Clock.Format(clock:Elapsed())
-  local count=(timerActive and 1 or 0)+(watchActive and 1 or 0)
+  if timerActive then set(indicators[1].Value,"Text","    "..Clock.Format(clock:Remaining(),false,true))end
+  if watchActive then set(indicators[2].Value,"Text","    "..Clock.Format(clock:Elapsed()))end
+  local count=(self.activityChipAlpha[1]>0 and 1 or 0)+(self.activityChipAlpha[2]>0 and 1 or 0)
   local dragState=context.GetDragState and context.GetDragState();if not dragState then return end
   local vertical=dragState.dock=="left"or dragState.dock=="right"
-  activityLayout.FillDirection=vertical and Enum.FillDirection.Vertical or Enum.FillDirection.Horizontal
+  set(activityLayout,"FillDirection",vertical and Enum.FillDirection.Vertical or Enum.FillDirection.Horizontal)
   local width=vertical and 58 or count*58+math.max(0,count-1)*5
   local height=vertical and count*24+math.max(0,count-1)*5 or 24
-  activityShelf.Size=UDim2.fromOffset(width,height)
-  local factor=self.baseScale or 1;activityScale.Scale=factor*(.85+.15*self.activityAlpha)
+  set(activityShelf,"Size",UDim2.fromOffset(width,height))
+  local factor=self.baseScale or 1;set(activityScale,"Scale",factor*(.85+.15*self.activityAlpha))
   width*=factor;height*=factor
   local center=dragState.center;local viewport=root.AbsoluteSize;local x,y
   if vertical then
    x=center.X+(dragState.dock=="left"and 1 or -1)*(dragState.size.X/2+12+width/2);y=center.Y-height/2
   else x=center.X;y=center.Y<viewport.Y/2 and center.Y+dragState.size.Y/2+12 or center.Y-dragState.size.Y/2-height-12 end
+  if host.Visible and placement.amount>.03 then
+   local origin=compact.AbsolutePosition-root.AbsolutePosition;local size=compact.AbsoluteSize
+   if vertical then x=origin.X+size.X/2;y=origin.Y+size.Y+8
+   else x=origin.X+size.X+8+width/2;y=origin.Y+(size.Y-height)/2 end
+  end
   x=math.clamp(x,width/2+8,math.max(width/2+8,viewport.X-width/2-8));y=math.clamp(y,8,math.max(8,viewport.Y-height-8))
   local current=activityShelf.Position;local position=Vector2.new(current.X.Offset,current.Y.Offset)
   if not self.activityInitialized then position=Vector2.new(x,y+6);self.activityInitialized=true end
-  position=position:Lerp(Vector2.new(x,y),1-math.exp(-22*math.min(dt,.1)))
-  activityShelf.Position=UDim2.fromOffset(position.X,position.Y)
+  local goal=Vector2.new(x,y)
+  position=(position-goal).Magnitude<.01 and goal or position:Lerp(goal,1-math.exp(-22*math.min(dt,.1)))
+  set(activityShelf,"Position",UDim2.fromOffset(position.X,position.Y))
+  self.activityPosition=activityShelf.Position
  end
 
  function controller:GetDockObstacle()
@@ -6309,9 +8934,11 @@ local function bindCapsules(context)
    local p,z=activityShelf.AbsolutePosition,activityShelf.AbsoluteSize;return {p.X,p.Y,p.X+z.X,p.Y+z.Y}
   end
   if placement.amount<.03 or not host.Visible then return nil end
-  local object=surface.Visible and surface or compact
+  local object=self:GetVisualObject()
   local p,z=object.AbsolutePosition,object.AbsoluteSize
-  return {p.X,p.Y,p.X+z.X,p.Y+z.Y}
+  local bounds={p.X,p.Y,p.X+z.X,p.Y+z.Y}
+  if self.activityVisible then local a,b=activityShelf.AbsolutePosition,activityShelf.AbsoluteSize;bounds={math.min(bounds[1],a.X),math.min(bounds[2],a.Y),math.max(bounds[3],a.X+b.X),math.max(bounds[4],a.Y+b.Y)}end
+  return bounds
  end
 	local obstacles={}
 	for _,name in ipairs({"SmartBar","Drag","Character","Scripts","Playerlist","Settings","ScriptSearch","CustomScriptPrompt","ModeratorDetectionPrompt"}) do
@@ -6325,7 +8952,7 @@ local function bindCapsules(context)
 		if requested==3 then requested=1.25 end
 		local factor=math.clamp(requested,.65,2)
 		factor=math.min(factor*(root:GetAttribute("AltairDisplayScale") or displayScale(viewport)),math.max(.45,(viewport.X-24)/300))
-		factor=math.min(factor,math.max(.3,(viewport.Y-24)/180))
+		factor=math.min(factor,math.max(.3,(viewport.Y-24)/244))
 		if not self.placement then scale.Scale=factor end
         local dock=context.GetDragState and context.GetDragState()
         local iconOnly=dock and(dock.dock=="left"or dock.dock=="right")and(self.docked or get("Capsule Position","Dynamic")=="Drag Bar Only")or false
@@ -6335,7 +8962,8 @@ local function bindCapsules(context)
          for handle in pairs(self.externalHandles)do handle:SetIconOnly(iconOnly)end
          tween(compactTitle,.18,{TextTransparency=iconOnly and 1 or 0})
          for _,pill in ipairs({timerPill,watchPill})do
-          tween(pill,.22,{Size=UDim2.fromOffset(iconOnly and 24 or 50,24)})
+          local p=self.presentation;local target=p and p.source==pill and p.slot or pill
+          tween(target,.22,{Size=UDim2.fromOffset(iconOnly and 24 or 50,24)})
           tween(pill.Value,.18,{TextTransparency=iconOnly and 1 or 0})
          end
          syncCompactBounds()
@@ -6352,6 +8980,7 @@ local function bindCapsules(context)
 		end end
 		if context.Notifications then for _,object in ipairs(context.Notifications:GetObstacles()) do candidates[#candidates+1]=object end end
 		placement:Layout(width,height,factor,candidates)
+  if self.presentation then self.presentation.dirty=true end
   self.baseScale=factor
   local enabled=self:IsEnabled()
   if self.lastEnabled~=enabled then
@@ -6367,39 +8996,144 @@ local function bindCapsules(context)
 		return x>=p.X-margin and x<=p.X+s.X+margin
 			and y>=p.Y-margin and y<=p.Y+s.Y+margin
 	end
-	connect(surface.MouseEnter,function()
-		controller.hoverSession=true;controller.hoverLeftAt=nil;controller.hoverReachedSurface=true
-	end)
+ -- Transfer hover ownership only after the expanded shell is under the pointer.
+ -- A hoisted pill initially sits under the mouse; that is not a completed transfer.
+ function controller:HoverContains(pointer)
+  local visual=self:GetVisualObject()
+  local onSurface=visual and visual.Visible and inside(visual,pointer)or false
+  local source=self:GetPresentationSourceBounds()or self.hoverSourceBounds
+  local margin=math.max(18,24*scale.Scale)
+  local function within(bounds)
+   return bounds and pointer.X>=bounds[1]-margin and pointer.X<=bounds[3]+margin
+    and pointer.Y>=bounds[2]-margin and pointer.Y<=bounds[4]+margin or false
+  end
+  -- Neighbour reflow can move the reserved slot away from the activation edge.
+  -- Keep that original hit area alive until the pointer transfers to the panel.
+  local onSource=within(source)or(not self.hoverReachedSurface and within(self.hoverSourceBounds))
+  local p=self.presentation
+  if onSurface and p and p.phase>.88 and not onSource then self.hoverReachedSurface=true end
+  local crossing=false
+  if source and visual and visual.Parent and not self.hoverReachedSurface then
+   local a=Vector2.new((source[1]+source[3])*.5,(source[2]+source[4])*.5)
+   local position=visual.AbsolutePosition-root.AbsolutePosition;local size=visual.AbsoluteSize
+   local b=Vector2.new(math.clamp(a.X,position.X,position.X+size.X),math.clamp(a.Y,position.Y,position.Y+size.Y))
+   local line=b-a;local lengthSquared=line:Dot(line)
+   local nearest=a+line*(lengthSquared>.01 and math.clamp((pointer-a):Dot(line)/lengthSquared,0,1)or 0)
+   crossing=(pointer-nearest).Magnitude<=margin+8
+  end
+  return onSurface or onSource or crossing or(compact.Visible and inside(compact,pointer))
+ end
 	connect(input.InputBegan,function(event)
 		if controller.picker and event.KeyCode==Enum.KeyCode.Escape then controller:EndTimerEntry(false);return end
 		if controller.view and not controller.picker and not input:GetFocusedTextBox() and (event.UserInputType==Enum.UserInputType.MouseButton1 or event.UserInputType==Enum.UserInputType.Touch)
-			and not inside(surface,event.Position) and not inside(compact,event.Position) then controller:Open(nil) end
+			and not controller:HoverContains(Vector2.new(event.Position.X,event.Position.Y))then controller:Open(nil) end
 	end)
 	local renderAccumulator=0
-	connect(runService.RenderStepped,function(dt)
-		local target=controller.morphTarget;if not target then return end
-		local state=controller.morphState
-		if not state then
-			state={x=surface.Position.X.Offset+surface.Position.X.Scale*host.Size.X.Offset,y=surface.Position.Y.Offset,width=surface.Size.X.Offset,height=surface.Size.Y.Offset,vx=0,vy=0,vwidth=0,vheight=0}
-			controller.morphState=state
-		end
-		local omega=root:GetAttribute("AltairReduceMotion")==true and 100 or 30
-		local step=math.min(dt,.1);local decay=math.exp(-omega*step);local settled=true
-		for _,key in ipairs({"x","y","width","height"}) do
-			local velocity="v"..key;local delta=state[key]-target[key]
-			local j=state[velocity]+omega*delta
-			state[key]=target[key]+(delta+j*step)*decay
-			state[velocity]=(state[velocity]-omega*j*step)*decay
-			if math.abs(state[key]-target[key])>.12 then settled=false end
-		end
-		if settled then
-			for _,key in ipairs({"x","y","width","height"}) do state[key]=target[key];state["v"..key]=0 end
-		end
-		surface.Size=UDim2.fromOffset(math.max(1,state.width),math.max(1,state.height));surface.Position=UDim2.fromOffset(state.x,state.y)
-        if controller.circleCarry then controller.circleCarry.Position=UDim2.fromOffset(state.x-state.width/2-17,0) end
-        if controller.returningMusic then controller.returningMusic.Position=UDim2.fromOffset(state.x+state.width/2+5+controller.returningMusic.Size.X.Offset/2,0) end
-        if settled then controller.morphTarget=nil;if controller.finishMorph then local finish=controller.finishMorph;controller.finishMorph=nil;finish()end end
-	end)
+ local function capsuleSpring(value,velocity,target,omega,zeta,dt)
+  local delta=value-target;local frequency=omega*math.sqrt(math.max(.0001,1-zeta*zeta))
+  local decay=math.exp(-zeta*omega*dt);local cosine,sine=math.cos(frequency*dt),math.sin(frequency*dt)
+  return target+decay*(delta*cosine+(velocity+zeta*omega*delta)/frequency*sine),decay*(velocity*cosine-(zeta*omega*velocity+omega*omega*delta)/frequency*sine)
+ end
+ local function fadeFace(part,alpha)
+  if not part or not part.object.Parent then return end
+  for _,entry in ipairs(part.opacity)do
+   if entry[1].Parent then local goal=1-(1-entry[3])*alpha;if entry[1][entry[2]]~=goal then entry[1][entry[2]]=goal end end
+  end
+ end
+ connect(runService.RenderStepped,function(dt)
+  local p=controller.presentation;if not p or not p.shell.Parent then return end
+  if not p.dirty and p.phase==p.targetPhase and not p.resize and not p.previousView then return end
+  local step=math.min(dt,.05)
+  local opening=p.targetPhase==1
+  local omega=opening and(controller.OpenOmega or 17.8)or(controller.CloseOmega or 19)
+  local zeta=opening and .87 or .98
+  p.phase,p.velocity=capsuleSpring(p.phase,p.velocity,p.targetPhase,omega,zeta,step)
+  if math.abs(p.phase-p.targetPhase)<.0005 and math.abs(p.velocity)<.02 then p.phase=p.targetPhase;p.velocity=0 end
+  local alpha=math.clamp(p.phase,0,1)
+  local target=capsuleRect(p.returnSource and p.returnSource~=p.source and p.returnSource or p.slot)
+  if target then p.collapsedRect=target end
+  local desired=p.targetPhase==0 and p.expandedRect or expandedTarget(p)
+  if not p.resize and p.phase==1 and(math.abs(desired.x-p.expandedRect.x)>.1 or math.abs(desired.y-p.expandedRect.y)>.1)then p.resize={from=table.clone(p.expandedRect),phase=0,velocity=0,duration=.22}end
+  if p.resize then
+   local resize=p.resize;local resizeOmega=17.8*.30/math.max(.12,resize.duration)
+   local shrinking=desired.width*desired.height<resize.from.width*resize.from.height
+   resize.phase,resize.velocity=capsuleSpring(resize.phase,resize.velocity,1,resizeOmega,shrinking and .98 or .87,step)
+   if math.abs(resize.phase-1)<.0005 and math.abs(resize.velocity)<.02 then resize.phase=1;resize.velocity=0 end
+   p.expandedRect=mixRect(resize.from,desired,resize.phase)
+   if resize.phase==1 then p.resize=nil end
+  else p.expandedRect=desired end
+  p.rect=mixRect(p.collapsedRect,p.expandedRect,p.phase)
+  local rect=p.rect
+  local destinationObject=p.returnSource and p.returnSource~=p.source and p.returnSource or p.slot
+  local collapsedFit=destinationObject and p.collapsedRect.width/math.max(1,destinationObject.Size.X.Offset)or p.startFit
+  local fit=collapsedFit+(1-collapsedFit)*alpha
+  p.shellScale.Scale=fit
+  shellGeometry(p.shell,rect,fit)
+  local destination=p.returnSource or p.source
+  local destinationVisual,destinationBack,destinationGradient=sourceMaterial(destination)
+  local liveBase=smartBar and smartBar.BackgroundColor3 or baseColor
+  local liveControl=smartBar and smartBar.Back.BackgroundColor3:Lerp(liveBase,.35)or controlColor
+  p.original.color=liveBase;p.original.gradient=compactGradient(p.source,p.original.gradient)
+  if p.back then p.original.backColor=p.back.BackgroundColor3 end
+  local baseTransparency=destination~=p.source and p.destinationBackground or p.original.transparency
+  p.shell.BackgroundColor3=(destination~=p.source and destination.BackgroundColor3 or p.original.color):Lerp(liveBase,alpha)
+  local collapsedAlpha=Design.materialAlpha(destination,baseTransparency)
+  p.shell.BackgroundTransparency=collapsedAlpha+((controller.surfaceOpacity or .1)-collapsedAlpha)*alpha
+  local expandedRadius=18
+  p.shell.UICorner.CornerRadius=UDim.new(p.original.corner.Scale*(1-alpha),p.original.corner.Offset+(expandedRadius-p.original.corner.Offset)*alpha)
+  if p.visual and p.visual~=p.source then
+   p.visual.Position=UDim2.new();p.visual.Size=UDim2.fromScale(1,1);p.visual.GroupTransparency=0
+  end
+  if p.back then
+   p.back.Position=p.original.backPosition:Lerp(UDim2.fromOffset(5,5),alpha);p.back.Size=p.original.backSize:Lerp(UDim2.new(1,-10,1,-10),alpha)
+   p.back.BackgroundTransparency=Design.materialAlpha(p.back,p.original.backTransparency)
+   p.back.UICorner.CornerRadius=UDim.new(0,p.original.backCorner.Offset+(13-p.original.backCorner.Offset)*alpha)
+  end
+  if p.edge then
+   p.edge.Position=p.original.edgePosition:Lerp(UDim2.fromOffset(1,1),alpha);p.edge.Size=p.original.edgeSize
+   if p.original.edgeCorner then p.edge.UICorner.CornerRadius=UDim.new(0,p.original.edgeCorner.Offset+(17-p.original.edgeCorner.Offset)*alpha)end
+  end
+  if p.gradient then
+   local compactColor=destination~=p.source and compactGradient(destination,p.original.gradient)or p.original.gradient
+   local expandedColor=p.view=="music"and compactColor or ColorSequence.new(liveBase,liveControl)
+   p.gradient.Color=tintSequence(compactColor,expandedColor,alpha)
+  end
+  local faceTarget=opening and 1-math.clamp(alpha/.4,0,1)or math.clamp((.55-alpha)/.32,0,1)
+  local contentTarget=opening and math.clamp((alpha-.25)/.6,0,1)or math.clamp((alpha-.75)/.25,0,1)
+  local neighbourTarget=opening and 1-math.clamp(alpha/.65,0,1)or math.clamp((.55-alpha)/.32,0,1)
+  local smoothing=1-math.exp(-90*step)
+  p.faceAlpha=(p.faceAlpha==nil and 1 or p.faceAlpha)+(faceTarget-(p.faceAlpha==nil and 1 or p.faceAlpha))*smoothing
+  p.contentAlpha=(p.contentAlpha or 0)+(contentTarget-(p.contentAlpha or 0))*smoothing
+  p.neighbourAlpha=(p.neighbourAlpha==nil and 1 or p.neighbourAlpha)+(neighbourTarget-(p.neighbourAlpha==nil and 1 or p.neighbourAlpha))*smoothing
+  if p.phase==p.targetPhase then p.faceAlpha=faceTarget;p.contentAlpha=contentTarget;p.neighbourAlpha=neighbourTarget end
+  for _,part in pairs(p.face)do fadeFace(part,p.returnSource and p.returnSource~=p.source and 0 or p.faceAlpha)end
+  compact.Visible=true;compact.GroupTransparency=1-p.neighbourAlpha;compact.Interactable=not opening and p.neighbourAlpha>.5
+  p.neighbourScale=.88+.12*(1-alpha)
+  for _,object in ipairs(strip:GetChildren())do
+   if object:IsA("GuiObject")and object~=p.slot and object.Name~="CapsuleReturnSlot"then
+    object:SetAttribute("AltairNeighbourTransform",true)
+    local value=neighbourScale(object);if value.Scale~=p.neighbourScale then value.Scale=p.neighbourScale end
+   end
+  end
+  if p.destinationOpacity then
+   for _,entry in ipairs(p.destinationOpacity)do if entry[1].Parent and(entry[1]==p.returnSource or entry[1]:IsDescendantOf(p.returnSource))then entry[1][entry[2]]=1 end end
+   morphChevron.Position=UDim2.fromScale(.5,.5);morphChevron.Size=UDim2.fromOffset(12,12);morphChevron.ImageTransparency=1-p.faceAlpha
+  end
+  local pageBlend=p.previousView and math.clamp((os.clock()-p.pageAt)/.16,0,1)or 1
+  for key,group in pairs(views)do
+   if not group:GetAttribute("AltairInlineView")then
+    if key==p.view then group.GroupTransparency=1-p.contentAlpha*pageBlend
+    elseif key==p.previousView then
+     group.GroupTransparency=1-p.contentAlpha*(1-pageBlend)
+     if pageBlend==1 then group.Visible=false;group.Parent=templateSurface end
+    end
+   end
+  end
+  if pageBlend==1 then p.previousView=nil end
+  p.dirty=false
+  if p.targetPhase==0 and p.phase==0 then restorePresentation(p)end
+ end)
+
 	connect(runService.Heartbeat,function(dt)
 		if context.Alive and not context.Alive() then return end
 		if clock:Tick() then
@@ -6409,20 +9143,17 @@ local function bindCapsules(context)
 		end
 		local now=os.clock()
         controller:StepAlbum(dt)
-		if controller.hoverSession and controller.view and not controller.picker and not controller.dragging and not input:GetFocusedTextBox() then
+		if controller.hoverSession and controller.view and not controller.dragging and not input:GetFocusedTextBox() then
 			local pointer=input:GetMouseLocation()
 			local inset=root.IgnoreGuiInset and Vector2.zero or game:GetService("GuiService"):GetGuiInset()
 			pointer-=inset
-			local source=controller.hoverSource
-			local crossing=false
-			if source and source.Parent and not controller.hoverReachedSurface then
-				local a,b=source.AbsolutePosition,surface.AbsolutePosition
-				local sa,sb=source.AbsoluteSize,surface.AbsoluteSize
-                local point=pointer+root.AbsolutePosition
-				crossing=point.X>=math.min(a.X,b.X)-18 and point.X<=math.max(a.X+sa.X,b.X+sb.X)+18
-					and point.Y>=math.min(a.Y,b.Y)-18 and point.Y<=math.max(a.Y+sa.Y,b.Y+sb.Y)+18
-			end
-			if inside(surface,pointer) or (compact.Visible and inside(compact,pointer)) or crossing
+			local hovering=controller:HoverContains(pointer)
+			local dragState=context.GetDragState and context.GetDragState()
+            local overDrag=dragState and math.abs(pointer.X-dragState.center.X)<=dragState.size.X/2+8 and math.abs(pointer.Y-dragState.center.Y)<=dragState.size.Y/2+8
+            if overDrag and now>(controller.hoverGraceUntil or 0)then
+             if controller.picker then controller:EndTimerEntry(false)end
+             controller.hoverSession=false;controller:Open(nil)
+            elseif hovering or controller.picker
 				or now<(controller.hoverGraceUntil or 0) then
 				controller.hoverLeftAt=nil
 			else
@@ -6448,13 +9179,15 @@ local function bindCapsules(context)
 				if not controller.alive then return end
 				controller.requestBusy=false
 				if generation~=controller.mediaGeneration or not get("Spotify Connection",false) then return end
-				if ok then controller.failures=0;controller:SetMedia(state);controller.nextPoll=math.max(controller.nextPoll,os.clock()+math.min(30,tonumber(state.retry_after)or 0))
+				if ok then controller.failures=0;controller:SetMedia(state,true);controller.nextPoll=math.max(controller.nextPoll,os.clock()+math.min(30,tonumber(state.retry_after)or 0))
 				else
 					controller.failures+=1
 					controller.nextPoll=os.clock()+math.min(30,2^math.min(5,controller.failures))
                     local cached=table.clone(controller.media)
                     cached.progress=progress();cached.linked=cached.linked or cached.connected
-                    cached.available=false;cached.stale=true;cached.status="reconnecting";cached.message="Companion unavailable; reconnecting automatically. Your saved account is retained."
+                    cached.available=false;cached.stale=true;cached.playing=false
+                    cached.status=type(state)=="table" and state.status or "reconnecting"
+                    cached.message=type(state)=="table" and state.message or "Companion unavailable. Keep it running; Altair will reconnect automatically without removing your saved link."
                     controller:SetMedia(cached)
 				end
 			end)
@@ -6471,7 +9204,7 @@ local function bindCapsules(context)
 		end
         local contextIcon="chevron-down"
         if now<(controller.flashIconUntil or 0)then contextIcon="check"
-        elseif clock.timer then contextIcon=clock.timer.started and "timer"or "pause"
+        elseif clock.timer then contextIcon=clock.timer.finished and "check"or clock.timer.started and "timer"or "pause"
         elseif clock.watch.active then contextIcon="clock"
         elseif controller.media.playing then contextIcon="music-2"
         elseif controller.media.connected and(controller.view=="music"or now<(controller.musicHoldUntil or 0))then contextIcon="pause"
@@ -6479,16 +9212,23 @@ local function bindCapsules(context)
         if contextIcon~=controller.contextIcon then
          controller.contextIcon=contextIcon;controller.iconGeneration=(controller.iconGeneration or 0)+1
          local generation=controller.iconGeneration
-         tween(menuPill.Chevron,.08,{ImageTransparency=1})
+         local activeMenu=controller.presentation and controller.presentation.source==menuPill
+         if not activeMenu then tween(menuPill.Chevron,.08,{ImageTransparency=1})end
          task.delay(.09,function()
           if controller.alive and generation==controller.iconGeneration then
            applyIcon(menuPill.Chevron,contextIcon);applyIcon(morphChevron,contextIcon)
-           tween(menuPill.Chevron,.14,{ImageTransparency=0})
+           if not(controller.presentation and controller.presentation.source==menuPill)then tween(menuPill.Chevron,.14,{ImageTransparency=0})end
           end
          end)
         end
 		local remaining,elapsed=clock:Remaining(),clock:Elapsed()
-		set(timerPill,"Visible",clock.timer~=nil and not controller.docked);set(watchPill,"Visible",clock.watch.active and not controller.docked)
+		local timerFinished=clock.timer~=nil and(clock.timer.finished or remaining<=0)
+		local timerControllable=clock.timer~=nil and not timerFinished
+		set(timerPause,"Active",timerControllable);set(timerPause,"Interactable",timerControllable)
+		set(timerPause,"Selectable",timerControllable);set(timerPause,"Visible",timerControllable)
+  local activeSource=controller.presentation and controller.presentation.source
+		if activeSource~=timerPill then set(timerPill,"Visible",clock.timer~=nil and not controller.docked)end
+  if activeSource~=watchPill then set(watchPill,"Visible",clock.watch.active and not controller.docked)end
 		local musicActive=controller.media.connected and controller.media.playing and (controller.media.duration or 0)>0
 		local retainMusic=controller.view=="music"or now<(controller.musicHoldUntil or 0)
 		-- Retain the title during exit so the whole pill fades as a single visual.
@@ -6497,28 +9237,20 @@ local function bindCapsules(context)
 		local pillWidth=math.max(60,(controller.titleWidth or 0)+35)
 		animateMusic(musicActive==true or retainMusic,pillWidth)
 		set(timerPill.Value,"Text","    "..Clock.Format(remaining,false,true));set(watchPill.Value,"Text","    "..Clock.Format(elapsed))
-		if controller.view=="duration" then
-			controller.rulerDisplay+=(controller.rulerTarget-controller.rulerDisplay)*(1-math.exp(-22*renderDt))
-			local base=math.floor(controller.rulerDisplay)
-			for index,row in ipairs(pickerTicks) do
-				local value=base+index-31
-				local x=139+(value-controller.rulerDisplay)*7
-				local valid=value>=0 and value<=(controller.timerUnit==60 and 1440 or 59)
-				local fade=math.clamp(math.abs(x-139)/139,0,1)^2
-				row.tick.Visible=valid;row.label.Visible=valid and value%5==0
-				row.tick.Position=UDim2.fromOffset(x,value%5==0 and 0 or 4)
-				row.tick.Size=UDim2.fromOffset(1,value%5==0 and 13 or 7)
-				row.tick.BackgroundTransparency=.15+.8*fade
-				row.label.Position=UDim2.fromOffset(x-13,17);row.label.Text=tostring(value);row.label.TextTransparency=fade
-			end
-		elseif controller.view=="timer" then
+		if controller.picker then
+   if durationControl and not durationControl.IsDragging()then durationControl:Sync(false)end
+		end
+  if controller.view=="timer" then
+			set(timerTitle,"Text",timerFinished and "Timer finished"or "Timer")
 			set(timerTime,"Text",Clock.Format(remaining,false,true))
-			renderTimerPause(clock.timer~=nil and clock.timer.started~=nil)
-			set(timerTime,"TextTransparency",clock.timer and not clock.timer.started and .25 or 0)
+			if timerControllable then renderTimerPause(clock.timer.started~=nil)end
+			set(timerTime,"TextTransparency",clock.timer and not timerFinished and not clock.timer.started and .25 or 0)
 			rulerStrip.Position=UDim2.fromOffset(-(((clock.timer and clock.timer.duration or 0)-remaining)*18.5%18.5),0)
 		elseif controller.view=="watch" then
 			set(watchTime,"Text",Clock.Format(elapsed));set(fraction,"Text",string.format(".%02d",math.floor((elapsed%1)*100)))
-			fraction.Position=UDim2.fromOffset(watchTime.TextBounds.X/math.max(.01,scale.Scale)+12,42)
+   local textScale=scale.Scale
+   local timeWidth=watchTime.TextBounds.X/math.max(.01,textScale)
+   fraction.Position=UDim2.fromOffset(timeWidth+12,42)
 			renderWatchPause(clock.watch.started~=nil);set(lapButton,"Text",clock.watch.started and "Lap" or "Reset")
 			local laps=clock.watch.laps;lapEmpty.Visible=#laps==0
 			local maximum=math.max(.01,elapsed-clock.watch.splitAt)
@@ -6535,23 +9267,29 @@ local function bindCapsules(context)
 		elseif controller.view=="music" or controller.view=="center" then
 			local m=controller.media
 			for _,player in ipairs(playerViews) do
-				set(player.title,"Text",m.connected and m.title or "Connect Spotify")
-				set(player.artist,"Text",m.connected and m.artist or "Settings → Experimental → Spotify")
-				player.renderPlay(m.playing)
+				local statusTitle,statusMessage=spotifyStatus(m)
+				local playbackReady=m.connected and m.available~=false and get("Spotify Connection",false) and not m.reauth_required and m.status~="authorization_required" and m.status~="waiting_for_spotify"
+				set(player.title,"Text",playbackReady and m.title or statusTitle)
+				set(player.artist,"Text",playbackReady and m.artist or statusMessage)
+				player.renderPlay(playbackReady and m.playing)
 				set(player.elapsed,"Text",Clock.Format(progress()):gsub("^0([0-9]):","%1:"))
 				set(player.duration,"Text",(m.duration or 0)>0 and Clock.Format(m.duration):gsub("^0([0-9]):","%1:") or "--:--")
-				if not player.seek.IsDragging() then player.seek.fill.Size=UDim2.fromScale((m.duration or 0)>0 and progress()/m.duration or 0,1) end
+				if player.group.Visible and player.group.GroupTransparency<.99 and not player.seek.IsDragging()then player.seek:Set((m.duration or 0)>0 and progress()/m.duration or 0,false,m.duration)end
 			end
-			set(timerSummary,"Text",clock.timer and Clock.Format(remaining,false,true) or "Set")
+			set(timerSummary,"Text",controller.picker and "Cancel"or timerFinished and "Finished"or clock.timer and Clock.Format(remaining,false,true) or "Set")
 			set(timerSummary,"TextColor3",clock.timer and amber or white);set(timerCancel,"Visible",clock.timer~=nil or controller.picker)
 			set(watchSummary,"TextColor3",clock.watch.active and green or white);set(watchCancel,"Visible",clock.watch.active)
 			set(watchSummary,"Text",clock.watch.active and Clock.Format(elapsed,true) or "Start")
-			if not volume.IsDragging() then volume.fill.Size=UDim2.fromScale(1,math.clamp(tonumber(m.volume) or 0,0,1)) end
+			if center.Visible then
+    if not volume.IsDragging()then volume:Set(math.clamp(tonumber(m.volume)or 0,0,1),false)end
+    if not brightness.IsDragging()then brightness:Set(math.clamp(lighting.Brightness/3,0,1),false)end
+   end
 			set(mute,"Visible",(tonumber(m.volume) or 0)<=.001);set(speaker,"Visible",not mute.Visible)
             local dark=Color3.fromRGB(24,26,31)
             local volumeColor=(tonumber(m.volume)or 0)>.18 and dark or white
             set(speaker,"ImageColor3",volumeColor);set(mute,"ImageColor3",volumeColor)
-            set(center.BrightnessIcon,"ImageColor3",brightness.fill.Size.Y.Scale>.18 and dark or white)
+            local brightnessRatio=brightness.bar:GetAttribute("AltairVertical")and brightness.fill.Size.Y.Scale or brightness.fill.Size.X.Scale
+            set(center.BrightnessIcon,"ImageColor3",brightnessRatio>.18 and dark or white)
 		end
 	end)
 	function controller:Destroy()
@@ -6559,16 +9297,17 @@ local function bindCapsules(context)
 		if context.Session and(self.media.connected or self.media.linked)then
 			context.Session.media=table.clone(self.media);context.Session.media.progress=progress();context.Session.mediaAt=os.clock()
 		end
-		self.pendingDisconnect=nil;unlinkDialog:Destroy()
+		unlinkPrompt:Destroy()
 		self.alive=false
         if self.dropTween then self.dropTween:Cancel()end
         if self.dropProgress then self.dropProgress:Destroy()end
         activityShelf:Destroy();if ripple then ripple:Destroy()end
         for observer in pairs(self.enabledObservers)do observer:Disconnect()end
 		self.cancelDrag();table.clear(self.commands)
+  for _,state in ipairs(mediaSliders)do if state.ruler then state.ruler:Destroy()end end
 		for _,connection in ipairs(self.connections) do connection:Disconnect() end
 		for _,animation in pairs(self.tweens) do animation:Cancel() end
-		if brightnessChanged then lighting.Brightness=originalBrightness end
+		if brightnessChanged and lighting.Brightness==ownedBrightness then lighting.Brightness=originalBrightness end
 		host:Destroy();table.clear(self.connections)
 	end
 	connect(root.Destroying,function() controller:Destroy() end)
@@ -6616,7 +9355,6 @@ local function bindUIAvoidance(root, enabled)
   local p,s=object.AbsolutePosition,object.AbsoluteSize
   if s.X<12 or s.Y<8 then return nil end
   local viewport=workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920,1080)
-  if s.X*s.Y>viewport.X*viewport.Y*.45 then return nil end
   local visual=object.BackgroundTransparency<.95
   if object:IsA("ImageLabel")or object:IsA("ImageButton")then visual=visual or(object.Image~=""and object.ImageTransparency<.95)end
   if object:IsA("TextLabel")or object:IsA("TextButton")or object:IsA("TextBox")then visual=visual or(object.Text~=""and object.TextTransparency<.95)end
@@ -6636,6 +9374,7 @@ local function bindUIAvoidance(root, enabled)
    parent=parent.Parent
   end
   if right-left<4 or bottom-top<4 then return nil end
+  if (right-left)*(bottom-top)>viewport.X*viewport.Y*.45 then return nil end
   return {left,top,right,bottom,object=object}
  end
  local function inside(p,r)return p.X>r[1]+.01 and p.X<r[3]-.01 and p.Y>r[2]+.01 and p.Y<r[4]-.01 end
@@ -6734,30 +9473,35 @@ local function buildChoice(template,parent,setting,changed)
  row.Description.Text=setting.description or "";row.Description.Visible=true
  row.Description.TextTransparency=.3;row.Description.TextWrapped=true
  row.Description.Position=UDim2.fromOffset(18,39);row.Description.Size=UDim2.new(1,-36,0,32)
- row.BackgroundTransparency=.9;row.UIStroke.Transparency=.88
+ row.BackgroundColor3=Design.Raised;row.BackgroundTransparency=.12;row:SetAttribute("AltairDesignRole","inset")
+ row.UIStroke.Color=Design.Edge;row.UIStroke.Thickness=.6;row.UIStroke.Transparency=.9
+ local rowCorner=row:FindFirstChildOfClass("UICorner");if rowCorner then rowCorner.CornerRadius=UDim.new(0,12)end
+ row.Title.FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.SemiBold);row.Title.TextColor3=Color3.fromRGB(243,246,252)
+ row.Description.FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium);row.Description.TextColor3=Design.Muted;row.Description:SetAttribute("AltairDesignRole","muted")
  if row:FindFirstChild("Interact")then row.Interact:Destroy()end
  if row:FindFirstChild("LicenseDisplay")then row.LicenseDisplay.Visible=false end
  local items={}
  local function update()
   for value,item in pairs(items)do
    local selected=setting.current==value
-   motion:Create(item.button,TweenInfo.new(.22,Enum.EasingStyle.Quint),{BackgroundTransparency=selected and .15 or .7}):Play()
-   motion:Create(item.stroke,TweenInfo.new(.22),{Transparency=selected and .5 or .94}):Play()
+   motion:Create(item.button,TweenInfo.new(.22,Enum.EasingStyle.Quint),{BackgroundTransparency=selected and .06 or .48}):Play()
+   motion:Create(item.stroke,TweenInfo.new(.22),{Transparency=selected and .72 or .94}):Play()
   end
  end
  for index,value in ipairs(setting.values)do
   local button=Instance.new("TextButton");button.Name=value;button.Text=value;button.AutoButtonColor=false
-  button.Font=Enum.Font.GothamMedium;button.TextSize=11;button.TextColor3=Color3.fromRGB(245,246,250)
-  button.BackgroundColor3=Color3.fromRGB(46,50,60);button.BorderSizePixel=0
-  button.Size=UDim2.new(1/#setting.values,-8,0,32);button.Position=UDim2.new((index-1)/#setting.values,12,0,82)
+  button.FontFace=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium);button.TextSize=11;button.TextColor3=Color3.fromRGB(243,246,252)
+  button.BackgroundColor3=Design.Well;button.BorderSizePixel=0;button:SetAttribute("AltairDesignRole","control")
+  local fraction=(index-1)/#setting.values;local reserved=36+(#setting.values-1)*8
+  button.Size=UDim2.new(1/#setting.values,-reserved/#setting.values,0,32);button.Position=UDim2.new(fraction,18+(index-1)*8-fraction*reserved,0,82)
   button.ZIndex=row.Title.ZIndex;button.Parent=row
   local corner=Instance.new("UICorner");corner.CornerRadius=UDim.new(0,8);corner.Parent=button
-  local stroke=Instance.new("UIStroke");stroke.Color=Color3.fromRGB(190,198,215);stroke.Thickness=.7;stroke.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;stroke.Parent=button
+  local stroke=Instance.new("UIStroke");stroke.Color=Design.Edge;stroke.Thickness=.6;stroke.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;stroke.Parent=button
   local scale=Instance.new("UIScale");scale.Parent=button
   items[value]={button=button,stroke=stroke}
-  button.MouseEnter:Connect(function()motion:Create(scale,TweenInfo.new(.18),{Scale=1.025}):Play()end)
-  button.MouseLeave:Connect(function()motion:Create(scale,TweenInfo.new(.25,Enum.EasingStyle.Back),{Scale=1}):Play()end)
-  button.MouseButton1Down:Connect(function()motion:Create(scale,TweenInfo.new(.1),{Scale=.96}):Play()end)
+  button.MouseEnter:Connect(function()motion:Create(scale,TweenInfo.new(.18),{Scale=1.012}):Play();motion:Create(stroke,TweenInfo.new(.18),{Transparency=.65}):Play()end)
+  button.MouseLeave:Connect(function()motion:Create(scale,TweenInfo.new(.25,Enum.EasingStyle.Back),{Scale=1}):Play();update()end)
+  button.MouseButton1Down:Connect(function()motion:Create(scale,TweenInfo.new(.1),{Scale=.975}):Play()end)
   button.Activated:Connect(function()
    motion:Create(scale,TweenInfo.new(.28,Enum.EasingStyle.Back),{Scale=1}):Play()
    if setting.current~=value then setting.current=value;update();changed(value)end
@@ -6783,16 +9527,16 @@ local function loadingCloud()
 end
 -- No idle RenderStepped work: guide animation only exists during a drag.
 local function snapDotAsset()
- if softShadowAssets.dots then return softShadowAssets.dots end
+ if softShadowAssets.dashes2 then return softShadowAssets.dashes2 end
  if type(writefile)~="function"or type(getcustomasset)~="function"then return nil end
  local ok,asset=pcall(function()
-  local path="Altair/SnapDots.png";if type(makefolder)=="function"then pcall(makefolder,"Altair")end
-  if type(isfile)~="function"or not isfile(path)then local hex="89504e470d0a1a0a0000000d4948445200000008000000080806000000c40fbe8b0000001649444154789c63f88f000cd8308820a8002f1e120a00c5dcc33da7e805b40000000049454e44ae426082";writefile(path,(hex:gsub("..",function(pair)return string.char(tonumber(pair,16))end)))end
+  local path="Altair/SnapDashes2.png";if type(makefolder)=="function"then pcall(makefolder,"Altair")end
+  if type(isfile)~="function"or not isfile(path)then local hex="89504e470d0a1a0a0000000d4948445200000008000000080806000000c40fbe8b0000001749444154789c63f88f1d30c03088180c0af062ca1500001c59d8287339161b0000000049454e44ae426082";writefile(path,(hex:gsub("..",function(pair)return string.char(tonumber(pair,16))end)))end
   return getcustomasset(path)
- end);if ok then softShadowAssets.dots=asset end;return ok and asset or nil
+ end);if ok then softShadowAssets.dashes2=asset end;return ok and asset or nil
 end
 local function buildSnapGuides(root)
- local motion=motionService();local service={lines={},keys={}};local dotAsset=snapDotAsset()
+ local motion=motionService();local service={lines={},keys={},generations={X=0,Y=0}};local dotAsset=snapDotAsset()
  for _,axis in ipairs({'X','Y'})do
   local line=Instance.new('CanvasGroup');line.Name='SnapGuide'..axis;line.BackgroundTransparency=1;line.GroupTransparency=1;line.BorderSizePixel=0;line.ZIndex=0;line:SetAttribute('AltairThemeIgnore',true);line.Parent=root
   if dotAsset then
@@ -6800,13 +9544,14 @@ local function buildSnapGuides(root)
   else
    for index=0,32 do local dot=Instance.new('Frame');dot.Name='Dot';dot.BorderSizePixel=0;dot.Size=UDim2.fromOffset(2,2);dot.BackgroundColor3=Color3.fromRGB(210,220,235);dot.ZIndex=0;dot.Parent=line end
   end
-  local gradient=Instance.new('UIGradient');gradient.Rotation=axis=='X'and 90 or 0;gradient.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(.36,1),NumberSequenceKeypoint.new(.5,0),NumberSequenceKeypoint.new(.64,1),NumberSequenceKeypoint.new(1,1)});gradient.Parent=line
+  local gradient=Instance.new('UIGradient');gradient.Rotation=axis=='X'and 90 or 0;gradient.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(.18,1),NumberSequenceKeypoint.new(.5,0),NumberSequenceKeypoint.new(.82,1),NumberSequenceKeypoint.new(1,1)});gradient.Parent=line
   service.lines[axis]=line
  end
  function service:Update(point,x,y,enabled)
   local fresh=false;local size=root.AbsoluteSize;local origin=root.AbsolutePosition
   for _,axis in ipairs({'X','Y'})do
    local value;if enabled then if axis=='X'then value=x else value=y end end;local line=self.lines[axis]
+   if self.keys[axis]~=value then self.generations[axis]+=1 end
    if value then
     local localPoint=point-origin;local coordinate=value-(axis=='X'and origin.X or origin.Y)
     line.Position=axis=='X'and UDim2.fromOffset(coordinate,0)or UDim2.fromOffset(0,coordinate)
@@ -6817,22 +9562,31 @@ local function buildSnapGuides(root)
      end end
     end
     local gradient=line.UIGradient;gradient.Offset=axis=='X'and Vector2.new(0,localPoint.Y/math.max(1,size.Y)-.5)or Vector2.new(localPoint.X/math.max(1,size.X)-.5,0)
-    if self.keys[axis]~=value then motion:Create(line,TweenInfo.new(.16),{GroupTransparency=.62}):Play();fresh=true end
+    if self.keys[axis]~=value then motion:Create(line,TweenInfo.new(.16),{GroupTransparency=.5}):Play();fresh=true end
    elseif self.keys[axis]then motion:Create(line,TweenInfo.new(.65),{GroupTransparency=1}):Play()end
    self.keys[axis]=value
   end
   return fresh
  end
+ function service:Pulse()
+  for axis,value in pairs(self.keys)do if value then
+   self.generations[axis]+=1;local generation=self.generations[axis]
+   local line=self.lines[axis];motion:Create(line,TweenInfo.new(.5,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{GroupTransparency=.18}):Play()
+   task.delay(.5,function()if line.Parent and self.keys[axis]==value and self.generations[axis]==generation then motion:Create(line,TweenInfo.new(.5,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{GroupTransparency=.5}):Play()end end)
+  end end
+ end
  function service:Clear()self:Update(Vector2.zero,nil,nil,false)end
  return service
 end
-local function buildLoading(root,parent,cloudAsset,position)
- local screen=Instance.new('ScreenGui');screen.Name='AltairLoading';screen.IgnoreGuiInset=true;screen.DisplayOrder=root.DisplayOrder+1;screen.ResetOnSpawn=false;pcall(function()screen.ScreenInsets=Enum.ScreenInsets.None end);screen.Parent=parent
+local function buildLoading(root,parent,cloudAsset,position,onScreen)
+ local screen=Instance.new('ScreenGui');screen.Name='AltairLoading';screen.IgnoreGuiInset=true;screen.DisplayOrder=root.DisplayOrder+1;screen.ResetOnSpawn=false;pcall(function()screen.ScreenInsets=Enum.ScreenInsets.None end)
+ if onScreen then onScreen(screen)end
+ screen.Parent=parent
  local group=Instance.new('CanvasGroup');group.Name='Sequence';group.BackgroundTransparency=1;group.AnchorPoint=Vector2.new(.5,.5);group.Position=UDim2.fromScale(.5,.65);group.Size=UDim2.fromOffset(240,130);group.Parent=screen
  local scale=Instance.new('UIScale');scale.Parent=group
  local cloud=Instance.new('ImageLabel');cloud.Name='Cloudz';cloud.BackgroundTransparency=1;cloud.Size=UDim2.fromOffset(68,54);cloud.Position=UDim2.fromOffset(86,0);cloudAsset=cloudAsset or loadingCloud();cloud.Image=cloudAsset or '';cloud.ScaleType=Enum.ScaleType.Fit;cloud.Parent=group
  if not cloudAsset then applyIcon(cloud,'cloud')end
- local text=Instance.new('TextLabel');text.Name='Stage';text.BackgroundTransparency=1;text.Size=UDim2.fromOffset(240,24);text.Position=UDim2.fromOffset(0,68);text.Text='Building interface';text.TextSize=12;text.TextColor3=Color3.fromRGB(235,237,242);text.Font=Enum.Font.GothamMedium;text.Parent=group
+ local text=Instance.new('TextLabel');text.Name='Stage';text.BackgroundTransparency=1;text.Size=UDim2.fromOffset(240,24);text.Position=UDim2.fromOffset(0,68);text.Text='Building interface';text.TextSize=12;text.TextColor3=Color3.fromRGB(243,246,252);text.FontFace=Font.new('rbxasset://fonts/families/BuilderSans.json',Enum.FontWeight.Medium);text.Parent=group
  local track=Instance.new('Frame');track.Name='LoadingBar';track.Size=UDim2.fromOffset(160,4);track.Position=UDim2.fromOffset(40,108);track.BackgroundColor3=Color3.new(1,1,1);track.BackgroundTransparency=.84;track.BorderSizePixel=0;track.ClipsDescendants=true;track.Parent=group
  local corner=Instance.new('UICorner');corner.CornerRadius=UDim.new(1,0);corner.Parent=track
  local fill=track:Clone();fill:ClearAllChildren();fill.Name='Progress';fill.Position=UDim2.fromOffset(0,0);fill.Size=UDim2.fromScale(0,1);fill.BackgroundTransparency=.12;fill.Parent=track;corner:Clone().Parent=fill
@@ -6875,7 +9629,7 @@ local function buildLoading(root,parent,cloudAsset,position)
   if real then
    drag.Visible=true;real.Visible=true
    local vertical=real.AbsoluteSize.Y>real.AbsoluteSize.X
-   real.Size=vertical and UDim2.fromOffset(4,160)or UDim2.fromOffset(160,4)
+   real.Size=vertical and UDim2.fromOffset(2,160)or UDim2.fromOffset(160,2)
    local origin=screen.AbsolutePosition;local center=real.AbsolutePosition+real.AbsoluteSize/2-origin
    track.Visible=false;shadow.Visible=false
    local completedFill=Instance.new('Frame');completedFill.Name='LoadingProgress';completedFill.BorderSizePixel=0;completedFill.BackgroundColor3=Color3.new(1,1,1);completedFill.BackgroundTransparency=.12;completedFill.Size=real.AbsoluteSize.Y>real.AbsoluteSize.X and UDim2.fromScale(1,self.progress)or UDim2.fromScale(self.progress,1);completedFill.ZIndex=real.ZIndex+1;completedFill.Parent=real;corner:Clone().Parent=completedFill
@@ -6902,12 +9656,1403 @@ local function buildLoading(root,parent,cloudAsset,position)
  return service
 end
 
-local bindings={ExperimentalSection=buildExperimentalSection,SnapGuides=buildSnapGuides,Loading=buildLoading,Choice=buildChoice,StyleGallery=buildStyleGallery,UIAvoidance=bindUIAvoidance,SlideContent=slideContent,SlideHeading=slideHeading,BounceReset=bounceReset,HomeContainer=function(root)local content=Instance.new("Frame");content.Name="Content";content.BackgroundTransparency=1;content.Parent=root.Home;return content end,Performance=motionStats,HomeIsolation=bindHomeIsolation,RayfieldBridge=bindRayfieldBridge,DragContrast=bindDragContrast,Dock=bindDock,Capsules=bindCapsules,Clock=Clock,Notifications=buildNotifications,ApplyIcon=applyIcon,RefreshIcon=refreshIcon,Motion=motionService,Resize=resizeInterface,DisplayScale=displayScale,Slider=buildSlider,Stats=buildStats,SoftShadows=bindSoftShadows,Surface=styleSurface,HomeSurface=styleHome,ColorPicker=buildColorPicker,Theme=bindTheme}
+-- Altair discovery keeps query, provider, detail and confirmation ownership
+-- separate from its compact material and animation layout.
+local function buildDiscovery(context)
+ local root=context.Root
+ local service
+ local function featuredHeight()return 538 end
+ local native=game:GetService("TweenService")
+ local ratio=600/908
+ local function u(n)return n*ratio end
+ local function browseTop()return 150 end
+ local function browserPose(x)return UDim2.fromOffset(u(x or 24),u(browseTop()))end
+ local function detailPoseAt(x)return UDim2.fromOffset(u(x or 24),u(76))end
+ local function selectedHeight()return 508 end
+ -- Authored material bytes are shared with Altair; the theme controller owns
+ -- light/dark adaptation instead of a second colored overlay.
+ local function srgb(r,g,b)
+  if r==18 and g==21 and b==28 then return Design.Surface end
+  if r==29 and g==33 and b==43 then return Design.Raised end
+  if r==38 and g==43 and b==55 then return Design.Well end
+  if r==157 and g==169 and b==189 then return Design.Muted end
+  if r==160 and g==176 and b==200 then return Design.Edge end
+  if r==243 and g==246 and b==252 then return Design.Ink end
+  return Color3.fromRGB(r,g,b)
+ end
+
+ local function rect(o,x,y,w,h)o.Position=UDim2.fromOffset(u(x),u(y));o.Size=UDim2.fromOffset(u(w),u(h))end
+ local function corner(o,r)local c=Instance.new("UICorner");c.CornerRadius=UDim.new(0,u(r));c.Parent=o end
+ local function make(class,parent,name,x,y,w,h)
+  local o=Instance.new(class);o.Name=name;o.BorderSizePixel=0;o.BackgroundTransparency=1;o.ZIndex=3
+  rect(o,x,y,w,h);o.Parent=parent;return o
+ end
+ local regular=Font.new("rbxasset://fonts/families/BuilderSans.json",Enum.FontWeight.Medium)
+ local semibold=Font.new(regular.Family,Enum.FontWeight.SemiBold)
+ local function text(parent,name,value,x,y,w,h,size,color,bold)
+  local o=make("TextLabel",parent,name,x,y,w,h);o.Text=value;o.TextSize=u(size);o.TextColor3=color or srgb(230,230,230);o.FontFace=bold and semibold or regular
+  o.TextXAlignment=Enum.TextXAlignment.Left;o.TextTruncate=Enum.TextTruncate.AtEnd;o:SetAttribute("AltairDesignRole",bold and"ink"or"muted");o:SetAttribute("AltairDesignManaged",true);return o
+ end
+ -- Browser, result and detail states share the same original Altair material.
+ local function syncSurface(panel)
+  local source=root.Scripts;local backdrop=panel.Backdrop
+  backdrop.BackgroundColor3=source.BackgroundColor3
+  backdrop.BackgroundTransparency=Design.surfaceAlpha(backdrop,root:GetAttribute("AltairPanelTransparency")or .1)
+  local from=source:FindFirstChildOfClass("UIGradient");local to=backdrop.Material
+  if from then
+   for _,key in ipairs({"Color","Rotation","Offset","Enabled"})do to[key]=from[key]end
+   to.Transparency=NumberSequence.new(0)
+  else to.Color=ColorSequence.new(Color3.new(1,1,1));to.Transparency=NumberSequence.new(0)end
+  local outline=source:FindFirstChildOfClass("UIStroke")
+  if outline then
+   panel.Outline.Color=outline.Color;panel.Outline.Thickness=.6;panel.Outline.Transparency=.86
+   local fromEdge=outline:FindFirstChildOfClass("UIGradient");local toEdge=panel.Outline:FindFirstChildOfClass("UIGradient")
+   if fromEdge then
+    if not toEdge then toEdge=Instance.new("UIGradient");toEdge.Parent=panel.Outline end
+    for _,key in ipairs({"Color","Transparency","Rotation","Offset","Enabled"})do toEdge[key]=fromEdge[key]end
+   elseif toEdge then toEdge:Destroy()end
+  end
+ end
+ if context.BuildOnly then
+  local previous=root.ScriptSearch;local position=previous.Position;previous:Destroy()
+  local panel=make("CanvasGroup",root,"ScriptSearch",0,0,908,530);panel.Position=position;panel.AnchorPoint=Vector2.new(.5,.5);panel.ZIndex=260;panel.Visible=false;panel.ClipsDescendants=true
+  panel.BackgroundTransparency=1;panel:SetAttribute("ReferenceScriptSearch",true);panel:SetAttribute("AltairDesignRole","surface");panel:SetAttribute("AltairDesignManaged",true);panel:SetAttribute("AltairDesignFixedTransparency",.02);corner(panel,27)
+  local backdrop=make("Frame",panel,"Backdrop",0,0,908,530);backdrop.Size=UDim2.fromScale(1,1);backdrop.ZIndex=0;backdrop.BackgroundColor3=Design.Surface;backdrop.BackgroundTransparency=.02;backdrop:SetAttribute("AltairDesignRole","surface");backdrop:SetAttribute("AltairSurface",true);backdrop:SetAttribute("AltairDesignFixedTransparency",.02);corner(backdrop,27)
+  local material=Instance.new("UIGradient");material.Name="Material";material.Rotation=105;material.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(224,224,224));material.Parent=backdrop
+  local border=Instance.new("UIStroke");border.Name="Outline";border.Color=Design.Edge;border.Thickness=.6;border.Transparency=.9;border.BorderStrokePosition=Enum.BorderStrokePosition.Inner;border.Parent=panel
+  local header=make("CanvasGroup",panel,"Header",24,20,860,118)
+  local back=make("TextButton",header,"Back",0,0,44,36);back.Text="";back.AutoButtonColor=false;back.BackgroundColor3=Design.Well;back.BackgroundTransparency=.24;back:SetAttribute("ReferenceSearchControl",true);corner(back,10)
+  local arrow=make("ImageLabel",back,"Icon",12,8,20,20);applyIcon(arrow,"arrow-left");arrow.ImageColor3=Design.Muted
+  text(header,"Label","Discover",58,0,420,36,27,Design.Ink,true)
+  local count=text(header,"Count","3 sources",644,4,174,28,16,Design.Muted);count.TextXAlignment=Enum.TextXAlignment.Right
+  local spinner=make("Frame",header,"Spinner",833,7,22,22);spinner.Visible=false;corner(spinner,22)
+  local arc=Instance.new("UIStroke");arc.Color=Design.Muted;arc.Thickness=u(3);arc.Parent=spinner
+  local mask=Instance.new("UIGradient");mask.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(.499,1),NumberSequenceKeypoint.new(.501,0),NumberSequenceKeypoint.new(1,0)});mask.Parent=arc
+  for _,y in ipairs({0,22})do local cap=make("Frame",spinner,"ArcCap",11,y,3,3);cap.AnchorPoint=Vector2.new(.5,.5);cap.BackgroundColor3=Design.Muted;cap.BackgroundTransparency=1;corner(cap,2)end
+  local field=make("Frame",header,"SearchWell",0,54,860,56);field.BackgroundColor3=Design.Well;field.BackgroundTransparency=.3;field:SetAttribute("AltairDesignRole","control");corner(field,12)
+  local edge=Instance.new("UIStroke");edge.Color=Design.Edge;edge.Thickness=.6;edge.Transparency=.9;edge.Parent=field
+  local icon=make("ImageLabel",header,"Icon",17,70,23,23);applyIcon(icon,"search");icon.ImageColor3=Design.Muted
+  local box=make("TextBox",header,"SearchBox",54,54,788,56);box.Text="";box.PlaceholderText="Search scripts, games or tools";box.FontFace=regular;box.TextSize=u(22);box.TextColor3=Design.Ink;box.PlaceholderColor3=Design.Muted;box.TextXAlignment=Enum.TextXAlignment.Left;box.ClearTextOnFocus=false;box.MultiLine=false;box:SetAttribute("AltairDesignRole","ink")
+  local browser=make("CanvasGroup",panel,"Browser",24,150,860,356);browser.ClipsDescendants=true
+  local pinned=make("Frame",browser,"Pinned",0,0,860,0);pinned.Visible=false
+  local pinLayout=Instance.new("UIListLayout");pinLayout.SortOrder=Enum.SortOrder.LayoutOrder;pinLayout.Parent=pinned
+  local scroll=make("ScrollingFrame",browser,"Scroll",0,0,860,356);scroll.Size=UDim2.fromScale(1,1);scroll.CanvasSize=UDim2.new();scroll.AutomaticCanvasSize=Enum.AutomaticSize.Y;scroll.ScrollBarThickness=u(3);scroll.ScrollBarImageColor3=Design.Muted;scroll.ScrollBarImageTransparency=.6;scroll.ScrollingDirection=Enum.ScrollingDirection.Y
+  local layout=Instance.new("UIListLayout");layout.Padding=UDim.new(0,u(8));layout.SortOrder=Enum.SortOrder.LayoutOrder;layout.Parent=scroll
+  local padding=Instance.new("UIPadding");padding.PaddingRight=UDim.new(0,u(5));padding.PaddingBottom=UDim.new(0,u(8));padding.Parent=scroll
+  -- This gradient masks opacity on the entire CanvasGroup; coloring it would
+  -- multiply every result, artwork and heading by the material's dark tint.
+  local falloff=Instance.new("UIGradient");falloff.Name="EdgeFade";falloff:SetAttribute("AltairThemeIgnore",true);falloff.Rotation=90;falloff.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0),NumberSequenceKeypoint.new(.96,0),NumberSequenceKeypoint.new(1,1)});falloff.Parent=browser
+  local detail=make("CanvasGroup",panel,"Detail",24,76,860,430);detail.Visible=false;detail.Interactable=false
+  local art=make("ImageLabel",detail,"Artwork",0,0,300,220);art.ScaleType=Enum.ScaleType.Crop;art.BackgroundColor3=Design.Raised;art.BackgroundTransparency=.12;corner(art,16)
+  local title=text(detail,"Title","",324,0,536,72,30,Design.Ink,true);title.TextWrapped=true;title.TextYAlignment=Enum.TextYAlignment.Top
+  local creator=text(detail,"Creator","",324,82,536,40,18,Design.Muted);creator.TextWrapped=true;creator.TextYAlignment=Enum.TextYAlignment.Top
+  text(detail,"Metrics","",324,130,536,26,18,Design.Muted)
+  make("Frame",detail,"Tags",324,171,536,30)
+  local descriptionWell=make("Frame",detail,"DescriptionWell",0,240,860,100);descriptionWell.BackgroundColor3=Design.Raised;descriptionWell.BackgroundTransparency=.2;descriptionWell:SetAttribute("AltairDesignRole","inset");corner(descriptionWell,14)
+  local descriptionScroll=make("ScrollingFrame",descriptionWell,"Scroll",14,12,832,76);descriptionScroll.CanvasSize=UDim2.new();descriptionScroll.AutomaticCanvasSize=Enum.AutomaticSize.None;descriptionScroll.ScrollBarThickness=u(2);descriptionScroll.ScrollBarImageColor3=Design.Muted;descriptionScroll.ScrollBarImageTransparency=.6;descriptionScroll.ScrollingDirection=Enum.ScrollingDirection.Y
+  local desc=text(descriptionScroll,"Description","",0,0,820,24,20,Design.Muted);desc.Size=UDim2.new(1,-u(8),0,u(24));desc.TextWrapped=true;desc.TextYAlignment=Enum.TextYAlignment.Top;desc.TextTruncate=Enum.TextTruncate.None
+  local cancel=make("TextButton",detail,"Cancel",488,356,116,52);cancel.Text="Back";cancel.TextColor3=Design.Muted;cancel.TextSize=u(21);cancel.FontFace=semibold;cancel.AutoButtonColor=false;cancel:SetAttribute("ReferenceIndependentOpacity",true);corner(cancel,10)
+  local background=make("Frame",detail,"RunBackground",620,356,240,52);background.BackgroundColor3=Color3.new(1,1,1);background.BackgroundTransparency=1;background:SetAttribute("ReferenceIndependentOpacity",true);background:SetAttribute("AltairDesignRole","control");corner(background,10)
+  local run=make("TextButton",detail,"Run",620,356,240,52);run.ZIndex=4;run.Text="Run script →";run.TextColor3=Design.Ink;run.TextSize=u(23);run.FontFace=semibold;run.AutoButtonColor=false;run:SetAttribute("ReferenceIndependentOpacity",true);run:SetAttribute("AltairDesignRole","ink");corner(run,10)
+  local runMaterial=Instance.new("ObjectValue");runMaterial.Name="AltairContrastMaterial";runMaterial.Value=background;runMaterial.Parent=run
+  local fill=Instance.new("UIGradient");fill.Rotation=28;fill.Color=ColorSequence.new(srgb(32,73,88),srgb(45,105,113));fill.Parent=background
+  local rim=Instance.new("UIStroke");rim.Color=Design.Edge;rim.Thickness=.6;rim.Transparency=.9;rim.ApplyStrokeMode=Enum.ApplyStrokeMode.Border;rim.BorderStrokePosition=Enum.BorderStrokePosition.Inner;rim.Parent=background
+  local highlight=Instance.new("UIGradient");highlight.Name="Highlight";highlight.Rotation=90;highlight.Transparency=NumberSequence.new(1,0);highlight.Parent=rim
+  local glow=make("ImageLabel",detail,"RunGlow",608,350,264,70);glow.ZIndex=2;glow.Image=resolveSoftShadowAsset("small")or"";glow.ScaleType=Enum.ScaleType.Slice;glow.SliceCenter=Rect.new(31,31,33,33);glow.SliceScale=u(.4);glow.ImageColor3=Design.Ink;glow.ImageTransparency=1
+  local hover=Instance.new("NumberValue");hover.Name="HoverProgress";hover.Parent=run
+  local reveal=Instance.new("NumberValue");reveal.Name="RevealProgress";reveal.Parent=run
+  local hint=make("ImageLabel",panel,"ScrollHint",0,0,20,12);hint.AnchorPoint=Vector2.new(.5,1);hint.Position=UDim2.new(.5,0,1,-u(7));hint.ImageTransparency=1;hint.ImageColor3=Design.Muted;hint.Visible=false;hint.ZIndex=10;applyIcon(hint,"chevron-down")
+  local credit=text(panel,"Attribution","RoScripts · ScriptBlox · RobloxScripts",24,0,760,15,12,Design.Muted);credit.Position=UDim2.new(0,u(24),1,-u(14));credit.Visible=false
+  syncSurface(panel);panel.UICorner.CornerRadius=root.Scripts.UICorner.CornerRadius;backdrop.UICorner.CornerRadius=panel.UICorner.CornerRadius
+  return
+ end
+ local panel=root.ScriptSearch;local header=panel.Header;local input=header.SearchBox;local browser=panel.Browser;local scroll=browser.Scroll;local pinned=browser.Pinned;local detail=panel.Detail
+ local description=detail.DescriptionWell.Scroll.Description
+ service={items={},page="closed",version=0,detailVersion=0,animations=setmetatable({},{__mode="k"}),height=538}
+ local surfaceConnections={}
+ local function watch(object,property,callback)surfaceConnections[#surfaceConnections+1]=object:GetPropertyChangedSignal(property):Connect(callback)end
+ local descriptionMeasure,descriptionWidth=0,0
+ local function descriptionScale()
+  local factor=1;local owner=description
+  while owner and owner~=root do local scale=owner:FindFirstChildOfClass("UIScale");if scale then factor*=scale.Scale end;owner=owner.Parent end
+  return math.max(.001,factor)
+ end
+ local function measureDescription()
+  descriptionMeasure+=1;local generation=descriptionMeasure
+  task.defer(function()
+   if not root.Parent or not description.Parent or generation~=descriptionMeasure then return end
+   local width=description.AbsoluteSize.X/descriptionScale();if width<=0 then return end
+   descriptionWidth=width
+   local params=Instance.new("GetTextBoundsParams");params.Font=description.FontFace;params.Size=description.TextSize;params.Width=width;params.Text=description.Text;params.RichText=false
+   local ok,bounds=pcall(function()return game:GetService("TextService"):GetTextBoundsAsync(params)end);params:Destroy()
+   if not ok or not root.Parent or not description.Parent or generation~=descriptionMeasure then return end
+   local height=math.max(1,math.ceil(bounds.Y+2));description.Size=UDim2.new(1,-u(8),0,height);detail.DescriptionWell.Scroll.CanvasSize=UDim2.fromOffset(0,height+1)
+  end)
+ end
+ watch(description,"Text",measureDescription);watch(description,"TextSize",measureDescription);watch(description,"FontFace",measureDescription)
+ watch(description,"AbsoluteSize",function()if math.abs(description.AbsoluteSize.X/descriptionScale()-descriptionWidth)>.5 then measureDescription()end end)
+ task.defer(measureDescription)
+ local function refreshSurface()syncSurface(panel)end
+ watch(root.Scripts,"BackgroundColor3",refreshSurface)
+ local sourceGradient=root.Scripts:FindFirstChildOfClass("UIGradient")
+ if sourceGradient then for _,key in ipairs({"Color","Transparency","Rotation","Offset","Enabled"})do watch(sourceGradient,key,refreshSurface)end end
+ local sourceOutline=root.Scripts:FindFirstChildOfClass("UIStroke")
+ if sourceOutline then
+  for _,key in ipairs({"Color","Thickness"})do watch(sourceOutline,key,refreshSurface)end
+  local edge=sourceOutline:FindFirstChildOfClass("UIGradient")
+  if edge then for _,key in ipairs({"Color","Transparency","Rotation","Offset","Enabled"})do watch(edge,key,refreshSurface)end end
+ end
+ surfaceConnections[#surfaceConnections+1]=root:GetAttributeChangedSignal("AltairPanelTransparency"):Connect(refreshSurface)
+ watch(panel.UICorner,"CornerRadius",function()panel.Backdrop.UICorner.CornerRadius=panel.UICorner.CornerRadius end)
+ local white=Design.Ink;local gray=Design.Muted
+ local function setOpacity(group,alpha)group.GroupTransparency=alpha end
+ local function stopAnimation(object)
+  local old=service.animations[object];if old then old:Cancel();service.animations[object]=nil end
+ end
+ local function animate(object,time,goal,style,direction)
+  stopAnimation(object)
+  if root:GetAttribute("AltairReduceMotion")==true then time=math.min(time,.08)end
+  local animation=native:Create(object,TweenInfo.new(time,style or Enum.EasingStyle.Exponential,direction or Enum.EasingDirection.Out),goal)
+  service.animations[object]=animation;animation.Completed:Once(function()if service.animations[object]==animation then service.animations[object]=nil end end);animation:Play();return animation
+ end
+ local function selectedArtworkSize()return 300,220 end
+ watch(root.Scripts.UICorner,"CornerRadius",function()
+  if service.page~="closed"then stopAnimation(panel.UICorner);panel.UICorner.CornerRadius=root.Scripts.UICorner.CornerRadius end
+ end)
+ local function themeInk(object,property,fallback)return object:GetAttribute("AltairTheme_"..property)or fallback end
+ local function renderRun()
+  local hover=detail.Run.HoverProgress.Value;local reveal=detail.Run.RevealProgress.Value
+  detail.Run.TextTransparency=1-reveal;detail.Run.TextStrokeTransparency=1;detail.Run.BackgroundTransparency=1
+  detail.RunBackground.BackgroundTransparency=1-reveal
+  detail.Run.TextColor3=themeInk(detail.Run,"TextColor3",white)
+  local gradient=detail.RunBackground.UIGradient;local themed=gradient:GetAttribute("AltairTheme_Color")
+  if typeof(themed)=="ColorSequence"then
+   local points={};for _,point in ipairs(themed.Keypoints)do points[#points+1]=ColorSequenceKeypoint.new(point.Time,point.Value:Lerp(Color3.new(1,1,1),hover*.04))end;gradient.Color=ColorSequence.new(points)
+  else gradient.Color=ColorSequence.new(srgb(32,73,88):Lerp(srgb(38,86,101),hover),srgb(45,105,113):Lerp(srgb(53,120,127),hover))end
+  detail.RunBackground.UIStroke.Transparency=1-reveal*(.10+.13*hover)
+  detail.RunBackground.UIStroke.Highlight.Rotation=90+180*hover
+  detail.RunGlow.ImageTransparency=1-reveal*(.02+.04*hover)
+ end
+ watch(detail.Run.HoverProgress,"Value",renderRun);watch(detail.Run.RevealProgress,"Value",renderRun);renderRun()
+ local function later(delay,callback)local version=service.version;task.delay(delay,function()if root.Parent and version==service.version then callback()end end)end
+ local function boundedQuery(value)
+  -- Match Main's transport limit before starting a loading presentation.
+  local query=tostring(value or "")
+  if #query>160 then query=query:sub(1,160)end
+  while #query>0 and utf8.len(query)==nil do query=query:sub(1,-2)end
+  return query
+ end
+ local function invalidate()service.version+=1;service.runToken=nil;service.busy=false;if context.Invalidate then context.Invalidate()end end
+ local function clear(parent)for _,o in ipairs(parent:GetChildren())do if o:IsA("GuiObject")then o:Destroy()end end end
+ local function views(n)n=tonumber(n)or 0;return n>=1e6 and string.format("%.1fM",n/1e6):gsub("%.0M","M")or n>=1000 and string.format("%.0fK",n/1000)or tostring(n)end
+ local function age(value)
+  local ok,date=pcall(DateTime.fromIsoDate,tostring(value or ""));if not ok or not date then return ""end
+  local days=math.max(0,math.floor((os.time()-date.UnixTimestamp)/86400));return days<1 and "today"or days<7 and(days.."d ago")or days<30 and(math.floor(days/7).."w ago")or(math.floor(days/30).."mo ago")
+ end
+ local function gameName(result)local value=type(result.game)=="table"and result.game.name;return type(value)=="string"and value~=""and value or "Universal"end
+ local function providerSite(result)
+  local provider=tostring(result.provider or "Unknown source")
+  return({RoScripts="RoScripts.io",ScriptBlox="ScriptBlox.com"})[provider]or provider
+ end
+ local function artwork(parent,name,result,x,y,w,h,r)
+  local box=make("Frame",parent,name,x,y,w,h);box.BackgroundColor3=Design.Well;box.BackgroundTransparency=.18;box:SetAttribute("AltairDesignRole","inset");corner(box,r or 12)
+  local image=make("ImageLabel",box,"Image",0,0,w,h);image.ImageTransparency=.999;image.ScaleType=Enum.ScaleType.Crop;corner(image,r or 12)
+  local placeholder=make("ImageLabel",box,"Placeholder",0,0,48,48);placeholder.AnchorPoint=Vector2.new(.5,.5);placeholder.Position=UDim2.fromScale(.5,.5);local ok,asset=pcall(Molto.GetAsset,"scroll-fill","phosphor");if ok and asset then placeholder.Image=asset.Url;placeholder.ImageRectSize=asset.ImageRectSize;placeholder.ImageRectOffset=asset.ImageRectOffset;placeholder.ScaleType=Enum.ScaleType.Fit else applyIcon(placeholder,"scroll")end;placeholder.ImageColor3=srgb(200,200,200)
+  local info=type(result.game)=="table"and result.game or {};local id=tonumber(info.placeId or info.gameId)
+  task.spawn(function()
+   local asset
+   if context.Image then local ok,value=pcall(context.Image,result,function()return root.Parent~=nil and box.Parent~=nil end);if ok then asset=value end end
+   if not box.Parent then return end
+   if asset then image.Image=asset elseif id then image.Image="rbxthumb://type=GameThumbnail&id="..id.."&w=768&h=432"end
+  end)
+  local revealed=false
+  local function reveal()if not revealed and image.Parent and image.IsLoaded and image.Image~=""then revealed=true;animate(placeholder,.12,{ImageTransparency=1});image.ImageTransparency=1;animate(image,.18,{ImageTransparency=0})end end
+  image:GetPropertyChangedSignal("IsLoaded"):Connect(reveal)
+  local warming=false
+  local function warm()
+   if warming or not image.Parent or image.Image==""then return end
+   warming=true
+   task.spawn(function()
+    while (service.assetLoads or 0)>=3 do if not image.Parent or not root.Parent then return end;task.wait(.03)end
+    if not image.Parent or not root.Parent then return end
+    service.assetLoads=(service.assetLoads or 0)+1
+    pcall(function()game:GetService("ContentProvider"):PreloadAsync({image.Image})end)
+    service.assetLoads-=1;warming=false
+    if image.Parent then reveal()end
+   end)
+  end
+  image:GetPropertyChangedSignal("Image"):Connect(warm);task.defer(function()reveal();warm()end)
+  return box
+ end
+ local function feedback(button,target,idle,hover)
+  local rest=target.Position
+  button.MouseEnter:Connect(function()if panel.Visible and service.page~="closed"then animate(target,.16,{BackgroundTransparency=hover});animate(button,.16,{BackgroundTransparency=1})end end)
+  button.MouseLeave:Connect(function()if service.page=="closed"then return end;animate(target,.2,{BackgroundTransparency=idle})end)
+  button.MouseButton1Down:Connect(function()if service.page=="closed"then return end;animate(target,.08,{BackgroundTransparency=math.max(0,hover-.15)})end)
+  button.MouseButton1Up:Connect(function()if service.page=="closed"then return end;animate(target,.18,{BackgroundTransparency=hover})end)
+ end
+ local function click(parent,name,callback)
+  local button=Instance.new("TextButton");button.Name=name;button.Text="";button.BackgroundTransparency=1;button.BorderSizePixel=0;button.AutoButtonColor=false;button.Size=UDim2.fromScale(1,1);button.ZIndex=8;button:SetAttribute("ReferenceSearchControl",true);button.Parent=parent
+  button.MouseButton1Click:Connect(callback);return button
+ end
+ local function heading(value,order,height,parent)
+  local label=text(parent or scroll,"Section",value,6,0,840,height or 32,20,gray,true);label.LayoutOrder=order;return label
+ end
+ local function placeholderGradient(object)
+  local gradient=Instance.new("UIGradient");gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.new(.75,.75,.75));gradient.Parent=object
+ end
+ local function tag(parent,value,x,y)
+  local width=({Verified=84,Key=50,Mobile=74})[value]or math.max(50,#value*10+22);local o=text(parent,"Tag",value,x,y,width,30,17,Design.Ink,true);o.TextXAlignment=Enum.TextXAlignment.Center;o.BackgroundColor3=value=="Verified"and srgb(31,69,62)or Design.Well;o.BackgroundTransparency=.18;o:SetAttribute("AltairDesignRole","control");corner(o,8);return width+8
+ end
+ local function tags(parent,result,x,y)
+  if result.verified then x+=tag(parent,"Verified",x,y)end
+  if result.key then x+=tag(parent,"Key",x,y)end
+  if result.mobile then x+=tag(parent,"Mobile",x,y)end
+ end
+ function service:Resize(height,time)
+  local bottomInset=browseTop()+24
+  local fraction=math.clamp(1-28/math.max(29,height-bottomInset),.05,.99);browser.EdgeFade.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0),NumberSequenceKeypoint.new(fraction,0),NumberSequenceKeypoint.new(1,1)})
+  local size=UDim2.fromOffset(600,u(height))
+  self.height=height;local position=context.Position(size)
+  animate(panel,time or .48,{Size=size,Position=position})
+  browser.Size=UDim2.new(1,-u(48),1,-u(bottomInset))
+ end
+ function service:ConfigureResults(fixed)
+  pinned.Visible=false;scroll.Position=UDim2.fromOffset(0,0);scroll.Size=UDim2.fromScale(1,1)
+ end
+ function service:Controls(alpha,time)
+  animate(detail.Cancel,time,{TextTransparency=alpha})
+  animate(detail.Run.RevealProgress,time,{Value=1-alpha})
+ end
+ function service:Spinner(enabled)
+  local reduced=root:GetAttribute("AltairReduceMotion")==true;local wasEnabled=self.spinnerEnabled
+  self.spinnerEnabled=not not enabled
+  if enabled and wasEnabled and self.spinReduced==reduced and(reduced or self.spin)then header.Spinner.Visible=true;return end
+  self.spinReduced=reduced
+  self.spinVersion=(self.spinVersion or 0)+1;local version=self.spinVersion
+  local stroke=header.Spinner.UIStroke
+  if self.spin then self.spin:Cancel();self.spin=nil end
+  if enabled then
+   header.Spinner.Visible=true;stroke.Transparency=1;header.Spinner.Rotation=0
+   for _,cap in ipairs(header.Spinner:GetChildren())do if cap:IsA("Frame")then animate(cap,.1,{BackgroundTransparency=0},Enum.EasingStyle.Sine)end end
+   animate(stroke,.1,{Transparency=0},Enum.EasingStyle.Sine);animate(header.Count,.1,{TextTransparency=1},Enum.EasingStyle.Sine)
+   if not reduced then self.spin=native:Create(header.Spinner,TweenInfo.new(.8,Enum.EasingStyle.Linear,Enum.EasingDirection.Out,-1),{Rotation=360});self.spin:Play()end
+   task.delay(.1,function()if root.Parent and self.spinVersion==version then header.Count.Visible=false end end)
+  else
+   for _,cap in ipairs(header.Spinner:GetChildren())do if cap:IsA("Frame")then animate(cap,.1,{BackgroundTransparency=1},Enum.EasingStyle.Sine)end end
+   header.Count.Visible=true;animate(header.Count,.1,{TextTransparency=0},Enum.EasingStyle.Sine);animate(stroke,.1,{Transparency=1},Enum.EasingStyle.Sine)
+   task.delay(.1,function()if root.Parent and self.spinVersion==version then header.Spinner.Visible=false end end)
+  end
+ end
+
+ surfaceConnections[#surfaceConnections+1]=root:GetAttributeChangedSignal("AltairReduceMotion"):Connect(function()
+  if root.Parent and service.spinnerEnabled then service:Spinner(true)end
+ end)
+
+ function service:Transition(page,height,render)
+  self.version+=1;local version=self.version;self.page=page
+  self:Resize(height)
+  local empty=true;for _,object in ipairs(scroll:GetChildren())do if object:IsA("GuiObject")then empty=false;break end end
+  animate(browser,.13,{GroupTransparency=1})
+  later(empty and .02 or .13,function()
+   clear(scroll);clear(pinned);scroll.CanvasPosition=Vector2.zero;browser.Visible=true;setOpacity(browser,1);render()
+   animate(browser,.19,{GroupTransparency=0,Position=browserPose()})
+  end)
+  return version
+ end
+ local function suggestionNames(query,games,results)
+  local names={tostring(query or "")};local seen={[names[1]:lower()]=true}
+  for _,items in ipairs({games or {},results or {}})do for _,item in ipairs(items)do
+   local name=tostring(type(item)=="table"and(item.name or item.title)or item):gsub("%b[]",""):match("^%s*(.-)%s*$")
+   if name~=""and not seen[name:lower()]and #names<4 then names[#names+1]=name;seen[name:lower()]=true end
+  end end
+  return names
+ end
+ function service:PreviewTransition(query,games,results,loading,render)
+  local retained=self.suggestionRows and self.suggestionRows[1]and self.suggestionRows[1].Parent==scroll
+   and(self.page=="suggestions"or self.page=="loading")
+  local height=loading and(retained and self.height or 530)or(#suggestionNames(query,games,results)*48+450)
+  if not retained then
+   return self:Transition(loading and "loading"or"suggestions",height,function()
+    self:ConfigureResults(false);self:Suggestions(query,games or {},results);render()
+   end)
+  end
+  self.version+=1;self.page=loading and "loading"or"suggestions";self:Resize(height)
+  if not loading then self:Suggestions(query,games or {},results)end
+  local outgoing={}
+  for _,object in ipairs(scroll:GetChildren())do if object:IsA("GuiObject")and object:GetAttribute("SearchPreviewResult")then
+   outgoing[#outgoing+1]=object;animate(object,.1,{GroupTransparency=1})
+  end end
+  later(#outgoing>0 and .1 or 0,function()
+   for _,object in ipairs(outgoing)do object:Destroy()end
+   render()
+   for _,object in ipairs(scroll:GetChildren())do if object:IsA("CanvasGroup")and object:GetAttribute("SearchPreviewResult")then
+    object.GroupTransparency=1;animate(object,.16,{GroupTransparency=0})
+   end end
+  end)
+ end
+ function service:Skeleton(preview,query,games)
+  self:Spinner(true)
+  if preview and self.page=="loading"and self.loadingQuery==query then return end
+  self.loadingQuery=query;self.loadingPreview=preview
+  local function render()
+   if not preview then self:ConfigureResults(false);heading("Finding scripts",0)end
+   local count=preview and 2 or 4
+   for i=1,count do
+    local row=make("CanvasGroup",scroll,"Skeleton"..i,0,0,860,92);row.LayoutOrder=i+1;row:SetAttribute("SearchPreviewResult",preview==true)
+    local art=make("Frame",row,"Artwork",10,12,96,68);art.BackgroundTransparency=.16;art.BackgroundColor3=Design.Well;corner(art,9)
+    local first=make("Frame",row,"Title",124,14,370,18);first.BackgroundColor3=Design.Well;first.BackgroundTransparency=.25;corner(first,6)
+    local second=make("Frame",row,"Metadata",124,48,570,14);second.BackgroundColor3=Design.Raised;second.BackgroundTransparency=.15;corner(second,5)
+    placeholderGradient(art);placeholderGradient(first);placeholderGradient(second)
+   end
+  end
+  if preview then self:PreviewTransition(query,games or self.lastGames,nil,true,render)else self:Transition("loading",630,render)end
+ end
+ function service:Suggestions(query,games,results)
+  local names=suggestionNames(query,games,results)
+  if not(self.suggestionRows and self.suggestionRows[1]and self.suggestionRows[1].Parent==scroll)then self.suggestionRows={};self.suggestionDivider=nil end
+  for i,name in ipairs(names)do
+   local row=self.suggestionRows[i]
+   if not row then
+    row=make("Frame",scroll,"Suggestion",0,0,860,40);row.LayoutOrder=i-10;row.BackgroundColor3=Design.Well;corner(row,9);self.suggestionRows[i]=row
+    local icon=make("ImageLabel",row,"Icon",10,11,18,18);applyIcon(icon,"search");icon.ImageColor3=gray
+    text(row,"Title",name,44,0,794,40,20,Design.Muted)
+    local button=click(row,"Choose",function()self:Commit(row:GetAttribute("Query"))end);feedback(button,row,1,.45)
+   end
+   row.Title.Text=name;row:SetAttribute("Query",name);row.Visible=true
+  end
+  for i=#names+1,#self.suggestionRows do self.suggestionRows[i].Visible=false end
+  if not(self.suggestionDivider and self.suggestionDivider.Parent==scroll)then
+   local divider=make("Frame",scroll,"Divider",6,0,848,13);divider.LayoutOrder=-1;local line=make("Frame",divider,"Line",0,12,848,1);line.BackgroundColor3=Design.Edge;line.BackgroundTransparency=.9;self.suggestionDivider=divider
+   heading("Suggested scripts",0,32)
+  end
+ end
+ local function providerAccent(result)
+  return({RoScripts=Color3.fromRGB(100,184,164),ScriptBlox=Color3.fromRGB(231,166,80),["RobloxScripts.com"]=Color3.fromRGB(210,139,116)})[result.provider]or Design.Muted
+ end
+ function service:Row(result,index)
+  local row=make(self.preview and"CanvasGroup"or"Frame",scroll,"Result"..index,0,0,860,92);row.LayoutOrder=index;row:SetAttribute("SearchPreviewResult",self.preview==true)
+  row.BackgroundColor3=Design.Raised;row.BackgroundTransparency=1;corner(row,10)
+  artwork(row,"Artwork",result,10,12,96,68,9)
+  local total=(result.verified and 92 or 0)+(result.key and 58 or 0)+(result.mobile and 82 or 0)
+  text(row,"Title",result.title,124,8,720-total,28,23,white,true)
+  if total>0 then tags(row,result,848-total,7)end
+  local dot=make("Frame",row,"SourceMark",124,46,5,5);dot.BackgroundColor3=providerAccent(result);dot.BackgroundTransparency=0;corner(dot,3)
+  text(row,"Metadata",providerSite(result),138,38,330,20,17,gray)
+  local updated=age(result.updatedAt);local metrics=text(row,"Metrics",views(result.views).." views"..(updated~=""and(" · "..updated)or""),482,38,362,20,17,gray);metrics.TextXAlignment=Enum.TextXAlignment.Right
+  text(row,"Context",gameName(result),124,65,720,18,17,gray)
+  local divider=make("Frame",row,"Divider",124,91,720,1);divider.BackgroundColor3=Design.Edge;divider.BackgroundTransparency=.93;divider:SetAttribute("AltairDesignRole","divider")
+  local button=click(row,"Choose",function()self:Select(result)end);feedback(button,row,1,.55)
+ end
+ function service:Results(results,preview,query,games)
+  self.items=results;self.preview=preview;panel.ScrollHint.Visible=false;self.hintDismissed=false;self.lastQuery=query;self.lastGames=games
+  self.loadingQuery=nil;local height=preview and(#suggestionNames(query,games,results)*48+450)or 724
+  self:Spinner(false);header.Count.Text=preview and ""or(#results.." results")
+  local function render()
+   self:ConfigureResults(false)
+   if not preview then heading("Search results",0,32)end
+   for i,result in ipairs(results)do
+    if i>(preview and 2 or 20)then break end
+    self:Row(result,i)
+   end
+   if #results==0 then
+    if preview then
+     local empty=make("CanvasGroup",scroll,"EmptyResults",0,0,860,54);empty.LayoutOrder=1;empty:SetAttribute("SearchPreviewResult",true)
+     text(empty,"Title","No matching scripts. Try another name.",6,0,840,42,21,gray)
+    else heading("No scripts found",1)end
+   end
+   if not preview and #results>5 then panel.ScrollHint.Visible=true;panel.ScrollHint.ImageTransparency=1;later(.25,function()if self.page=="results"and not self.hintDismissed then animate(panel.ScrollHint,.18,{ImageTransparency=0})end end)end
+  end
+  if preview then self:PreviewTransition(query,games,results,false,render)else self:Transition("results",height,render)end
+ end
+ local function featuredDeck()
+  local deck=service.featuredDeck
+  return deck and deck.heading.Parent==scroll and deck.shelf.Parent==scroll and deck or nil
+ end
+ local function featuredKey(result)
+  local info=type(result.game)=="table"and result.game or {}
+  local image=result.image or result.thumbnailUrl or result.thumbnail or info.imageUrl or info.image or info.iconUrl or ""
+  if type(image)=="table"then image=image.url or ""end
+  return tostring(result.title).."\0"..providerSite(result).."\0"..tostring(result.views).."\0"..tostring(result.key).."\0"..tostring(image)
+ end
+ local fillFeatured
+ local function mountFeatured()
+  local deck={heading=heading("Popular scripts",0,32),cards={}}
+  deck.shelf=make("Frame",scroll,"Featured",0,0,860,312);deck.shelf.LayoutOrder=1;service.featuredDeck=deck
+  for i=1,4 do
+   local width,height=424,150
+   local card=make("CanvasGroup",deck.shelf,"Card"..i,((i-1)%2)*436,math.floor((i-1)/2)*162,width,height);card.GroupTransparency=1;card.BackgroundColor3=Design.Raised;card.BackgroundTransparency=.12;card:SetAttribute("AltairDesignRole","inset");corner(card,14)
+   local outline=Instance.new("UIStroke");outline.Name="Outline";outline.Color=Design.Edge;outline.Thickness=.6;outline.Transparency=.9;outline.BorderStrokePosition=Enum.BorderStrokePosition.Inner;outline.Parent=card
+   local skeleton=make("CanvasGroup",card,"Skeleton",0,0,width,height)
+   local placeholders={{12,14,96,112,9},{124,20,272,18,6},{124,91,234,13,5},{124,119,180,12,5}}
+   for _,r in ipairs(placeholders)do
+    local bar=make("Frame",skeleton,"Placeholder",r[1],r[2],r[3],r[4]);bar.BackgroundColor3=Design.Well;bar.BackgroundTransparency=.15;corner(bar,r[5]);placeholderGradient(bar)
+   end
+   local content=make("CanvasGroup",card,"Content",0,0,width,height);content.GroupTransparency=1
+   local slot={root=card,skeleton=skeleton,content=content,revision=0};deck.cards[i]=slot
+   slot.button=click(card,"Choose",function()if service.page=="featured"and slot.result then service:Select(slot.result)end end);slot.button.Interactable=false
+   slot.button.MouseEnter:Connect(function()if service.page=="featured"then animate(card,.16,{BackgroundTransparency=.02});animate(outline,.16,{Transparency=.65})end end)
+   slot.button.MouseLeave:Connect(function()if service.page=="featured"then animate(card,.2,{BackgroundTransparency=.12});animate(outline,.2,{Transparency=.9})end end)
+   later((i-1)*.045,function()if card.Parent then animate(card,.16,{GroupTransparency=0})end end)
+  end
+  deck.empty=make("CanvasGroup",deck.shelf,"EmptyState",0,0,860,312);deck.empty.Visible=false;deck.empty.GroupTransparency=1
+  local empty=text(deck.empty,"Title","Nothing to feature right now",20,80,820,36,24,white,true);empty.TextXAlignment=Enum.TextXAlignment.Center
+  local help=text(deck.empty,"Description","Search for an experience or script above.",20,126,820,30,20,gray);help.TextXAlignment=Enum.TextXAlignment.Center
+  local pending=service.pendingFeatured
+  if pending and pending.version==service.version then service.pendingFeatured=nil;fillFeatured(pending.items)end
+ end
+ fillFeatured=function(results)
+  local deck=featuredDeck();if not deck then return false end
+  local returning=service.page=="detail";service.page="featured";service.items=results;service.preview=nil;service.pendingFeatured=nil
+  for i,slot in ipairs(deck.cards)do
+   local result=results[i];slot.revision+=1;local revision=slot.revision
+   if result then
+    local key=featuredKey(result);local previous=slot.result;slot.result=result;slot.button.Interactable=true;slot.root.Visible=true
+    animate(slot.root,.16,{GroupTransparency=0})
+    if key~=slot.key then
+     local function render()
+      if slot.revision~=revision or not slot.content.Parent then return end
+      stopAnimation(slot.content);setOpacity(slot.content,1);clear(slot.content);slot.key=key
+       slot.artwork=artwork(slot.content,"Artwork",result,12,14,96,112,9)
+       local title=text(slot.content,"Title",result.title,124,14,284,56,22,white,true);title.TextWrapped=true;title.TextYAlignment=Enum.TextYAlignment.Top
+       local line=make("Frame",slot.content,"Divider",124,78,284,1);line.BackgroundColor3=Design.Edge;line.BackgroundTransparency=.9;line:SetAttribute("AltairDesignRole","divider")
+       local mark=make("Frame",slot.content,"SourceMark",124,95,5,5);mark.BackgroundTransparency=0;mark.BackgroundColor3=providerAccent(result);corner(mark,3)
+       text(slot.content,"Metadata",providerSite(result),138,88,270,20,17,gray)
+       text(slot.content,"Metrics",(result.key and"Key required · "or"")..views(result.views).." views",124,116,284,18,16,gray)
+      animate(slot.skeleton,.14,{GroupTransparency=1})
+      later((i-1)*.035,function()if slot.revision==revision and slot.content.Parent then animate(slot.content,.18,{GroupTransparency=0})end end)
+     end
+     if previous then animate(slot.content,.1,{GroupTransparency=1});later(.1,render)else render()end
+    else animate(slot.skeleton,.14,{GroupTransparency=1});animate(slot.content,.18,{GroupTransparency=0})end
+   else
+    slot.result=nil;slot.key=nil;slot.button.Interactable=false
+    animate(slot.root,.14,{GroupTransparency=1})
+    later(.15,function()if slot.revision==revision and not slot.result and slot.root.Parent then slot.root.Visible=false end end)
+   end
+  end
+  if #results==0 then deck.empty.Visible=true;animate(deck.empty,.18,{GroupTransparency=0})
+  else animate(deck.empty,.14,{GroupTransparency=1});later(.15,function()if deck.empty.Parent and #service.items>0 then deck.empty.Visible=false end end)end
+  if returning then animate(browser,.19,{GroupTransparency=0,Position=browserPose()})end
+  return true
+ end
+ function service:Idle(results)
+  if self.page=="closed"then return end
+  results=results or {};panel.ScrollHint.Visible=false;self:Spinner(false)
+  if self.height~=featuredHeight()then self:Resize(featuredHeight(),.36)end
+  if fillFeatured(results)then return end
+  if self.page~="featured-loading"then self:IdleLoading()end
+  self.pendingFeatured={version=self.version,items=results}
+ end
+ function service:IdleLoading()
+  self:Spinner(false);header.Count.Text="3 sources";panel.ScrollHint.Visible=false
+  local deck=featuredDeck()
+  if deck then
+   self.page="featured-loading";self:ConfigureResults(false)
+   browser.Visible=true;animate(browser,.19,{GroupTransparency=0,Position=browserPose()})
+   if self.height~=featuredHeight()then self:Resize(featuredHeight(),.36)end
+   for _,slot in ipairs(deck.cards)do if slot.root.Visible then animate(slot.root,.16,{GroupTransparency=0})end end
+   return
+  end
+  self.featuredDeck=nil;self.pendingFeatured=nil
+  self:Transition("featured-loading",featuredHeight(),function()self:ConfigureResults(false);mountFeatured()end)
+ end
+ function service:Select(result)
+  if self.page=="closed"or self.page=="detail"then return end
+  invalidate();self.detailVersion+=1;self.controlsReady=false;detail.Interactable=false;detail.Cancel.Interactable=false;detail.Run.Interactable=false;self:Spinner(false);self.previous={items=self.items,preview=self.preview,query=self.lastQuery,games=self.lastGames,page=self.page};self.selected=result;self.page="detail";panel.ScrollHint.Visible=false;local version=self.version
+  input:ReleaseFocus();input.TextEditable=false
+  animate(header,.1,{GroupTransparency=1});animate(browser,.18,{GroupTransparency=1,Position=browserPose(8)})
+  later(.11,function()if self.page=="detail"then
+    header.Label.Text="Script details";header.Count.Text=providerSite(result);header.SearchBox.Visible=false;header.SearchWell.Visible=false;header.Icon.Visible=false
+   animate(header,.16,{GroupTransparency=0})
+  end end)
+  detail.Title.Text=result.title;detail.Creator.Text="Source: "..providerSite(result).." · "..gameName(result).." · by "..tostring(type(result.owner)=="table"and result.owner.username or "Unknown")
+  detail.Metrics.Text=views(result.views).." views"..(age(result.updatedAt)~=""and(" · updated "..age(result.updatedAt))or "")
+  stopAnimation(description);description.TextTransparency=0;description.Text=tostring(result.description or result.features or(context.Detail and"Loading script details…"or"No description provided."));detail.DescriptionWell.Scroll.CanvasPosition=Vector2.zero
+   clear(detail.Artwork);detail.Artwork.Image="";detail.Artwork.BackgroundTransparency=1;local artWidth,artHeight=selectedArtworkSize();artwork(detail.Artwork,"SelectedArtwork",result,0,0,artWidth,artHeight,16)
+  clear(detail.Tags);tags(detail.Tags,result,0,0)
+  stopAnimation(detail.Cancel);stopAnimation(detail.Run.HoverProgress);stopAnimation(detail.Run.RevealProgress)
+  detail.Cancel.TextTransparency=1;detail.Cancel.TextColor3=themeInk(detail.Cancel,"TextColor3",gray);detail.Run.HoverProgress.Value=0;detail.Run.RevealProgress.Value=0
+  later(.25,function()if self.page=="detail"then self.controlsReady=true;detail.Interactable=true;detail.Cancel.Interactable=true;detail.Run.Interactable=true end end)
+  later(.1,function()animate(detail.Cancel,.15,{TextTransparency=0});animate(detail.Run.RevealProgress,.15,{Value=1})end)
+  detail.Run.Text="Run script →";detail.Visible=true;detail.Position=detailPoseAt(44);setOpacity(detail,1);animate(detail,.24,{GroupTransparency=0,Position=detailPoseAt()},Enum.EasingStyle.Quart);self:Resize(selectedHeight(),.32)
+  later(.19,function()if self.page=="detail"then browser.Visible=false end end)
+  if context.Detail then task.spawn(function()
+   local ok,info=pcall(context.Detail,result)
+   if root.Parent and self.version==version and self.selected==result then
+    local nextText
+    if ok and info then result.features=info.features or info.description;nextText=tostring(result.features or "No description provided.")
+    elseif not result.description and not result.features then nextText="Description unavailable."end
+    if nextText and description.Text~=nextText then
+     animate(description,.08,{TextTransparency=1})
+     later(.085,function()if self.page=="detail"and self.selected==result then description.Text=nextText;animate(description,.15,{TextTransparency=0})end end)
+    end
+   end
+  end)end
+ end
+ function service:Back()
+  if not self.previous then return end;invalidate();self.detailVersion+=1;local detailVersion=self.detailVersion;self.controlsReady=false;detail.Interactable=false;detail.Cancel.Interactable=false;detail.Run.Interactable=false;self.selected=nil;header.Visible=true;browser.Visible=true
+  animate(header,.08,{GroupTransparency=1});animate(detail,.16,{GroupTransparency=1,Position=detailPoseAt(44)});self:Controls(1,.12)
+  local previous=self.previous;self.previous=nil
+  if previous.page=="featured"then self:Idle(previous.items)else self:Results(previous.items,previous.preview,previous.query,previous.games)end
+  later(.09,function()header.Label.Text="Discover";header.SearchBox.Visible=true;header.SearchWell.Visible=true;header.Icon.Visible=true;input.TextEditable=true;animate(header,.16,{GroupTransparency=0})end)
+  task.delay(.2,function()if root.Parent and detail.Parent and self.detailVersion==detailVersion and self.page~="detail"then detail.Visible=false end end)
+ end
+ function service:Commit(query)
+  query=boundedQuery(query or input.Text)
+  invalidate();self.suppress=true;input.Text=query;self.suppress=false;input:ReleaseFocus()
+  query=query:match("^%s*(.-)%s*$")
+  if query==""then self:IdleLoading();if self.LoadIdle then self.LoadIdle()end;return end
+  if self.Query then self.Query(query,false)end
+ end
+ function service:Stop()
+  invalidate();self.detailVersion+=1;detail.Interactable=false;self.spinnerEnabled=false;self.spinVersion=(self.spinVersion or 0)+1;self.life=(self.life or 0)+1;if self.spin then self.spin:Cancel();self.spin=nil end
+  for _,animation in pairs(self.animations)do animation:Cancel()end;table.clear(self.animations)
+  if self.activeCarry then self.activeCarry:Destroy();self.activeCarry=nil end
+ end
+ function service:Carry(face,entering,duration)
+  if self.activeCarry then self.activeCarry:Destroy();self.activeCarry=nil end
+  if not face then return end
+  local carry=Instance.new("CanvasGroup");carry.Name="ButtonMorph";carry.BackgroundTransparency=1;carry.Size=UDim2.fromScale(1,1);carry.ZIndex=20;carry.GroupTransparency=entering and 0 or 1;carry.Parent=panel;self.activeCarry=carry
+  face.AnchorPoint=Vector2.zero;face.Position=UDim2.fromScale(0,0);face.Size=UDim2.fromScale(1,1);face.Parent=carry
+  for _,object in ipairs(face:GetDescendants())do if object:IsA("GuiButton")then object.Interactable=false;object.Active=false end end
+  animate(carry,duration,{GroupTransparency=entering and 1 or 0})
+  task.delay(duration+.04,function()if carry.Parent then carry:Destroy()end;if self.activeCarry==carry then self.activeCarry=nil end end)
+ end
+ function service:Open(position,size,onReady,face)
+  self:Stop();self.page="featured-loading";self.selected=nil;self.previous=nil
+  panel.Visible=true;panel.Interactable=true;input.TextEditable=true;panel.Position=position;panel.Size=size;panel.BackgroundTransparency=1;panel.GroupTransparency=0;syncSurface(panel)
+  self.featuredDeck=nil;self.pendingFeatured=nil;clear(scroll)
+  header.Visible=true;setOpacity(header,1);browser.Visible=true;setOpacity(browser,1);detail.Visible=false
+  self.suppress=true;input.Text="";self.suppress=false;header.Count.Text="3 sources";header.Label.Text="Discover";header.SearchBox.Visible=true;header.SearchWell.Visible=true;header.Icon.Visible=true;header.Back.Icon.ImageColor3=themeInk(header.Back.Icon,"ImageColor3",gray);browser.Position=browserPose()
+  self:IdleLoading();animate(header,.2,{GroupTransparency=0})
+  local rounding=face and face:FindFirstChildOfClass("UICorner")
+  panel.UICorner.CornerRadius=rounding and rounding.CornerRadius or UDim.new(0,u(16));animate(panel.UICorner,.48,{CornerRadius=root.Scripts.UICorner.CornerRadius})
+  self:Carry(face,true,.18)
+  local life=self.life;task.delay(.48,function()if root.Parent and self.life==life and self.page~="closed"and onReady then onReady()end end)
+ end
+ function service:Close(position,size,onClosed,face,duration)
+  self:Stop();panel.ScrollHint.Visible=false;self.page="closed";self.controlsReady=false;panel.Interactable=false;input.TextEditable=false;detail.Cancel.Interactable=false;detail.Run.Interactable=false;self:Spinner(false);input:ReleaseFocus()
+  animate(header,.12,{GroupTransparency=1});animate(browser,.12,{GroupTransparency=1});animate(detail,.12,{GroupTransparency=1});self:Controls(1,.12)
+  local time=duration or .48
+  local rounding=face and face:FindFirstChildOfClass("UICorner")
+  animate(panel.UICorner,time,{CornerRadius=rounding and rounding.CornerRadius or UDim.new(0,u(16))})
+  animate(panel,time,{Position=position,Size=size})
+  self:Carry(face,false,time)
+  later(time+.01,function()panel.Visible=false;if onClosed then onClosed()end end)
+ end
+ scroll:GetPropertyChangedSignal("CanvasPosition"):Connect(function()if scroll.CanvasPosition.Y>2 and not service.hintDismissed then service.hintDismissed=true;animate(panel.ScrollHint,.15,{ImageTransparency=1})end end)
+ input:GetPropertyChangedSignal("Text"):Connect(function()
+  if service.suppress or service.page=="closed"then return end
+  local text=boundedQuery(input.Text)
+  if input.Text~=text then service.suppress=true;input.Text=text;service.suppress=false end
+  invalidate();local query=text:match("^%s*(.-)%s*$")
+  if query==""then service:IdleLoading();if service.LoadIdle then service.LoadIdle()end;return end
+  service:Skeleton(true,query);local version=service.version
+  task.delay(.24,function()if service.version==version and root.Parent and service.Query then service.Query(query,true)end end)
+ end)
+ input.Focused:Connect(function()if service.page~="closed"and service.page~="detail"then animate(header.SearchWell,.16,{BackgroundTransparency=.12});animate(header.SearchWell.UIStroke,.16,{Transparency=.65})end end)
+ input.FocusLost:Connect(function(enter)
+  if service.page~="closed"then animate(header.SearchWell,.18,{BackgroundTransparency=.3});animate(header.SearchWell.UIStroke,.18,{Transparency=.9})
+  else header.SearchWell.BackgroundTransparency=.3;header.SearchWell.UIStroke.Transparency=.9 end
+  if enter and service.page~="closed"and service.page~="detail"and input.Text~=""then service:Commit(input.Text)end
+ end)
+ header.Back.MouseButton1Click:Connect(function()if service.page=="detail"then service:Back()elseif service.page~="closed"and context.Back then context.Back()end end)
+ header.Back.MouseEnter:Connect(function()if service.page~="closed"then animate(header.Back.Icon,.15,{ImageColor3=themeInk(header.Label,"TextColor3",white)})end end)
+ header.Back.MouseLeave:Connect(function()if service.page~="closed"then animate(header.Back.Icon,.18,{ImageColor3=themeInk(header.Back.Icon,"ImageColor3",gray)})end end)
+ detail.Cancel.MouseButton1Click:Connect(function()if service.page=="detail"and service.controlsReady then service:Back()end end)
+ detail.Run.MouseButton1Click:Connect(function()
+  if service.busy or not service.selected or service.page~="detail"or not service.controlsReady then return end
+  local version=service.version;local result=service.selected;local token={};service.runToken=token;service.busy=true;detail.Run.Text="Loading…"
+  task.spawn(function()local ok,problem=pcall(context.Execute,result)
+   if service.runToken==token then service.busy=false;service.runToken=nil end;if root.Parent and service.version==version then detail.Run.Text="Run script →";if not ok or problem then if context.Error then context.Error(tostring(ok and problem or problem))end end end
+  end)
+ end)
+ detail.Run.MouseEnter:Connect(function()if service.page=="detail"and service.controlsReady then animate(detail.Run.HoverProgress,.2,{Value=1},Enum.EasingStyle.Sine)end end)
+ detail.Run.MouseLeave:Connect(function()if service.page=="detail"and service.controlsReady then animate(detail.Run.HoverProgress,.2,{Value=0},Enum.EasingStyle.Sine)end end)
+ detail.Cancel.MouseEnter:Connect(function()if service.page=="detail"and service.controlsReady then animate(detail.Cancel,.2,{TextColor3=themeInk(detail.Title,"TextColor3",white)},Enum.EasingStyle.Sine)end end)
+ detail.Cancel.MouseLeave:Connect(function()if service.page=="detail"and service.controlsReady then animate(detail.Cancel,.2,{TextColor3=themeInk(detail.Cancel,"TextColor3",gray)},Enum.EasingStyle.Sine)end end)
+ root.Destroying:Connect(function()service:Stop();for _,connection in ipairs(surfaceConnections)do connection:Disconnect()end end)
+ return service
+end
+
+-- Built-in alternatives to small standalone utility scripts. No global hooks.
+local function buildNativeUtilities(context)
+ local run=game:GetService('RunService');local input=context.Input or game:GetService('UserInputService')
+ local actions=context.Actions or game:GetService('ContextActionService');local light=context.Lighting or game:GetService('Lighting')
+ local service={alive=true,entries={},order={},connections={},fullbright=false,freecamera=false,cameraGeneration=0,starting=false}
+ local key='AltairNativeCamera-'..game:GetService('HttpService'):GenerateGUID(false)
+ local mouseState,view,velocity,pitch,yaw,position;local cameraState;local controls
+ local function alive()return service.alive and(not context.IsAlive or context.IsAlive())end
+ local function notice(title,body)if alive()and context.Notify then context.Notify(title,body)end end
+ local function camera()return context.GetCamera and context.GetCamera()or workspace.CurrentCamera end
+ local function releaseMouse()
+  local previous=mouseState;mouseState=nil
+  if previous then pcall(function()if input.MouseBehavior==Enum.MouseBehavior.LockCurrentPosition then input.MouseBehavior=previous end end)end
+ end
+ local function releaseBindings()
+  if context.UnbindRender then pcall(context.UnbindRender,key)else pcall(run.UnbindFromRenderStep,run,key)end
+  pcall(actions.UnbindAction,actions,key)
+ end
+ local function restoreCamera()
+  releaseMouse();velocity=Vector3.zero
+  local generation=service.cameraGeneration
+  local state=cameraState
+  if state and state.camera then
+   local c=state.camera;local read,kind=pcall(function()return c.CameraType end)
+   if read then
+    if kind~=Enum.CameraType.Scriptable then
+     if cameraState==state then cameraState=nil end
+    else
+     -- Free camera owns pose/type, never FOV or the game's current subject.
+     -- Keep failed restoration pending for an explicit retry; do not claim
+     -- success or release the snapshot after a transient property error.
+     local pose=pcall(function()c.CFrame=state.cframe end)
+     local focus=pcall(function()c.Focus=state.focus end)
+     if pose and focus then
+      local restored=pcall(function()c.CameraType=state.kind end)
+      if restored and cameraState==state then cameraState=nil end
+     end
+    end
+   end
+  end
+  if controls then
+   local owned=controls;local restored,result=pcall(owned.Enable,owned)
+   if restored and result~=false and controls==owned and service.cameraGeneration==generation then controls=nil end
+  end
+  return cameraState==nil and controls==nil
+ end
+ function service:SetFreeCamera(enabled)
+  enabled=enabled==true
+  if not enabled then
+   self.cameraGeneration+=1;self.starting=false;self.freecamera=false
+   releaseBindings()
+   if not restoreCamera()then return false,'Camera or controls restoration is still pending'end
+   return true
+  end
+  if not alive()then return false,'Altair is unloaded'end
+  if self.freecamera then return true end
+  if self.starting then return false,'Free Camera is already starting'end
+  if(cameraState or controls)and not restoreCamera()then return false,'Previous camera or controls restoration is still pending'end
+  if not alive()then return false,'Altair is unloaded'end
+  self.cameraGeneration+=1;local generation=self.cameraGeneration;self.starting=true
+  local function current()return alive()and self.cameraGeneration==generation end
+  local function fail(problem)
+   if self.cameraGeneration==generation then
+    self.starting=false;self.freecamera=false;releaseBindings()
+    if not restoreCamera()then problem=tostring(problem)..' (camera or controls restoration is still pending)'end
+   end
+   return false,problem
+  end
+  if context.CanCamera then
+   local checked,allowed=pcall(context.CanCamera)
+   if not current()then return fail('Free Camera activation was cancelled')end
+   if not checked then return fail('Camera availability check failed')end
+   if not allowed then return fail('Close Home or stop spectating first')end
+  end
+  local available,initialCamera=pcall(camera)
+  if not current()then return fail('Free Camera activation was cancelled')end
+  if not available or not initialCamera then return fail('Camera is unavailable')end
+  -- PlayerModule require may yield. Resolve it before taking camera ownership,
+  -- then verify the same live activation still owns the continuation.
+  local value
+  if context.GetControls then local ok,result=pcall(context.GetControls);if ok then value=result end end
+  if not current()then return fail('Free Camera activation was cancelled')end
+  if context.CanCamera then
+   local checked,allowed=pcall(context.CanCamera)
+   if not current()then return fail('Free Camera activation was cancelled')end
+   if not checked then return fail('Camera availability check failed')end
+   if not allowed then return fail('Close Home or stop spectating first')end
+  end
+  local found,c=pcall(camera)
+  if not current()then return fail('Free Camera activation was cancelled')end
+  if not found or not c then return fail('Camera is unavailable')end
+  local activated,problem=pcall(function()
+   cameraState={camera=c,cframe=c.CFrame,focus=c.Focus,kind=c.CameraType}
+   view=c;position=c.CFrame.Position;pitch,yaw=c.CFrame:ToOrientation();velocity=Vector3.zero;c.CameraType=Enum.CameraType.Scriptable
+  -- Use the normal control module when available; otherwise the scoped action
+  -- sink still prevents keyboard movement. Never replace the module or globals.
+  if value and type(value.Disable)=="function"and type(value.Enable)=="function"and value.controlsEnabled~=false then
+   controls=value
+   local disabled,disableProblem=pcall(value.Disable,value)
+   if not disabled or disableProblem==false then error('Controls could not be disabled: '..tostring(disableProblem),0)end
+  end
+  if not current()then return false end
+  self.freecamera=true
+  actions:BindActionAtPriority(key,function()
+   if not current()or not self.freecamera then return Enum.ContextActionResult.Pass end
+   local focused=input:GetFocusedTextBox()
+   return(current()and self.freecamera and not focused)and Enum.ContextActionResult.Sink or Enum.ContextActionResult.Pass
+  end,false,Enum.ContextActionPriority.High.Value+10,Enum.KeyCode.W,Enum.KeyCode.A,Enum.KeyCode.S,Enum.KeyCode.D,Enum.KeyCode.Q,Enum.KeyCode.E,Enum.KeyCode.Space)
+  local function step(dt)if current()and self.freecamera then self:Step(dt,generation)end end
+  if context.BindRender then context.BindRender(key,step)
+  else run:BindToRenderStep(key,Enum.RenderPriority.Camera.Value+1,step)end
+  return current()
+  end)
+  if not activated then return fail('Free Camera is unavailable: '..tostring(problem))end
+  if not problem then return fail('Free Camera activation was cancelled')end
+  self.starting=false
+  return true
+ end
+ function service:Step(dt,generation)
+  generation=generation or self.cameraGeneration
+  if self.cameraGeneration~=generation then return end
+  local live=alive()
+  if self.cameraGeneration~=generation then return end
+  if not live then self:SetFreeCamera(false);return end
+  if not self.freecamera then return end
+  local found,current=pcall(camera)
+  if self.cameraGeneration~=generation or not self.freecamera then return end
+  local checked,allowed=true,true
+  if context.CanCamera then checked,allowed=pcall(context.CanCamera)end
+  live=alive()
+  if self.cameraGeneration~=generation or not self.freecamera then return end
+  if not live or not found or current~=view or not checked or not allowed then self:SetFreeCamera(false);return end
+  if view.CameraType~=Enum.CameraType.Scriptable then self:SetFreeCamera(false);return end
+  dt=math.clamp(tonumber(dt)or 0,0,.05)
+  local direction=Vector3.zero
+  if not input:GetFocusedTextBox()then
+   local function down(code)return input:IsKeyDown(code)and 1 or 0 end
+   direction=Vector3.new(down(Enum.KeyCode.D)-down(Enum.KeyCode.A),down(Enum.KeyCode.E)-down(Enum.KeyCode.Q),down(Enum.KeyCode.S)-down(Enum.KeyCode.W))
+  end
+  local rotation=CFrame.fromOrientation(pitch,yaw,0)
+  local speed=(input:IsKeyDown(Enum.KeyCode.LeftShift)or input:IsKeyDown(Enum.KeyCode.RightShift))and 64 or 24
+  local wanted=direction.Magnitude>0 and rotation:VectorToWorldSpace(direction.Unit)*speed or Vector3.zero
+  live=alive()
+  if self.cameraGeneration~=generation or not self.freecamera then return end
+  if not live then self:SetFreeCamera(false);return end
+  velocity=velocity:Lerp(wanted,1-math.exp(-12*dt));position+=velocity*dt
+  view.CFrame=CFrame.new(position)*rotation;view.Focus=view.CFrame*CFrame.new(0,0,-24)
+ end
+ local bright={Brightness=2,Ambient=Color3.fromRGB(178,178,178),OutdoorAmbient=Color3.fromRGB(178,178,178),GlobalShadows=false,ClockTime=14}
+ local function restoreLighting()
+  local state=service.lightingState
+  for property,original in pairs(state or {})do
+   local read,current=pcall(function()return light[property]end)
+   if read then
+    if current~=bright[property]then state[property]=nil
+    else local restored=pcall(function()light[property]=original end);if restored then state[property]=nil end end
+   end
+  end
+  if not state or next(state)==nil then service.lightingState=nil;return true end
+  return false
+ end
+ function service:SetFullbright(enabled)
+  if enabled and not alive()then return false,'Altair is unloaded'end
+  enabled=enabled==true;if self.fullbright==enabled and(enabled or not self.lightingState)then return true end
+  if enabled then
+   if self.lightingState and not restoreLighting()then return false,'Previous lighting changes could not be restored on this client'end
+   self.lightingState={}
+   local applied,problem=pcall(function()
+    for property,target in pairs(bright)do local original=light[property]
+     if original~=target then self.lightingState[property]=original;light[property]=target end
+    end
+   end)
+   if not applied then self.fullbright=false;restoreLighting();return false,'Fullbright is unavailable: '..tostring(problem)end
+  else
+   self.fullbright=false
+   if not restoreLighting()then return false,'Some lighting settings could not be restored on this client'end
+  end
+  self.fullbright=enabled;return true
+ end
+ function service:Register(entry)
+  if not alive()then return false,'Altair is unloaded'end
+  assert(type(entry)=='table'and type(entry.id)=='string'and type(entry.run)=='function','Invalid native utility')
+  if not self.entries[entry.id]then self.order[#self.order+1]=entry.id end;self.entries[entry.id]=entry
+ end
+ function service:List()
+  local list={};for _,id in ipairs(self.order)do local item=self.entries[id];list[#list+1]={id=id,name=item.name,description=item.description,icon=item.icon,toggle=item.active~=nil,active=item.active and item.active()or false}end;return list
+ end
+ function service:Run(id,...)
+  if not alive()then return false,'Altair is unloaded'end
+  local entry=self.entries[tostring(id)];if not entry then return false,'Unknown built-in tool'end
+  local args=table.pack(...);local ok,value,detail=pcall(function()return entry.run(table.unpack(args,1,args.n))end)
+  if not alive()then return false,'Altair is unloaded'end
+  if not ok then return false,tostring(value)end
+  if value==false then return false,detail end
+  return true,value
+ end
+ service:Register({id='freecamera',name='Free Camera',description='WASD moves, Q/E changes height, hold right mouse to look. Shift moves faster.',icon='video',active=function()return service.freecamera end,run=function()local ok,problem=service:SetFreeCamera(not service.freecamera);if ok then notice('Free Camera',service.freecamera and 'Enabled · WASD / Q / E · right mouse to look · Shift to speed up.'or 'Disabled · camera restored.')end;return ok,problem end})
+ service:Register({id='fullbright',name='Fullbright',description='Brighten dark environments. Toggle off to restore the lighting you changed.',icon='sun',active=function()return service.fullbright end,run=function()local ok,problem=service:SetFullbright(not service.fullbright);if ok then notice('Fullbright',service.fullbright and 'Enabled' or 'Disabled · lighting restored.')end;return ok,problem end})
+ local function track(signal,callback)service.connections[#service.connections+1]=signal:Connect(callback)end
+ track(input.InputBegan,function(event,processed)
+  if alive()and service.freecamera and not processed and not input:GetFocusedTextBox()and event.UserInputType==Enum.UserInputType.MouseButton2 then
+   if not mouseState or input.MouseBehavior~=Enum.MouseBehavior.LockCurrentPosition then mouseState=input.MouseBehavior end
+   input.MouseBehavior=Enum.MouseBehavior.LockCurrentPosition
+  end
+ end)
+ track(input.InputChanged,function(event)
+  if alive()and service.freecamera and mouseState and event.UserInputType==Enum.UserInputType.MouseMovement then yaw-=event.Delta.X*.003;pitch=math.clamp(pitch-event.Delta.Y*.003,-math.pi*.49,math.pi*.49)end
+ end)
+ track(input.InputEnded,function(event)if event.UserInputType==Enum.UserInputType.MouseButton2 then releaseMouse()end end)
+ track(input.WindowFocusReleased,function()releaseMouse();velocity=Vector3.zero end)
+ function service:Destroy()
+  if not self.alive then
+   if cameraState or controls then pcall(restoreCamera)end
+   if self.lightingState then pcall(self.SetFullbright,self,false)end
+   return
+  end
+  self.alive=false
+  -- Repeated explicit destruction retries retained restoration failures. Each
+  -- subsystem still gets cleanup if another injected callback throws.
+  pcall(self.SetFreeCamera,self,false);pcall(self.SetFullbright,self,false)
+  for _,connection in ipairs(self.connections)do pcall(connection.Disconnect,connection)end;table.clear(self.connections);table.clear(self.entries);table.clear(self.order)
+ end
+ if context.Root then track(context.Root.Destroying,function()service:Destroy()end)end
+ return service
+end
+
+-- Public badges expose service health without an account credential.
+-- These checks monitor downloads, not individual players or gameplay.
+local sentivelComponents={
+ {key="runtime",name="Runtime download",id="27805597-862c-4cd3-8241-3a5a3df8dacb"},
+ {key="interface",name="Interface download",id="cf422960-49ee-4274-858b-94255472425a"},
+}
+local function sentivelSnapshot(saved,wall,interval)
+ wall=wall or os.time();interval=math.clamp(tonumber(interval)or 300,300,3600)
+ local function finite(value)return type(value)=="number"and value==value and math.abs(value)<math.huge end
+ if type(saved)~="table"or saved.version~=2 or saved.clock~="unix"or not finite(saved.savedAt)or saved.savedAt<0 then return nil end
+ local clockValid=saved.savedAt<=wall
+ local function stamp(value)return clockValid and finite(value)and value>=0 and value<=wall and value or nil end
+ local result={version=2,clock="unix",savedAt=wall,checkedAt=stamp(saved.checkedAt),components={}}
+ local valid={operational=true,degraded=true,outage=true,maintenance=true,unknown=true}
+ local notices={}
+ for _,component in ipairs(sentivelComponents)do
+  local record=type(saved.components)=="table"and saved.components[component.key]
+  if type(record)=="table"then
+   local status=valid[record.status]and record.status or nil
+   local checkedAt=status and stamp(record.checkedAt)or nil
+   local item={status=status,checkedAt=checkedAt,stale=record.stale==true or checkedAt==nil}
+   if saved.problemAnnounced==true and(record.noticeStatus=="degraded"or record.noticeStatus=="outage")then
+    item.noticeStatus=record.noticeStatus;notices[#notices+1]=component.key..":"..record.noticeStatus
+   end
+   result.components[component.key]=item
+  end
+ end
+ if saved.problemAnnounced==true then
+  result.problemAnnounced=true
+  if #notices>0 then result.noticeKey=table.concat(notices,"|")end
+ end
+ -- No raw runtime clock, worker handle or unbounded future deadline survives.
+ -- A clock rollback leaves health unknown and adds at most one poll interval.
+ if not clockValid then result.nextCheckAt=wall+interval
+ else
+  local nextCheck=finite(saved.nextCheckAt)and saved.nextCheckAt>=0 and saved.nextCheckAt or(result.checkedAt and result.checkedAt+interval)
+  if nextCheck then result.nextCheckAt=wall+math.clamp(nextCheck-wall,0,interval)end
+ end
+ return result
+end
+local function bindSentivel(context)
+ local page="https://www.sentivel.com/status/altair-cloudz"
+ local components=sentivelComponents
+ local statuses={operational="operational",degraded="degraded",["degraded performance"]="degraded",["partial outage"]="outage",["major outage"]="outage",outage="outage",down="outage",maintenance="maintenance",["under maintenance"]="maintenance",["no data"]="unknown",["warming up"]="unknown",unknown="unknown",idle="unknown"}
+ local now=context.Now or os.time
+ local wallNow=context.WallNow or os.time
+ local schedule=context.Schedule or task.delay
+ local cancel=context.Cancel or task.cancel
+ local interval=math.clamp(tonumber(context.Interval)or 300,300,3600)
+ local session=context.Session or{}
+ local cache={components={}}
+ local wall,timestamp=wallNow(),now()
+ local restored=sentivelSnapshot(session.sentivel,wall,interval)
+ if restored then
+  local function relative(value)return value and timestamp-(wall-value)or nil end
+  cache.checkedAt=relative(restored.checkedAt)
+  cache.nextCheckAt=relative(restored.nextCheckAt)
+  cache.problemAnnounced=restored.problemAnnounced;cache.noticeKey=restored.noticeKey
+  for key,record in pairs(restored.components)do
+   cache.components[key]={status=record.status,checkedAt=relative(record.checkedAt),stale=record.stale,noticeStatus=record.noticeStatus}
+  end
+ end
+ local service={alive=true,busy=false,PageUrl=page,generation=0}
+ local pending
+ local function alive()return service.alive and(not context.Alive or context.Alive())end
+ function service:ExportCache()
+  local timestamp,wall=now(),wallNow()
+  local function stamp(value)
+   if type(value)=="number"and value==value and math.abs(value)<math.huge and value<=timestamp then return wall-(timestamp-value)end
+  end
+  local saved={version=2,clock="unix",savedAt=wall,checkedAt=stamp(cache.checkedAt),components={},problemAnnounced=cache.problemAnnounced}
+  if type(cache.nextCheckAt)=="number"then saved.nextCheckAt=wall+math.clamp(cache.nextCheckAt-timestamp,0,interval)end
+  for _,component in ipairs(components)do
+   local record=cache.components[component.key]
+   if record then saved.components[component.key]={status=record.status,checkedAt=stamp(record.checkedAt),stale=record.stale,noticeStatus=record.noticeStatus}end
+  end
+  return sentivelSnapshot(saved,wall,interval)
+ end
+ local function persist()
+  session.sentivel=service:ExportCache()
+  if context.SaveCache then pcall(context.SaveCache,session.sentivel)end
+ end
+ session.sentivel=service:ExportCache()
+ local function parse(body)
+  if type(body)~="string"or #body>32768 or not body:match("^%s*<svg[%s>]")then return end
+  local label=body:match('aria%-label%s*=%s*"([^"]+)"')or body:match("aria%-label%s*=%s*'([^']+)'")or body:match("<title[^>]*>(.-)</title>")
+  if not label then return end
+  local value=label:match(":%s*([^:]+)$")
+  if not value then return end
+  value=value:lower():gsub("[_%-]"," "):gsub("^%s+",""):gsub("%s+$",""):gsub("%s+"," ")
+  return statuses[value]
+ end
+ local function read(component)
+  local url=page.."/badge.svg?component="..component.id
+  local ok,response=pcall(function()
+   if context.Request then return context.Request({Url=url,Method="GET",Headers={Accept="image/svg+xml"},Timeout=8})end
+   return game:HttpGet(url)
+  end)
+  if not ok then return end
+  if type(response)=="table"then
+   local status=tonumber(response.StatusCode or response.status_code or response.Status)
+   if status~=200 then return end
+   response=response.Body or response.body
+  end
+  return parse(response)
+ end
+ function service:GetStatus()
+  local timestamp=now();local result={provider="Sentivel",url=page,status="operational",checkedAt=cache.checkedAt,nextCheckAt=cache.nextCheckAt,components={}}
+  local severity={operational=0,maintenance=1,unknown=2,degraded=3,outage=4};local highest=0
+  for _,component in ipairs(components)do
+   local record=cache.components[component.key]or{}
+   local stale=record.stale==true or not record.checkedAt or timestamp<record.checkedAt or timestamp-record.checkedAt>interval*2
+   local status=stale and"unknown"or record.status or"unknown"
+   result.components[#result.components+1]={key=component.key,name=component.name,status=status,lastKnownStatus=record.status,checkedAt=record.checkedAt,stale=stale}
+   if(severity[status]or 2)>highest then highest=severity[status]or 2;result.status=status end
+  end
+  return result
+ end
+ local poll
+ local function queue(delay)
+  if not alive()then return end
+  pending=schedule(math.max(0,delay),function()pending=nil;poll()end)
+ end
+ poll=function()
+  if not alive()or service.busy then return end
+  local timestamp=now()
+  if cache.nextCheckAt and timestamp<cache.nextCheckAt then queue(cache.nextCheckAt-timestamp);return end
+  service.busy=true;service.generation+=1;local generation=service.generation
+  cache.nextCheckAt=timestamp+interval
+  persist() -- Reserve the portable deadline before the first yielding request.
+  local results={};local healthy=true
+  for _,component in ipairs(components)do
+   if not alive()or generation~=service.generation then return end
+   local status=read(component)
+   if not alive()or generation~=service.generation then return end
+   results[component.key]=status or false
+   if status~="operational"then healthy=false end
+  end
+  local problems,names={},{};local newProblem=false
+  for _,component in ipairs(components)do
+   local status=results[component.key]
+   local record=cache.components[component.key]or{}
+   if status then record.status=status;record.checkedAt=timestamp;record.stale=false
+   else record.stale=true end
+   if status=="degraded"or status=="outage"then
+    if record.noticeStatus~=status then newProblem=true;record.noticeStatus=status end
+    problems[#problems+1]=component.key..":"..status;names[#names+1]=component.name
+   elseif status=="operational"then record.noticeStatus=nil end
+   cache.components[component.key]=record
+  end
+  cache.checkedAt=timestamp
+  local problem=#problems>0 and table.concat(problems,"|")or nil
+  local title,message
+  if problem and newProblem then
+   cache.noticeKey=problem;cache.problemAnnounced=true
+   title="Altair service issue";message=table.concat(names," and ")..(#names==1 and" is"or" are").." reporting a service issue. Your open controls may continue to work. Check Altair status for updates."
+  elseif healthy and cache.problemAnnounced then
+   cache.noticeKey=nil;cache.problemAnnounced=nil
+   title="Altair services recovered";message="Runtime and interface downloads are operational again."
+  end
+  persist() -- Persist notice ownership before a rerun can announce it again.
+  if not alive()or generation~=service.generation then return end
+  if title and context.Notify then pcall(context.Notify,title,message,nil,{Duration=7})end
+  service.busy=false
+  queue(math.max(0,cache.nextCheckAt-now()))
+ end
+ function service:Refresh()
+  if not alive()or self.busy then return false end
+  if pending then pcall(cancel,pending);pending=nil end
+  queue(0);return true
+ end
+ function service:Destroy()
+  if not self.alive then return end
+  self.alive=false;self.generation+=1;self.busy=false
+  if pending then pcall(cancel,pending);pending=nil end
+ end
+ queue(math.max(0,(cache.nextCheckAt or 0)-now()))
+ return service
+end
+
+
+-- Small palette-linked rules and finite selection feedback. This controller
+-- owns only its new visuals and Icon.Rotation, never dock or panel geometry.
+local function bindNavigationAccents(context)
+ local root=context.Root;local bar=root.SmartBar;local buttons=bar.Back.Buttons
+ local service={alive=true};local connections,visuals,entries,categories,sectionRules={},{},{},{},{}
+ local motion=motionService(nil,true);local running={};local pending=false
+ local names={"Home","Character","Scripts","Playerlist","Settings"}
+ local function connect(signal,callback)
+  local connection=signal:Connect(callback);connections[#connections+1]=connection;return connection
+ end
+ local function animate(object,duration,goal,easing)
+  local animation=motion:Create(object,TweenInfo.new(duration,easing or Enum.EasingStyle.Quart,Enum.EasingDirection.Out),goal)
+  running[animation]=true;animation.Completed:Once(function()running[animation]=nil end);animation:Play();return animation
+ end
+ local function rule(parent,name,position,size,vertical)
+  local line=Instance.new("Frame");line.Name=name;line.AnchorPoint=Vector2.new(.5,.5)
+  line.Position=position;line.Size=size;line.BorderSizePixel=0;line.BackgroundColor3=Color3.new(1,1,1);line.BackgroundTransparency=1
+  line.Active=false;line.Interactable=false;line.ZIndex=parent.ZIndex+2;line:SetAttribute("AltairThemeIgnore",true)
+  local rounding=Instance.new("UICorner");rounding.CornerRadius=UDim.new(1,0);rounding.Parent=line
+  local gradient=Instance.new("UIGradient");gradient.Name="Palette";gradient.Rotation=vertical and 90 or 0
+  gradient.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(.18,.08),NumberSequenceKeypoint.new(.82,.08),NumberSequenceKeypoint.new(1,1)});gradient.Parent=line
+  line.Parent=parent;visuals[#visuals+1]=line
+  return {line=line,gradient=gradient}
+ end
+ local function bindPalette(record,source,category)
+  if record.source==source then return end
+  for _,connection in ipairs(record.paletteConnections or{})do connection:Disconnect()end
+  record.source=source;record.paletteConnections={}
+  if not source then return end
+  local stroke=category and source:FindFirstChildOfClass("UIStroke")
+  local ramp=stroke and stroke:FindFirstChildOfClass("UIGradient")or source:FindFirstChildOfClass("UIGradient")
+  local multiplier=stroke and stroke.Color or source.BackgroundColor3
+  local function paint()
+   if not service.alive or not source.Parent then return end
+   multiplier=stroke and stroke.Color or source.BackgroundColor3
+   local points={};local sequence=ramp and ramp.Color or ColorSequence.new(multiplier)
+   for _,point in ipairs(sequence.Keypoints)do
+    local color=ramp and Color3.new(point.Value.R*multiplier.R,point.Value.G*multiplier.G,point.Value.B*multiplier.B)or point.Value
+    local hue,saturation,value=color:ToHSV()
+    -- Read the existing palette, lifting only its luminance for a one-pixel rule.
+    color=Color3.fromHSV(hue,saturation,math.max(value,.62))
+    points[#points+1]=ColorSequenceKeypoint.new(point.Time,color)
+   end
+   local result=ColorSequence.new(points)
+   for _,visual in ipairs(record.rules)do if visual.line.Parent then visual.gradient.Color=result end end
+  end
+  record.paletteConnections[#record.paletteConnections+1]=source:GetPropertyChangedSignal("BackgroundColor3"):Connect(paint)
+  if stroke then record.paletteConnections[#record.paletteConnections+1]=stroke:GetPropertyChangedSignal("Color"):Connect(paint)end
+  if ramp then record.paletteConnections[#record.paletteConnections+1]=ramp:GetPropertyChangedSignal("Color"):Connect(paint)end
+  paint()
+ end
+ local function panelLive(panel)
+  return panel and panel.Parent and panel.Visible and not panel:GetAttribute("AltairClosing")and not panel:GetAttribute("AltairDeckSource")
+ end
+ local function selectedName()
+  if not root.Enabled or not bar.Visible or bar:GetAttribute("AltairClosing")then return nil end
+  if context.IsBarOpen and not context.IsBarOpen()then return nil end
+  if context.IsHomeOpen and context.IsHomeOpen()then return "Home"end
+  if root.ScriptSearch.Visible then return "Scripts"end
+  for _,name in ipairs({"Character","Scripts","Playerlist","Settings"})do if panelLive(root:FindFirstChild(name))then return name end end
+ end
+ local function selectButton(entry,selected,shown)
+  local state=not shown and"hidden"or selected and"selected"or entry.hovered and"hovered"or"idle"
+  if entry.state==state then return end
+  local wasSelected=entry.selected;entry.state=state;entry.selected=selected;entry.version+=1
+  local version=entry.version;local reduced=root:GetAttribute("AltairReduceMotion")==true
+  local width=selected and .68 or entry.hovered and .46 or .26
+  local alpha=not shown and 1 or selected and .10 or entry.hovered and .44 or .84
+  for _,visual in ipairs(entry.rules)do
+   local goal={BackgroundTransparency=alpha}
+   if not reduced then goal.Size=UDim2.new(width,0,0,1.2)end
+   animate(visual.line,reduced and .12 or selected and .28 or .22,goal,selected and Enum.EasingStyle.Back or Enum.EasingStyle.Quart)
+  end
+  if selected and not wasSelected and not reduced then
+   local kick=animate(entry.icon,.10,{Rotation=entry.rotation-5},Enum.EasingStyle.Quad)
+   kick.Completed:Once(function(state)
+    if state==Enum.PlaybackState.Completed and service.alive and entry.version==version and entry.icon.Parent then
+     animate(entry.icon,.34,{Rotation=entry.rotation},Enum.EasingStyle.Back)
+    end
+   end)
+  else animate(entry.icon,reduced and .12 or .24,{Rotation=entry.rotation})end
+ end
+ local function watchPanel(panel,queue)
+  if not panel then return end
+  connect(panel:GetPropertyChangedSignal("Visible"),queue)
+  for _,attribute in ipairs({"AltairClosing","AltairDeckSource"})do connect(panel:GetAttributeChangedSignal(attribute),queue)end
+ end
+ local function refresh()
+  if not service.alive then return end
+  local selected=selectedName();local shown=root.Enabled and bar.Visible and not bar:GetAttribute("AltairClosing")and(not context.IsBarOpen or context.IsBarOpen())
+  for name,entry in pairs(entries)do selectButton(entry,name==selected,shown)end
+  for _,record in ipairs(sectionRules)do
+   local live=panelLive(record.panel);local state=live and"shown"or"hidden"
+   if record.state~=state then
+    record.state=state
+    animate(record.reveal,.20,{Value=live and 1 or 0})
+   end
+  end
+  local settings=root.Settings;local heading=settings:FindFirstChild("ContentTitle")
+  local categoryName=heading and heading.Text;local settingsLive=panelLive(settings)
+  for name,record in pairs(categories)do
+   local active=settingsLive and name==categoryName;local alpha=not settingsLive and 1 or active and .12 or .77
+   if record.alpha~=alpha then
+    record.alpha=alpha;animate(record.reveal,.22,{Value=1-alpha})
+    animate(record.rules[1].line,.22,{Size=UDim2.new(0,1.2,active and .68 or .38,0)})
+   end
+  end
+ end
+ local function queue()
+  if pending or not service.alive then return end;pending=true
+  task.defer(function()pending=false;if service.alive then refresh()end end)
+ end
+ for _,name in ipairs(names)do
+  local button=buttons:FindFirstChild(name);local icon=button and button:FindFirstChild("Icon")
+  if button and icon then
+   local top=rule(button,"PanelAccentTop",UDim2.new(.5,0,0,2),UDim2.new(.26,0,0,1.2))
+   local bottom=rule(button,"PanelAccentBottom",UDim2.new(.5,0,1,-2),UDim2.new(.26,0,0,1.2))
+   local entry={button=button,icon=icon,rotation=icon.Rotation,version=0,rules={top,bottom}}
+   entries[name]=entry;bindPalette(entry,button)
+   connect(button.MouseEnter,function()entry.hovered=true;queue()end)
+   connect(button.MouseLeave,function()entry.hovered=false;queue()end)
+  end
+  watchPanel(root:FindFirstChild(name),queue)
+ end
+ watchPanel(root.ScriptSearch,queue)
+ connect(root:GetPropertyChangedSignal("Enabled"),queue)
+ connect(bar:GetPropertyChangedSignal("Visible"),queue)
+ connect(bar:GetAttributeChangedSignal("AltairClosing"),function()for _,entry in pairs(entries)do entry.hovered=false end;queue()end)
+ connect(root:GetAttributeChangedSignal("AltairReduceMotion"),function()for _,entry in pairs(entries)do entry.state=nil end;queue()end)
+ local function section(panel,heading,source)
+  if not heading then return end
+  local visual=rule(heading,"SectionAccent",UDim2.new(0,-6,.5,0),UDim2.new(0,1.2,.72,0),true)
+  local reveal=Instance.new("NumberValue");reveal.Name="Reveal";reveal.Parent=visual.line
+  local record={panel=panel,rules={visual},reveal=reveal};sectionRules[#sectionRules+1]=record;bindPalette(record,source)
+  local function paint()if service.alive and visual.line.Parent then visual.line.BackgroundTransparency=1-.57*math.clamp(reveal.Value,0,1)*(1-heading.TextTransparency)end end
+  connect(reveal.Changed,paint);connect(heading:GetPropertyChangedSignal("TextTransparency"),paint);paint()
+ end
+ section(root.Character,root.Character.Interactions:FindFirstChild("PropertiesTitle"),buttons.Character)
+ section(root.Character,root.Character.Interactions:FindFirstChild("ActionsTitle"),buttons.Scripts)
+ section(root.Scripts,root.Scripts:FindFirstChild("Title"),buttons.Scripts)
+ section(root.Playerlist,root.Playerlist:FindFirstChild("Title"),buttons.Playerlist)
+ local types=root.Settings.SettingTypes
+ local function category(object)
+  if not object:IsA("GuiObject")or object.Name=="Template"or categories[object.Name]then return end
+  local visual=rule(object,"CategoryAccent",UDim2.new(0,3,.5,0),UDim2.new(0,1.2,.38,0),true)
+  local reveal=Instance.new("NumberValue");reveal.Name="Reveal";reveal.Parent=visual.line
+  local title=object:FindFirstChild("Title")
+  local record={rules={visual},reveal=reveal};categories[object.Name]=record;bindPalette(record,object,true)
+  local function paint()if service.alive and visual.line.Parent then visual.line.BackgroundTransparency=1-math.clamp(reveal.Value,0,1)*(title and 1-title.TextTransparency or 1)end end
+  connect(reveal.Changed,paint);if title then connect(title:GetPropertyChangedSignal("TextTransparency"),paint)end;paint();queue()
+ end
+ for _,object in ipairs(types:GetChildren())do category(object)end
+ connect(types.ChildAdded,function(object)task.defer(function()if service.alive and object.Parent==types then category(object)end end)end)
+ local heading=root.Settings:FindFirstChild("ContentTitle")
+ if heading then connect(heading:GetPropertyChangedSignal("Text"),queue)end
+ function service:Destroy()
+  if not self.alive then return end;self.alive=false
+  for _,connection in ipairs(connections)do connection:Disconnect()end
+  for animation in pairs(running)do animation:Cancel()end
+  for _,records in ipairs({entries,categories,sectionRules})do for _,record in pairs(records)do
+   for _,connection in ipairs(record.paletteConnections or{})do connection:Disconnect()end
+   if record.icon and record.icon.Parent then record.icon.Rotation=record.rotation end
+  end end
+  for _,object in ipairs(visuals)do object:Destroy()end
+ end
+ connect(root.Destroying,function()service:Destroy()end)
+ refresh();return service
+end
+
+-- A bounded, event-driven material registry; no render loop or per-object
+-- property listeners are needed for opaque surfaces or late-created cards.
+local function bindSurfaceOpacity(root,motion)
+ local controller={alive=true,solid=nil,alpha=nil,ready=false,count=0}
+ local records=setmetatable({},{__mode="k"})
+ local queued=setmetatable({},{__mode="k"});local queue={};local head,tail=1,0;local worker
+ local function closing(object)
+  local parent=object
+  while parent and parent~=root do
+   if parent:GetAttribute("AltairClosing")or parent:GetAttribute("AltairDialogClosing")or parent:GetAttribute("AltairSharedSwitch")then return true end
+   parent=parent.Parent
+  end
+  return false
+ end
+ local function paint(object,record)
+  object:SetAttribute("AltairSolidMaterial",controller.solid and true or nil)
+  object:SetAttribute("AltairSolidRestAlpha",record.alpha)
+  local target=Design.opacityTargets[object]
+  -- Alpha=1 can mean either a fade owned by a panel, or the user's 0% finish.
+  -- Only the latter may be restored here; never resurrect a closing surface.
+  if closing(object)or(object.BackgroundTransparency>=.99 and object.BackgroundTransparency~=record.last and not(target and target<.99))then return end
+  Design.freezeMaterial(object)
+  if motion and motion.Freeze then motion:Freeze(object,"BackgroundTransparency")end
+  local alpha=Design.opacityAlpha(record.alpha,controller.alpha)
+  if object:GetAttribute("AltairDesignFixedTransparency")~=nil or object:GetAttribute("AltairDesignTransparencyOffset")~=nil then alpha=Design.surfaceAlpha(object,controller.alpha)end
+  record.last=alpha;object.BackgroundTransparency=alpha
+ end
+ function controller:Resolve(object)
+  if not self.alive or not object.Parent or not object:IsDescendantOf(root)or not Design.isMaterial(object)then return nil end
+  -- Resolve from authored registry metadata, never a hidden/current rendered alpha.
+  local transparency=root:GetAttribute("AltairPanelTransparency")
+  if type(transparency)~="number"then transparency=self.alpha end
+  if object:GetAttribute("AltairDesignFixedTransparency")~=nil or object:GetAttribute("AltairDesignTransparencyOffset")~=nil then
+   return Design.surfaceAlpha(object,transparency)
+  end
+  local record=records[object]
+  local authored=record and record.alpha or object:GetAttribute("AltairMaterialRestAlpha")or object:GetAttribute("AltairSolidRestAlpha")or object:GetAttribute("AltairDesignRestAlpha")
+  if type(authored)~="number"then return nil end
+  return Design.opacityAlpha(authored,transparency)
+ end
+ local function register(object)
+  if not object.Parent or not object:IsDescendantOf(root)or not Design.isMaterial(object)then return end
+  local record=records[object]
+  if not record then
+   local authored=object:GetAttribute("AltairMaterialRestAlpha")or object:GetAttribute("AltairSolidRestAlpha")or object:GetAttribute("AltairDesignRestAlpha")
+   if type(authored)~="number"then
+    authored=object:GetAttribute("AltairDesignFixedTransparency")
+    if type(authored)~="number"and object:GetAttribute("AltairDesignTransparencyOffset")~=nil then authored=.1+object:GetAttribute("AltairDesignTransparencyOffset")end
+   end
+   record={alpha=type(authored)=="number"and authored or object.BackgroundTransparency}
+   object:SetAttribute("AltairMaterialRestAlpha",record.alpha)
+   records[object]=record;controller.count+=1
+  end
+  -- Merely discovering a surface must not reset an active fade or hover.
+  if controller.alpha~=.1 or object:GetAttribute("AltairSolidMaterial")then paint(object,record)end
+ end
+ local function startWorker()
+  if worker or not controller.alive then return end
+  worker=task.defer(function()
+   while controller.alive and head<=tail do
+    local deadline=os.clock()+.002
+    repeat
+     local object=queue[head];queue[head]=nil;head+=1
+     if object then queued[object]=nil;register(object)end
+    until head>tail or os.clock()>=deadline
+    if head<=tail then task.wait()end
+   end
+   table.clear(queue);head,tail=1,0;worker=nil;controller.ready=controller.alive
+  end)
+ end
+ local function enqueue(object)
+  if not controller.alive or queued[object]then return end
+  queued[object]=true;tail+=1;queue[tail]=object;controller.ready=false;startWorker()
+ end
+ function controller:Set(transparency)
+  if type(transparency)=="boolean"then transparency=transparency and 0 or .1 end
+  transparency=math.clamp(tonumber(transparency)or .1,0,1)
+  if not self.alive or self.alpha==transparency then return false end
+  self.alpha=transparency;self.solid=transparency<=0
+  root:SetAttribute("AltairSolidSurfaces",self.solid)
+  for object,record in pairs(records)do if object.Parent then paint(object,record)end end
+  return true
+ end
+ function controller:Destroy()
+  if not self.alive then return end
+  self.alive=false
+  if worker then pcall(task.cancel,worker);worker=nil end
+  for _,connection in ipairs(self.connections)do connection:Disconnect()end
+  root:SetAttribute("AltairSolidSurfaces",false)
+  for object,record in pairs(records)do if object.Parent then
+   object:SetAttribute("AltairSolidMaterial",nil)
+   object:SetAttribute("AltairSolidRestAlpha",nil)
+   object:SetAttribute("AltairMaterialRestAlpha",nil)
+   if object.BackgroundTransparency==record.last and not closing(object)then object.BackgroundTransparency=record.alpha end
+  end end
+  table.clear(records);table.clear(queue);table.clear(queued)
+ end
+ controller.connections={root.DescendantAdded:Connect(enqueue),root:GetAttributeChangedSignal("AltairPanelTransparency"):Connect(function()controller:Set(root:GetAttribute("AltairPanelTransparency"))end)}
+ controller:Set(root:GetAttribute("AltairPanelTransparency")or .1)
+ for _,object in ipairs(root:GetDescendants())do enqueue(object)end
+ controller.connections[#controller.connections+1]=root.Destroying:Connect(function()controller:Destroy()end)
+ return controller
+end
+
+local bindings={NavigationAccents=bindNavigationAccents,MaterialAlpha=Design.materialAlpha,OpacityAlpha=Design.opacityAlpha,SurfaceOpacity=bindSurfaceOpacity,DialogAccent=dialogAccent,DialogFeedback=dialogFeedback,Sentivel=bindSentivel,SentivelSnapshot=sentivelSnapshot,NativeUtilities=buildNativeUtilities,Ruler=buildRuler,CharacterRuler=buildCharacterRuler,Discovery=buildDiscovery,ExperimentalSection=buildExperimentalSection,SnapGuides=buildSnapGuides,Loading=buildLoading,Choice=buildChoice,UIAvoidance=bindUIAvoidance,SlideContent=slideContent,StopSlide=stopContentSlide,SlideHeading=slideHeading,BounceReset=bounceReset,HomeIsolation=bindHomeIsolation,RayfieldBridge=bindRayfieldBridge,DragContrast=bindDragContrast,Dock=bindDock,Capsules=bindCapsules,Clock=Clock,Notifications=buildNotifications,ApplyIcon=applyIcon,RefreshIcon=refreshIcon,Motion=motionService,Resize=resizeInterface,DisplayScale=displayScale,Slider=buildSlider,Stats=buildStats,SoftShadows=bindSoftShadows,Surface=styleSurface,HomeSurface=styleHome,ColorPicker=buildColorPicker,Theme=bindTheme,HomeContainer=function(root)local content=Instance.new("Frame");content.Name="Content";content.BackgroundTransparency=1;content.Parent=root.Home;return content end}
+-- Shared chrome is authored once, before theme capture and runtime cloning.
+-- Feature controllers retain their geometry, data and animation ownership.
+local function styleWorkbenchPanels(root)
+ local function material(object,alpha)
+  object.BackgroundColor3=Design.Raised;object.BackgroundTransparency=alpha or .18;object.BorderSizePixel=0
+  object:SetAttribute("AltairDesignRestAlpha",object.BackgroundTransparency)
+  object:SetAttribute("AltairDesignRole","inset");Design.corner(object,12);Design.edge(object,.9)
+  local gradient=object:FindFirstChildOfClass("UIGradient")
+  if gradient then gradient.Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(224,224,224));gradient.Rotation=105 end
+ end
+ local function typeStyle(object)
+  if object:IsA("TextLabel")or object:IsA("TextButton")or object:IsA("TextBox")then
+   if not object:GetAttribute("AltairIcon")then Design.text(object,object.Name=="Title"or object.Name=="DisplayName") end
+  end
+ end
+ for _,object in ipairs(root:GetDescendants())do if not object:IsDescendantOf(root.Scripts)and not object:IsDescendantOf(root.Toasts)then typeStyle(object)end end
+ local function header(panel,subtitle)
+  panel:SetAttribute("AltairDesignManaged",true)
+  panel.Title.FontFace=Design.Heading;panel.Title.TextColor3=Design.Ink;panel.Title.TextSize=18
+  panel.Icon.ImageColor3=Design.Ink
+  if panel:FindFirstChild("Subtitle")then panel.Subtitle.Text=subtitle;panel.Subtitle.TextColor3=Design.Muted;panel.Subtitle.FontFace=Design.Font end
+  local line=Design.divider(panel,"AltairHeaderDivider",UDim2.fromOffset(16,49),UDim2.new(1,-32,0,1));line.BackgroundTransparency=.9
+ end
+ header(root.Character,"Movement, camera and session controls")
+ header(root.Playerlist,"People and actions in this server")
+ local function action(object)
+  if not object:IsA("GuiObject")then return end
+  material(object,.2);Design.corner(object,9)
+  local title=object:FindFirstChild("Title");if title then title.TextColor3=Design.Ink;title.TextSize=12;title.FontFace=Design.Font end
+  local icon=object:FindFirstChild("Icon");if icon and(icon:IsA("ImageLabel")or icon:IsA("ImageButton"))then icon.ImageColor3=Design.Muted end
+ end
+ local character=root.Character.Interactions
+ for _,object in ipairs(character.Grid:GetChildren())do if object:IsA("GuiObject")then action(object)end end
+ action(character.Rejoin);action(character.Serverhop)
+ local toggle=character.Toggles.Template;material(toggle,.15)
+ for _,name in ipairs({"ActionsDivider","PropertiesDivider","HeaderDivider"})do
+  local line=character:FindFirstChild(name);if line then line.BackgroundColor3=Design.Edge;line.BackgroundTransparency=.9;line:SetAttribute("AltairDesignRole","divider")end
+ end
+ local list=root.Playerlist.Interactions
+ material(list.SearchFrame,.2);Design.corner(list.SearchFrame,9)
+ list.SearchFrame.SearchBox.TextColor3=Design.Ink;list.SearchFrame.SearchBox.PlaceholderColor3=Design.Muted
+ list.SearchFrame.SearchBox.Size=UDim2.new(1,-46,1,0)
+ for _,object in ipairs({list.List.Template,list.SelectedPlayer})do
+  material(object,.18);object:SetAttribute("AltairPlayerMaterial",true)
+  local avatar=object:FindFirstChild("Avatar");if avatar then Design.corner(avatar,8)end
+ end
+ for _,object in ipairs(list.SelectedActions:GetChildren())do if object:IsA("GuiObject")and object.Name~="Title"then action(object)end end
+ for _,object in ipairs(root.Playerlist:GetDescendants())do
+  if object:IsA("TextLabel")or object:IsA("TextButton")then object.TextColor3=(object.Name=="Role"or object.Name=="Username"or object.Name=="NoActions")and Design.Muted or Design.Ink end
+  if object:IsA("Frame")and(object.Name:find("Divider")or object.Name=="Stroke"or object.Name=="Stroke2")then object.BackgroundColor3=Design.Edge;object.BackgroundTransparency=.91;object:SetAttribute("AltairDesignRole","divider")end
+ end
+ Design.divider(list.SelectedPlayer,"ProfileDivider",UDim2.fromOffset(14,147),UDim2.new(1,-28,0,1))
+ local bar=root.SmartBar
+ bar:SetAttribute("AltairDesignTransparencyOffset",0);bar.BackgroundColor3=Design.Surface
+ bar.Back.BackgroundColor3=Color3.fromRGB(48,48,50);bar.Back.BackgroundTransparency=.45;Design.edge(bar.Back,.96);bar.Back.UIStroke.Thickness=.45;Design.corner(bar.Back,UDim.new(.5,0))
+ bar.Back.Time.TextColor3=Design.Ink;bar.Back.Time.AMPM.TextColor3=Design.Muted
+ bar.Back.Time.FontFace=Design.Font;bar.Back.Time.AMPM.FontFace=Design.Heading
+ -- Clock separator belongs to the clock, so dock mirroring cannot leave it behind.
+ local rule=Design.divider(bar.Back.Time,"ClockDivider",UDim2.new(1,2,0,1),UDim2.fromOffset(1,26));rule.BackgroundTransparency=.9
+ for _,object in ipairs(bar.Back.Buttons:GetChildren())do if object:IsA("Frame")and object.Name~="Placeholder"then
+  Design.corner(object,10);Design.edge(object,.94);object.Icon.Size=UDim2.fromOffset(22,22)
+ end end
+ local legacy=root:FindFirstChild("Notifications")
+ if legacy then
+  local template=legacy:FindFirstChild("Template");if template then material(template,.12);for _,o in ipairs(template:GetDescendants())do typeStyle(o)end end
+ end
+ local starlight=root:FindFirstChild("Starlight")
+ if starlight then
+  styleSurface(starlight);starlight:SetAttribute("AltairDesignManaged",true)
+  starlight.CommandBox.Position=UDim2.fromOffset(42,0);starlight.CommandBox.AnchorPoint=Vector2.zero;starlight.CommandBox.Size=UDim2.new(1,-140,1,0);starlight.CommandBox.TextSize=14;starlight.CommandBox.TextColor3=Design.Ink
+  starlight.AutoComplete.Position=starlight.CommandBox.Position;starlight.AutoComplete.Size=starlight.CommandBox.Size;starlight.AutoComplete.AnchorPoint=Vector2.zero;starlight.AutoComplete.TextColor3=Design.Muted
+  local icon=Instance.new("ImageLabel");icon.Name="CommandIcon";icon.BackgroundTransparency=1;icon.Size=UDim2.fromOffset(18,18);icon.Position=UDim2.new(0,14,.5,-9);icon.ImageColor3=Design.Muted;icon.Parent=starlight;applyIcon(icon,"square-terminal")
+  for _,object in ipairs(starlight.RayfieldView:GetDescendants())do if object:IsA("Frame")and object.BackgroundTransparency<.99 then material(object,.18)end end
+ end
+ local status=root:FindFirstChild("Status");if status then
+  status.Title.FontFace=Design.Font;status.Title.TextColor3=Design.Ink
+  status.Line.BackgroundColor3=Design.Edge;status.Line.Size=UDim2.new(1,0,0,1);status.Line.BackgroundTransparency=.9;status.Line:SetAttribute("AltairDesignRole","divider")
+ end
+end
+bindings.DaylightDial=buildDaylightDial
+bindings.SettingsSearch=buildSettingsSearch
+bindings.SettingsLayout=bindSettingsLayout
+-- Contract 1: the factory honors IsCurrent/OnRoot and Loading honors onScreen.
+bindings.StartupOwnership=1
+-- Contract 1: native utility actions and yielding camera startup honor IsAlive.
+bindings.NativeUtilitiesOwnership=1
+-- Contract 1: raw theme targets and final idle-dim Color3 outputs stay separate.
+bindings.IdleColorOwnership=1
+bindings.IdleColor=Design.idleColor
+bindings.IdleBase=Design.idleBase
+bindings.BindIdleColors=Design.bindIdleColors
 return function(options)
 	if options and options.BindingsOnly then return bindings end
 	local objects = table.create(#nodes)
  local buildAt=os.clock()
- local function budget()if os.clock()-buildAt>.002 then game:GetService("RunService").Heartbeat:Wait();buildAt=os.clock()end end
+ local function current()if options and options.IsCurrent then assert(options.IsCurrent(),"Altair UI startup superseded")end end
+ local function budget()current();if os.clock()-buildAt>.002 then game:GetService("RunService").Heartbeat:Wait();current();buildAt=os.clock()end end
 	local ok, result = pcall(function()
 		for index, node in ipairs(nodes) do
    budget()
@@ -6929,13 +11074,42 @@ return function(options)
 					object:SetAttribute(attribute, attributeValue)
 				end
 			end
+			if index==1 and options and options.OnRoot then options.OnRoot(object)end
 		end
+		-- CanvasGroup composition uses sibling stacking, including standalone builds.
+		objects[1].ZIndexBehavior=Enum.ZIndexBehavior.Sibling
 		-- Link children only after configuration; never mount into the live DataModel here.
 		for index = 2, #nodes do
    budget()
 			objects[index].Parent = objects[nodes[index][1]]
 		end
 		for _,object in ipairs(objects) do refreshIcon(object) end
+        -- Character: a quick-control strip above two balanced work areas.
+        do
+         local panel=objects[1].Character;local body=panel.Interactions
+         panel.Size=UDim2.fromOffset(582,354);panel.Subtitle.Text="Movement, camera and session controls"
+         body.Size=UDim2.new(1,0,1,-50)
+         body.Toggles.Position=UDim2.fromOffset(16,8);body.Toggles.Size=UDim2.new(1,-32,0,64)
+         local list=body.Toggles:FindFirstChildOfClass("UIListLayout");list.FillDirection=Enum.FillDirection.Horizontal;list.Padding=UDim.new(0,8)
+         local toggle=body.Toggles.Template;toggle.Size=UDim2.fromOffset(131,64)
+         toggle.Icon.Position=UDim2.fromOffset(12,19);toggle.Icon.Size=UDim2.fromOffset(24,24)
+         toggle.Title.Position=UDim2.fromOffset(45,14);toggle.Title.Size=UDim2.fromOffset(80,17)
+         toggle.Subtitle.Position=UDim2.fromOffset(45,35);toggle.Subtitle.Size=UDim2.fromOffset(80,14)
+         body.PropertiesTitle.Text="Movement & camera";body.PropertiesTitle.Position=UDim2.fromOffset(20,88);body.PropertiesTitle.Size=UDim2.fromOffset(240,18)
+         body.ActionsTitle.Text="Player & session";body.ActionsTitle.Position=UDim2.fromOffset(316,88);body.ActionsTitle.Size=UDim2.fromOffset(240,18)
+         body.Reset.Position=UDim2.fromOffset(274,89)
+         body.Sliders.Position=UDim2.fromOffset(20,116);body.Sliders.Size=UDim2.fromOffset(264,174)
+         local row=body.Sliders.Template;row.Size=UDim2.fromOffset(264,36)
+         row.Track.Size=UDim2.fromOffset(210,7);row.Value.Position=UDim2.fromOffset(220,2)
+         row.Information.Size=UDim2.fromOffset(210,16)
+         body.Rejoin.Position=UDim2.fromOffset(316,116);body.Serverhop.Position=UDim2.fromOffset(441,116)
+         for _,button in ipairs({body.Rejoin,body.Serverhop})do button.Size=UDim2.fromOffset(121,35);button.Interact.Size=UDim2.fromScale(1,1);button.Title.Size=UDim2.new(1,-34,1,0)end
+         body.Grid.Position=UDim2.fromOffset(316,159);body.Grid.Size=UDim2.fromOffset(246,132)
+         local grid=body.Grid:FindFirstChildOfClass("UIGridLayout");if grid then grid.CellSize=UDim2.fromOffset(121,36);grid.CellPadding=UDim2.fromOffset(4,8)end
+         body.Grid.Template.Size=UDim2.fromOffset(121,36);body.Grid.Template.Interact.Size=UDim2.fromScale(1,1);body.Grid.Template.Title.Size=UDim2.new(1,-34,1,0)
+         body.ActionsDivider.Position=UDim2.fromOffset(300,88);body.ActionsDivider.Size=UDim2.fromOffset(1,202)
+         body.PropertiesDivider.Visible=false;body.HeaderDivider.Visible=false
+        end
 		createSharedSurface(objects[1])
 		styleSettings(objects[1])
 		for _,name in ipairs({"Character","Scripts","Playerlist","Settings","ScriptSearch","CustomScriptPrompt"}) do
@@ -6991,6 +11165,7 @@ return function(options)
 				if item:IsA("GuiObject") and item.Name~="Thumbnail" and item.Name~="NextThumbnail" and item.Name~="ArtworkViewport" and item.Name~="ArtworkShade" then item.ZIndex=math.max(item.ZIndex,(image and image.ZIndex or 1)+2) end
 			end
 		end
+        styleDialogs(objects[1])
         -- Group opacity changes keep work proportional to visible surfaces, not row count.
         local function fadeGroup(old,attribute)
          local group=Instance.new("CanvasGroup")
@@ -7006,8 +11181,11 @@ return function(options)
         fadeGroup(objects[1].Scripts.Interactions,"AltairFadeGroup")
         fadeGroup(objects[1].Settings.SettingLists,"AltairFadeGroup")
 
-		objects[1]:SetAttribute("AltairUIRevision",25)
+        styleWorkbenchPanels(objects[1])
+        buildDiscovery({Root=objects[1],BuildOnly=true})
+ objects[1]:SetAttribute("AltairUIRevision",50)
 		bindCapsules({Root=objects[1],BuildOnly=true})
+		current()
 		return objects[1]
 	end)
 	if not ok then
