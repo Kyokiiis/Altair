@@ -1193,12 +1193,11 @@ local function bindDock(root)
  local bar,drag=root.SmartBar,root.Drag
  local back=bar.Back;local buttons=back.Buttons;local clock=back.Time;local clockRule=clock:FindFirstChild("ClockDivider")
  local layout=buttons:FindFirstChildOfClass("UIListLayout")
- local motion=motionService();local animations={};local view={mode=nil,vertical=false,generation=0};local sizeLimit
+ local motion=motionService();local animations={};local view={alive=true,NavigationGeometryOwnership=1,mode=nil,vertical=false,generation=0};local sizeLimit
  local base={backPosition=back.Position,backSize=back.Size,backAnchor=back.AnchorPoint,
   buttonsPosition=buttons.Position,buttonsSize=buttons.Size,buttonsAnchor=buttons.AnchorPoint,
   timePosition=clock.Position,timeSize=clock.Size,timeAnchor=clock.AnchorPoint,timeAlign=clock.TextXAlignment,
   ampmPosition=clock.AMPM.Position,ampmSize=clock.AMPM.Size,ampmAnchor=clock.AMPM.AnchorPoint,ampmAlign=clock.AMPM.TextXAlignment}
- local basePadding=layout and layout.Padding or UDim.new(0,5)
  local dockProfile={width=300,height=60,cell=34,
    backAnchor=base.backAnchor,backPosition=base.backPosition,backSize=base.backSize,
    buttonsAnchor=base.buttonsAnchor,buttonsPosition=base.buttonsPosition,buttonsSize=base.buttonsSize,
@@ -1207,6 +1206,7 @@ local function bindDock(root)
  }
  local function profile()return dockProfile end
  local horizontal={};local names={"Home","Character","Scripts","Playerlist","Settings"}
+ local tileNames={};for _,name in ipairs(names)do tileNames[name]=true end
  local function mirrorPosition(position,size,pivot)
   local shift=2*pivot.X-1
   return UDim2.new(1-position.X.Scale+size.X.Scale*shift,-position.X.Offset+size.X.Offset*shift,position.Y.Scale,position.Y.Offset)
@@ -1228,20 +1228,46 @@ local function bindDock(root)
   else for key,value in pairs(goal)do object[key]=value end end
  end
  -- Exact native layout fallback for a saved side dock before its first render.
- local items={};for i,o in ipairs(buttons:GetChildren())do if o:IsA("GuiObject")then items[#items+1]={object=o,index=i}end end
+ local items={};for i,o in ipairs(buttons:GetChildren())do if o:IsA("GuiObject")then
+  if tileNames[o.Name]then items[#items+1]={object=o,index=i}
+  elseif o.Name=="Placeholder"then o.Visible=false;o.Active=false;o.Interactable=false end
+ end end
  table.sort(items,function(a,b)return a.object.LayoutOrder==b.object.LayoutOrder and a.index<b.index or a.object.LayoutOrder<b.object.LayoutOrder end)
  local canonicalSize=Vector2.new(300,60)
  local canonicalBackSize=pixel(base.backSize,canonicalSize)
  local canonicalButtonsSize=pixel(base.buttonsSize,canonicalBackSize)
  local canonicalButtonsTop=pixel(base.buttonsPosition,canonicalBackSize)-canonicalButtonsSize*base.buttonsAnchor
- local total=0;local padding=layout and layout.Padding.Offset or 5
+ local total=0;local padding=layout and(layout.Padding.Scale*canonicalButtonsSize.X+layout.Padding.Offset)or 5
  for _,item in ipairs(items)do total+=item.object.Size.X.Offset end;total+=math.max(0,#items-1)*padding
  local cursor=(canonicalButtonsSize.X-total)/2
  for _,item in ipairs(items)do local o=item.object;horizontal[o]=canonicalButtonsTop+Vector2.new(cursor+o.Size.X.Offset*o.AnchorPoint.X,canonicalButtonsSize.Y*.5);cursor+=o.Size.X.Offset+padding end
  local scales={};for _,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then local scale=o:FindFirstChildOfClass("UIScale")or Instance.new("UIScale");scale.Name="DockTransitionScale";scale.Parent=o;scales[o]=scale end end
+ -- Dock is the only tile pose owner in both orientations. The authored layout
+ -- supplies canonical order/padding, then stays detached until root destruction.
+ if layout then layout.Parent=nil end
+ local function stopPose()
+  local tween,connection,progress=view.progressTween,view.progressConnection,view.progress
+  view.progressTween=nil;view.progressConnection=nil;view.progress=nil
+  if connection then connection:Disconnect()end
+  if tween then tween:Cancel()end
+  if progress then progress:Destroy()end
+ end
  function view:BarSize()local p=profile();return self.vertical and UDim2.fromOffset(p.height,p.width)or UDim2.fromOffset(p.width,p.height)end
  function view:ButtonSize(closed)local size=profile().cell-(closed and 4 or 0);return UDim2.fromOffset(size,size)end
  function view:DragSize(length,thickness)return self.vertical and UDim2.fromOffset(thickness,length)or UDim2.fromOffset(length,thickness)end
+ function view:SetNavigationState(name,shown)
+  if not self.alive then return end
+  shown=shown==true;name=shown and tileNames[name]and name or nil
+  local initial=self.shown==nil
+  if not initial and self.shown==shown and self.selected==name then
+   -- A preference change must settle an in-flight pose even when its target
+   -- selection and visibility have not changed.
+   if root:GetAttribute("AltairReduceMotion")and self.progressTween then self:Apply(self.mode or "bottom",false,true,true)end
+   return
+  end
+  self.shown=shown;self.selected=name
+  self:Apply(self.mode or "bottom",not initial,true,true)
+ end
  function view:Mirror(mirrored,animate,force)
   if self.vertical then return end
   if self.mirrored==mirrored and not force then return end
@@ -1250,32 +1276,34 @@ local function bindDock(root)
   -- current rendered geometry when that second decision arrives mid-morph.
   if not force then self:Apply(self.mode or "bottom",animate,true);return end
   local p=profile()
-  anchor(back,p.backAnchor);anchor(buttons,p.buttonsAnchor);anchor(clock,p.timeAnchor);anchor(clock.AMPM,p.ampmAnchor)
+  anchor(back,p.backAnchor);anchor(buttons,Vector2.new(.5,.5));anchor(clock,p.timeAnchor);anchor(clock.AMPM,p.ampmAnchor)
   clock.TextXAlignment=p.timeAlign;clock.AMPM.TextXAlignment=p.ampmAlign
-  back.BackgroundTransparency=.45;back.UIStroke.Enabled=true;if clockRule then clockRule.Visible=true end
+  -- Main retains the material fades, including an interrupted bar close.
+  if clockRule then clockRule.Visible=true end
   set(back,{Position=mirrored and mirrorPosition(p.backPosition,p.backSize,p.backAnchor)or p.backPosition,Size=p.backSize},animate)
-  set(buttons,{Position=p.buttonsPosition,Size=p.buttonsSize},animate)
+  set(buttons,{Position=UDim2.fromScale(.5,.5),Size=UDim2.fromScale(1,1)},animate)
   set(clock,{Position=mirrored and mirrorPosition(p.timePosition,p.timeSize,p.timeAnchor)or p.timePosition,Size=p.timeSize},animate)
   set(clock.AMPM,{Position=p.ampmPosition,Size=p.ampmSize},animate)
   if clockRule then set(clockRule,{Position=UDim2.new(mirrored and 0 or 1,mirrored and -3 or 2,0,1),Size=UDim2.fromOffset(1,p.height==72 and 32 or 26)},animate)end
  end
- function view:Apply(mode,animate,retarget)
+ function view:Apply(mode,animate,retarget,tilesOnly)
+  if not self.alive then return end
   local p=dockProfile
   if self.mode==mode and not retarget then return end
   local vertical=mode=="left"or mode=="right";local changed=self.vertical~=vertical;local initial=self.mode==nil
+  local reduced=root:GetAttribute("AltairReduceMotion")==true
+  animate=animate==true and not reduced
+  local orientationActive=changed or self.morphActive==true
+  local updateHandle=changed or initial or reduced and orientationActive
   self.mode=mode;root:SetAttribute("AltairDock",mode);root:SetAttribute("AltairDockButtonSize",p.cell)
   if not changed and not initial and not retarget then return end
   self.generation+=1;local generation=self.generation
-  if self.progressTween then self.progressTween:Cancel()end
-  if self.progressConnection then self.progressConnection:Disconnect();self.progressConnection=nil end
-  if self.progress then self.progress:Destroy();self.progress=nil end
-  for _,t in pairs(animations)do t:Cancel()end;table.clear(animations)
+  stopPose()
+  if updateHandle or reduced then for _,t in pairs(animations)do t:Cancel()end;table.clear(animations)end
   local factor=root:GetAttribute("AltairDisplayScale")or 1
   local rendered={}
   for _,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then rendered[o]=(o.AbsolutePosition+o.AbsoluteSize*o.AnchorPoint-bar.AbsolutePosition)/factor end end
-  if layout then layout.Parent=nil end
   self.vertical=vertical;bar:SetAttribute("AltairVertical",vertical);drag:SetAttribute("AltairVertical",vertical)
-  if initial and not vertical then if layout then layout.Parent=buttons end;return end
   local startSize=bar.AbsoluteSize.X>0 and bar.AbsoluteSize/factor or pixel(bar.Size,root.AbsoluteSize)
   local targetSize=vertical and Vector2.new(p.height,p.width)or Vector2.new(p.width,p.height)
   local starts,targets={},{ }
@@ -1289,20 +1317,25 @@ local function bindDock(root)
   local startTimeSize=clock.AbsoluteSize.X>0 and clock.AbsoluteSize/factor or pixel(clock.Size,startBackSize)
   local startAMPM=pixel(clock.AMPM.Position,startTimeSize)-pixel(clock.AMPM.Size,startTimeSize)*clock.AMPM.AnchorPoint;local startAMPMSize=pixel(clock.AMPM.Size,startTimeSize)
   local startScales={};for o,value in pairs(scales)do startScales[o]=value.Scale end
-  local startCells={};local targetCell=Vector2.new(p.cell,p.cell)
+  local startCells,targetCells={},{};local totalExtra=0
+  local restCell=p.cell-(self.shown==false and 4 or 0)
   for _,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then
    startCells[o]=pixel(o.Size,buttons.AbsoluteSize/factor)
-   -- The prior Main entrance may still own Size. Retire that track before
-   -- this finite layout morph becomes the geometry owner.
-   motion:Create(o,TweenInfo.new(0),{Size=o.Size}):Play()
+   local cell=restCell+(self.shown and self.selected==name and 4 or 0)
+   targetCells[o]=Vector2.new(cell,cell);totalExtra+=cell-p.cell
   end end
   local ruleStart=clockRule and clockRule.Position;local ruleSize=clockRule and clockRule.Size
   local ruleTarget=vertical and UDim2.fromOffset(10,35)or UDim2.new(self.mirrored and 0 or 1,self.mirrored and -3 or 2,0,1)
   local ruleTargetSize=vertical and UDim2.fromOffset(34,1)or UDim2.fromOffset(1,26)
   local horizontalTargets={}
+  local precedingExtra=0
   for i,name in ipairs(names)do local o=buttons:FindFirstChild(name);if o then
-   horizontalTargets[o]=horizontal[o]or Vector2.new(27+(i-1)*39,25)
-   targets[o]=vertical and Vector2.new(30,100+(i-1)*40)or targetBackTop+horizontalTargets[o]
+   -- Pack changes around the strip centre. An open selected tile adds four
+   -- pixels: its centre stays put and each side gives it two pixels of room.
+   local extra=targetCells[o].X-p.cell
+   local shift=precedingExtra+extra*.5-totalExtra*.5;precedingExtra+=extra
+   horizontalTargets[o]=(horizontal[o]or Vector2.new(27+(i-1)*39,25))+Vector2.new(shift,0)
+   targets[o]=vertical and Vector2.new(30,100+(i-1)*40+shift)or targetBackTop+horizontalTargets[o]
   end end
   local endBackSize=vertical and Vector2.new(50,214)or targetBackSize
   local endBackCenter=vertical and Vector2.new(30,180)or targetBackTop+targetBackSize/2
@@ -1314,18 +1347,20 @@ local function bindDock(root)
   if not vertical then targetAMPM-=targetAMPMSize*p.ampmAnchor end
   anchor(back,Vector2.new(.5,.5));anchor(buttons,Vector2.new(.5,.5));anchor(clock,Vector2.new(.5,.5));anchor(clock.AMPM,Vector2.zero)
   buttons.Position=UDim2.fromScale(.5,.5);buttons.Size=UDim2.fromScale(1,1)
-  self.morphActive=true
+  -- Main uses this flag for drag-release settling. Tile feedback must not
+  -- masquerade as a shell orientation change.
+  self.morphActive=orientationActive
   local function ease(t)t=math.clamp(t,0,1);return t*t*t*(t*(t*6-15)+10)end
   local function draw(t)
    local fan=ease(t)
    local size=startSize:Lerp(targetSize,fan)
    self.currentSize=size
-   bar.Size=units(size,root:IsDescendantOf(game)and root.AbsoluteSize or Vector2.zero)
+   if orientationActive then bar.Size=units(size,root:IsDescendantOf(game)and root.AbsoluteSize or Vector2.zero)end
    if sizeLimit then sizeLimit.MinSize=size;sizeLimit.MaxSize=size end
    local points,cells={},{}
    for o,target in pairs(targets)do
     local point=starts[o]:Lerp(target,fan)
-    points[o]=point;cells[o]=startCells[o]:Lerp(targetCell,fan)
+    points[o]=point;cells[o]=startCells[o]:Lerp(targetCells[o],fan)
    end
    -- Upright square icons need a little more room on a diagonal than their
    -- centre-line spacing. Bound the shared scale by actual pairwise spacing.
@@ -1360,25 +1395,31 @@ local function bindDock(root)
    if not vertical then
     self:Mirror(self.mirrored==true,false,true)
     for o,position in pairs(horizontalTargets)do if o.Parent then o.Position=UDim2.fromOffset(position.X,position.Y)end end
-    if layout then layout.Padding=basePadding;layout.Parent=buttons end
    end
-   for o in pairs(startCells)do if o.Parent then o.Size=UDim2.fromOffset(p.cell,p.cell)end end
+   for o,cell in pairs(targetCells)do if o.Parent then o.Size=UDim2.fromOffset(cell.X,cell.Y)end end
   end
-  if animate and not root:GetAttribute("AltairReduceMotion")then
+  if animate then
    -- A parent may resize before AbsoluteSize observers are dispatched. The
    -- active-only constraint retains fractional logical dimensions independently
    -- of that parent normalization, then releases the authored endpoint.
-   if not sizeLimit then sizeLimit=Instance.new("UISizeConstraint");sizeLimit.Name="DockMotionBounds"end
-   sizeLimit.MinSize=startSize;sizeLimit.MaxSize=startSize;sizeLimit.Parent=bar
+   if orientationActive then
+    if not sizeLimit then sizeLimit=Instance.new("UISizeConstraint");sizeLimit.Name="DockMotionBounds"end
+    sizeLimit.MinSize=startSize;sizeLimit.MaxSize=startSize;sizeLimit.Parent=bar
+   end
    local progress=Instance.new("NumberValue");self.progress=progress
    local connection=progress.Changed:Connect(draw);self.progressConnection=connection
-   self.progressTween=motion:Create(progress,TweenInfo.new(.46,Enum.EasingStyle.Sine,Enum.EasingDirection.Out),{Value=1})
-   self.progressTween.Completed:Once(function(state)connection:Disconnect();if self.progressConnection==connection then self.progressConnection=nil end;if state==Enum.PlaybackState.Completed then complete()end;if self.progress==progress then self.progress=nil end;progress:Destroy()end)
+   self.progressTween=motion:Create(progress,TweenInfo.new(tilesOnly and .24 or .46,Enum.EasingStyle.Sine,Enum.EasingDirection.Out),{Value=1})
+   self.progressTween.Completed:Once(function(state)
+    connection:Disconnect();if self.progressConnection==connection then self.progressConnection=nil end
+    if self.progress==progress then self.progress=nil;self.progressTween=nil;progress:Destroy()end
+    if state==Enum.PlaybackState.Completed and self.alive then complete()end
+   end)
    self.progressTween:Play()
   else complete()end
-  set(drag,{Size=self:DragSize(150,20)},animate)
-  local line=drag:FindFirstChild("Drag")
-  if line then
+  if updateHandle then
+   set(drag,{Size=self:DragSize(150,20)},animate)
+   local line=drag:FindFirstChild("Drag")
+   if line then
    local oldVertical=line.Size.Y.Offset>line.Size.X.Offset
    local angle=(oldVertical and 90 or 0)+line.Rotation
    local length=math.max(line.Size.X.Offset,line.Size.Y.Offset)
@@ -1386,9 +1427,10 @@ local function bindDock(root)
    line.Rotation=animate and angle-(vertical and 90 or 0)or 0
    set(line,{Size=self:DragSize(100,2)},animate)
    if animate then local rotation=motion:Create(line,TweenInfo.new(.36,Enum.EasingStyle.Quint,Enum.EasingDirection.Out),{Rotation=0});animations.HandleRotation=rotation;rotation:Play()end
+   end
   end
  end
- root.Destroying:Connect(function()for _,t in pairs(animations)do t:Cancel()end;if view.progressTween then view.progressTween:Cancel()end;if view.progressConnection then view.progressConnection:Disconnect()end;if view.progress then view.progress:Destroy()end;if sizeLimit then sizeLimit:Destroy();sizeLimit=nil end;if layout and not layout.Parent then layout:Destroy()end end)
+ root.Destroying:Connect(function()view.alive=false;view.generation+=1;stopPose();for _,t in pairs(animations)do t:Cancel()end;if sizeLimit then sizeLimit:Destroy();sizeLimit=nil end;if layout then layout:Destroy()end end)
  return view
 end
 
@@ -6311,7 +6353,9 @@ local function styleHome(content)
  recent.Title.TextSize=17;accent(recent.ViewAll,"Scripts")
  surface(recent);rect(recent.Title,24,16,800,22);rect(recent.ViewAll,994,12,86,28)
  divider(recent,"ShelfDivider",24,49,1056)
- local shelf=recent.List;rect(shelf,24,62,1056,140);shelf.AutomaticCanvasSize=Enum.AutomaticSize.X;shelf.ScrollingDirection=Enum.ScrollingDirection.X
+ -- Keep the full 140px cards above the native bottom track, not over it.
+ local shelf=recent.List;rect(shelf,24,62,1056,144);shelf.AutomaticCanvasSize=Enum.AutomaticSize.X;shelf.ScrollingDirection=Enum.ScrollingDirection.X
+ shelf.HorizontalScrollBarInset=Enum.ScrollBarInset.Always
  local layout=shelf:FindFirstChildOfClass("UIListLayout");if layout then layout.FillDirection=Enum.FillDirection.Horizontal;layout.Padding=UDim.new(0,18)end
  shelf.Template:Destroy()
  local tile=make("Frame","Template",shelf,{Size=UDim2.fromOffset(166,140),Visible=false,BackgroundColor3=Design.Raised,BackgroundTransparency=.2});corner(tile,12);role(tile,"inset")
@@ -6322,6 +6366,12 @@ local function styleHome(content)
  local friends=listSection(oldHome.Friends,"Friends",0,0,1,1,"Friends","View all");friends.Visible=false
  local activity=listSection(oldHome.RecentActivity,"RecentActivity",0,0,1,1,"Activity");activity.Visible=false
  -- Compact, responsive card directories replace the previous list/table views.
+ local function directoryViewport(list)
+  local factor=1;local ancestor=list
+  while ancestor and ancestor~=root do local scale=ancestor:FindFirstChildOfClass("UIScale");if scale then factor*=scale.Scale end;ancestor=ancestor.Parent end
+  factor=math.max(.001,factor)
+  return list.AbsoluteWindowSize/factor,factor
+ end
  local function tileFlow(list,kind)
   local old=list:FindFirstChildOfClass("UIListLayout");if old then old:Destroy()end
   local queued=false;local last=0;local rowMotion=setmetatable({},{__mode="k"})
@@ -6329,9 +6379,7 @@ local function styleHome(content)
   local queue
   local function arrange()
    if not list.Parent then return end
-   local factor=1;local ancestor=list
-   while ancestor and ancestor~=root do local scale=ancestor:FindFirstChildOfClass("UIScale");if scale then factor*=scale.Scale end;ancestor=ancestor.Parent end
-   factor=math.max(.001,factor);local width=list.AbsoluteSize.X/factor
+   local viewport,factor=directoryViewport(list);local width=viewport.X
    if width<1 then return end
    local cols=math.max(1,math.floor((width+12)/(kind=="Games"and 320 or 300)))
    local cell=(width-12*(cols-1))/cols;local height=kind=="Games"and 148 or 124
@@ -6346,7 +6394,7 @@ local function styleHome(content)
    for i,row in ipairs(rows)do
     local position=UDim2.fromOffset(((i-1)%cols)*(cell+12),math.floor((i-1)/cols)*(height+12))
     local size=UDim2.fromOffset(cell,height)
-    local visible=position.Y.Offset>=list.CanvasPosition.Y/factor-height and position.Y.Offset<=(list.CanvasPosition.Y+list.AbsoluteSize.Y)/factor+height
+    local visible=position.Y.Offset>=list.CanvasPosition.Y/factor-height and position.Y.Offset<=list.CanvasPosition.Y/factor+viewport.Y+height
     if row:GetAttribute("AltairTilePlaced")and visible then
      if row.Position~=position or row.Size~=size then
       local movement=motion:Create(row,TweenInfo.new(.2,Enum.EasingStyle.Quint),{Position=position,Size=size});rowMotion[row]=movement
@@ -6365,6 +6413,7 @@ local function styleHome(content)
    task.delay(math.max(0,.04-(os.clock()-last)),function()queued=false;last=os.clock();arrange()end)
   end
   list:GetPropertyChangedSignal("AbsoluteSize"):Connect(queue);list.ChildAdded:Connect(queue)
+  list:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(queue)
   list.ChildRemoved:Connect(function(row)local movement=rowMotion[row];if movement then movement:Cancel();rowMotion[row]=nil end;observed[row]=nil;queue()end)
   list:GetPropertyChangedSignal("CanvasPosition"):Connect(queue);queue()
  end
@@ -6381,6 +6430,7 @@ local function styleHome(content)
   local index=0;for _,chip in ipairs(filters:GetChildren())do if chip:IsA("GuiButton")then rect(chip,index*112,0,102,30);chip.BackgroundColor3=Design.Well;chip.BackgroundTransparency=.35;role(chip,"control");local t=chip:FindFirstChild("Title");if t then t.TextSize=12;t.FontFace=font end;index+=1 end end
   local list=transplant(old.Browser,browser,"List",20,132,1064,384)
   list.Size=UDim2.new(1,-40,1,-152);list.BackgroundTransparency=1;list.ClipsDescendants=true;list.AutomaticCanvasSize=Enum.AutomaticSize.None;list.ScrollBarThickness=2
+  list.VerticalScrollBarInset=Enum.ScrollBarInset.Always
   local padding=list:FindFirstChildOfClass("UIPadding");if padding then padding:Destroy()end
   local oldTemplate=list:FindFirstChild("Template");if oldTemplate then oldTemplate:Destroy()end
   local card=make("Frame","Template",list,{Size=UDim2.fromOffset(340,name=="Games"and 148 or 124),Visible=false,BackgroundColor3=Design.Raised,BackgroundTransparency=.16});corner(card,12);role(card,"inset")
@@ -6950,7 +7000,8 @@ local function styleSettings(root)
   types:Destroy();scroller.Parent=panel;types=scroller
  end
  local template=types.Template
-	types.Position=UDim2.fromOffset(14,68);types.Size=UDim2.new(0,158,1,-84);types.ClipsDescendants=true
+	-- Reserve the search field before navigation captures this sidebar's rest layout.
+	types.Position=UDim2.fromOffset(14,104);types.Size=UDim2.new(0,158,1,-120);types.ClipsDescendants=true
 	local padding=Instance.new("UIPadding");padding.PaddingLeft=UDim.new(0,4);padding.PaddingTop=UDim.new(0,3);padding.PaddingBottom=UDim.new(0,8);padding.Parent=types
 	local grid=types.UIGridLayout
 	grid.CellSize=UDim2.new(1,-8,0,37);grid.CellPadding=UDim2.fromOffset(0,6)
@@ -6968,7 +7019,7 @@ local function styleSettings(root)
 	description.TextTruncate=Enum.TextTruncate.AtEnd;description.Text="";description.ZIndex=template.Title.ZIndex;description.Parent=template
  local icon=Instance.new("ImageLabel");icon.Name="CategoryIcon";icon.BackgroundTransparency=1;icon.Position=UDim2.fromOffset(11,9.5);icon.Size=UDim2.fromOffset(18,18);icon.ImageColor3=Design.Ink;icon.ZIndex=template.Title.ZIndex;icon.Parent=template;role(icon,"ink")
  local header=icon:Clone();header.Name="HeaderIcon";header.Position=UDim2.fromOffset(18,15);header.Parent=panel;applyIcon(header,"settings-2")
- panel.Title.AnchorPoint=Vector2.zero;panel.Title.TextXAlignment=Enum.TextXAlignment.Left;panel.Subtitle.Visible=false;panel.Title.TextSize=16;panel.Title.FontFace=semibold;panel.Title.Size=UDim2.fromOffset(122,22);panel.Subtitle.TextSize=11;panel.Subtitle.FontFace=medium;panel.Subtitle.Size=UDim2.fromOffset(122,18);panel.ClipsDescendants=true;role(panel.Title,"ink")
+ panel.Title.AnchorPoint=Vector2.zero;panel.Title.Position=UDim2.fromOffset(50,12);panel.Title.TextXAlignment=Enum.TextXAlignment.Left;panel.Subtitle.Visible=false;panel.Title.TextSize=16;panel.Title.FontFace=semibold;panel.Title.Size=UDim2.fromOffset(122,22);panel.Subtitle.TextSize=11;panel.Subtitle.FontFace=medium;panel.Subtitle.Size=UDim2.fromOffset(122,18);panel.ClipsDescendants=true;role(panel.Title,"ink")
  description.Visible=false
  panel.SettingLists.ClipsDescendants=true
  local pages=panel.SettingLists.UIPageLayout;pages.Animated=true;pages.TweenTime=.24;pages.EasingStyle=Enum.EasingStyle.Quint;pages.EasingDirection=Enum.EasingDirection.Out;pages.Padding=UDim.new(0,14);pages.ScrollWheelInputEnabled=false;pages.TouchInputEnabled=false
@@ -7223,7 +7274,7 @@ local function capsulePlacement(context,controller,root,host,scale,compact,surfa
   return {p.X,p.Y,p.X+s.X,p.Y+s.Y}
  end
  local function gameBox(object)
-  if not playerGui or not object:IsDescendantOf(playerGui)then return end
+  if not playerGui or not object:IsDescendantOf(playerGui)or object:IsDescendantOf(root)then return end
   local visual=object.BackgroundTransparency<.94
   if object:IsA("ImageLabel")or object:IsA("ImageButton")then visual=visual or(object.Image~=""and object.ImageTransparency<.94)end
   if object:IsA("TextLabel")or object:IsA("TextButton")or object:IsA("TextBox")then visual=visual or(object.Text~=""and object.TextTransparency<.94)end
@@ -7291,7 +7342,7 @@ local function capsulePlacement(context,controller,root,host,scale,compact,surfa
   state.notified=status;state.lastNotice=now
   if context.Notify then
    local message=status=="bar"and "Capsules are tucked into the drag bar. Hover the bar to reveal them."
-    or status=="moved"and "The top-centre space is occupied. Capsules are tucked into the drag bar."
+    or status=="moved"and "Capsules moved down to clear the occupied top-centre space."
     or "Capsules returned to the top of the screen."
    context.Notify("Capsule position",message,nil,{Duration=4})
   end
@@ -7299,42 +7350,98 @@ local function capsulePlacement(context,controller,root,host,scale,compact,surfa
  function state:Layout(width,height,factor,obstacles)
   local now=os.clock();local viewport=root.AbsoluteSize
   local mode=setting("Capsule Position","Dynamic")
+  if self.mode~=mode then
+   self.mode=mode;self.committedDocked=nil;self.freeY=nil;self.returnSince=nil;self.returnRect=nil
+   self.queryRect=nil;self.probeCandidate=false
+  end
   local offset=Vector2.zero
   local left,right=offset.X+12,offset.X+viewport.X-12
   local top=offset.Y+8
   local bottom=offset.Y+viewport.Y-12
   local centerX=offset.X+viewport.X/2
+  local drag=context.GetDragState and context.GetDragState()
+  local mouse=input:GetMouseLocation()
+  local visual=controller:GetVisualObject()
+  local held=visual and box(visual)
+  local inset=root.IgnoreGuiInset and Vector2.zero or game:GetService("GuiService"):GetGuiInset()
+  mouse-=inset
+  -- The placement owner survives opening, capture, and the closing morph.
+  local active=controller.view~=nil or controller.presentation~=nil or controller.picker or controller.dragging or self.hovering and self.hoverReady
+  if self.target>0 and host.Visible and held and mouse.X>=held[1]-18 and mouse.X<=held[3]+18
+   and mouse.Y>=held[2]-18 and mouse.Y<=held[4]+18 then active=true end
+  local captured=active or controller.dropPresentation~=nil or drag and drag.dragging
   local own={}
   for _,object in ipairs(obstacles)do local b=box(object);if b then table.insert(own,b)end end
   local desired={centerX-width/2,top,centerX+width/2,top+height}
   local boxes=mode=="Dynamic"and table.clone(own)or{}
   if mode=="Dynamic"and controller:IsEnabled()then
-   probe(self.queryRect or desired,now)
+   if now>=self.probeAt then
+    -- Alternate the desired and selected footprint within the existing budget.
+    probe((self.probeCandidate and self.queryRect)or desired,now)
+    self.probeCandidate=not self.probeCandidate
+   end
    for i=#self.boxes,1,-1 do
     local record=self.boxes[i];local b=gameBox(record.object)
     if not b or now-record.seen>2 then table.remove(self.boxes,i)else table.insert(boxes,b)end
    end
   end
+  local function rectAt(y)return{desired[1],y,desired[3],y+height}end
+  local function clear(rect)
+   if rect[1]<left or rect[3]>right or rect[2]<top or rect[4]>bottom then return false end
+   for _,b in ipairs(boxes)do if overlap(rect,b)then return false end end
+   return true
+  end
+  local function findFree(limit)
+   local y=top
+   for _=1,#boxes+1 do
+    local candidate=rectAt(y)
+    if y>top+limit or candidate[1]<left or candidate[3]>right or candidate[4]>bottom then return end
+    local nextY=y
+    for _,b in ipairs(boxes)do if overlap(candidate,b)then nextY=math.max(nextY,b[4]+8)end end
+    if nextY==y then return candidate end
+    y=nextY
+   end
+  end
+  local function settled(candidate)
+   if not candidate or captured then self.returnSince=nil;self.returnRect=nil;return false end
+   local previous=self.returnRect;local changed=not previous
+   if previous then for i=1,4 do if math.abs(previous[i]-candidate[i])>2 then changed=true;break end end end
+   if changed then self.returnSince=now;self.returnRect=candidate end
+   return now-(self.returnSince or now)>=.8
+  end
   local chosen=desired
-  for _,b in ipairs(boxes)do if overlap(desired,b)then chosen=nil;break end end
-  self.queryRect=desired
-  -- Free capsules remain at top centre. Collisions merge into the bar.
-  local docked=mode=="Drag Bar Only"or not chosen
-  local drag=context.GetDragState and context.GetDragState()
+  local docked=mode=="Drag Bar Only"
+  if mode=="Dynamic"then
+   -- Provisional, unmeasured native-UI parameters; keep every candidate on screen.
+   local maxDrop=math.min(240*factor,viewport.Y*.30,math.max(0,bottom-top-height))
+   chosen=findFree(maxDrop)
+   if self.committedDocked then
+    local returning=findFree(math.max(0,maxDrop-24*factor))
+    docked=not settled(returning)
+    if not docked then chosen=returning end
+   else
+    local committed=self.freeY and rectAt(self.freeY)
+    if committed and self.freeY<=top+maxDrop and clear(committed)then
+     if captured or not chosen or chosen[2]>=self.freeY then
+      chosen=committed;self.returnSince=nil;self.returnRect=nil
+     elseif not settled(chosen)then chosen=committed end
+    else
+     self.returnSince=nil;self.returnRect=nil
+    end
+    docked=not chosen
+   end
+  else
+   self.returnSince=nil;self.returnRect=nil
+  end
+  self.queryRect=chosen or desired
   if docked and not drag then docked=false end
+  self.committedDocked=docked
+  if not docked and chosen then self.freeY=chosen[2]end
   controller.docked=docked
   if self.hoverWaitingDrag and self.hovering and drag and not drag.dragging then self.hoverWaitingDrag=false;self:HoverBar(true)end
   if drag and drag.dragging then self:Retract()end
   local hidden=false
   if docked then
-   local mouse=input:GetMouseLocation()
-   local visual=controller:GetVisualObject()
-   local held=visual and box(visual)
-   local inset=root.IgnoreGuiInset and Vector2.zero or game:GetService("GuiService"):GetGuiInset()
-   mouse-=inset
-   local active=controller.view~=nil or controller.picker or controller.dragging or self.hovering and self.hoverReady
-   if self.target>0 and host.Visible and held and mouse.X>=held[1]-18 and mouse.X<=held[3]+18
-    and mouse.Y>=held[2]-18 and mouse.Y<=held[4]+18 then active=true end
    if active and self.target>0 then self:Reveal()end
    hidden=not active and now>(controller.revealUntil or 0)or drag.dragging
    local center=drag.center
@@ -7937,6 +8044,7 @@ local function bindCapsules(context)
 	controller.musicShown=false;controller.musicTransition=0
 	musicPill.Size=UDim2.fromOffset(0,24)
 	local function animateMusic(active,width)
+        controller.freeMusicWidth=width
         if controller.iconOnly then width=24 end
 		local presentation=controller.presentation
 		if presentation and presentation.source==musicPill then
@@ -8945,6 +9053,18 @@ local function bindCapsules(context)
 		local object=root:FindFirstChild(name);if object then obstacles[#obstacles+1]=object end
 	end
 	local function intersects(x,width,left,right) return x<right and x+width>left end
+ local function freeCompactSize(factor)
+  -- Use logical horizontal targets, independent of the current side-dock pose.
+  local width,count=24,1
+  local function include(value)width+=value;count+=1 end
+  if controller.musicShown then include(controller.freeMusicWidth or 62)end
+  if clock and clock.timer then include(50)end
+  if clock and clock.watch.active then include(50)end
+  for handle in pairs(controller.externalHandles)do if handle.shown then include(handle.width)end end
+  width+=math.max(0,count-1)*5+8
+  local fit=math.max(.05,math.min(1,(root.AbsoluteSize.X-24)/math.max(1,width*factor)))
+  return width*factor*fit,32*factor*fit
+ end
 	function controller:Layout()
 		local viewport=root.AbsoluteSize
 		local requested=tonumber(get("Capsule Scale",1.25)) or 1.25
@@ -8968,8 +9088,9 @@ local function bindCapsules(context)
          end
          syncCompactBounds()
         end
-		local width=(self.view and sizes[self.view].X or self.compactWidth or 250)*factor
-		local height=(self.view and sizes[self.view].Y or self.compactHeight or 32)*factor
+  local width,height=freeCompactSize(factor)
+  local expanded=self.presentation and self.presentation.expandedSize or self.view and sizes[self.view]
+  if expanded then width=math.max(width,expanded.X*factor);height=math.max(height,expanded.Y*factor)end
 				local top=12*factor
 		local x,y=viewport.X/2-width/2,top
 		local candidates={}
@@ -9597,6 +9718,11 @@ local function buildLoading(root,parent,cloudAsset,position,onScreen)
  loadingProgress.Changed:Connect(function(value)root:SetAttribute('AltairLoadingProgress',value);mask.Transparency=loadingMask(value)end)
  root:SetAttribute('AltairLoadingProgress',0);mask.Transparency=loadingMask(0)
  local motion=motionService(function()return root:GetAttribute('AltairReduceMotion')==true end);local service={Screen=screen,progress=0}
+ screen.Destroying:Once(function()
+  service.exiting=true;service.stageGeneration=(service.stageGeneration or 0)+1
+  local exit=service.exitTween;service.exitTween=nil
+  if exit then exit:Cancel()end
+ end)
  function service:Anchor(point,animated)
   local viewport=screen.AbsoluteSize;if viewport.X<=0 then viewport=workspace.CurrentCamera.ViewportSize end
   local upper=point.Y<viewport.Y/2;local x=math.clamp(point.X,120,math.max(120,viewport.X-120))
@@ -9611,7 +9737,7 @@ local function buildLoading(root,parent,cloudAsset,position,onScreen)
  local x=type(position)=='table'and tonumber(position.x)or .5;local y=type(position)=='table'and tonumber(position.y)or nil
  service:Anchor(Vector2.new(math.clamp(x or .5,0,1)*viewport.X,y and math.clamp(y,0,1)*viewport.Y or viewport.Y-38),false)
  function service:Stage(value,label)
-  if not screen.Parent then return end
+  if self.exiting or not screen.Parent then return end
   self.progress=math.max(self.progress,math.clamp(value,0,1))
   self.stageGeneration=(self.stageGeneration or 0)+1;local generation=self.stageGeneration
   motion:Create(text,TweenInfo.new(.07),{TextTransparency=1,Position=self.textRest-UDim2.fromOffset(0,3)}):Play()
@@ -9625,6 +9751,8 @@ local function buildLoading(root,parent,cloudAsset,position,onScreen)
   game:GetService('RunService').Heartbeat:Wait() -- Render this milestone before the next initialization batch.
  end
  function service:Finish(drag,hideBar)
+  if self.finishing or self.exiting or not screen.Parent then return end
+  self.finishing=true
   local real=drag and drag:FindFirstChild('Drag')
   if real then
    drag.Visible=true;real.Visible=true
@@ -9638,20 +9766,28 @@ local function buildLoading(root,parent,cloudAsset,position,onScreen)
    motion:Create(halo,TweenInfo.new(.2),{Transparency=.65}):Play()
    self.completedFill=completedFill
   end
-  self:Stage(1,'Ready');task.wait(root:GetAttribute('AltairReduceMotion')and .05 or .24)
+  self:Stage(1,'Ready');task.wait(root:GetAttribute('AltairReduceMotion')and .17 or .24)
   if not screen.Parent then return end
   if self.completedFill then
    local completedFill=self.completedFill;motion:Create(completedFill,TweenInfo.new(.24),{BackgroundTransparency=1}):Play()
    motion:Create(completedFill.LoadingGlow,TweenInfo.new(.24),{Transparency=1}):Play()
    task.delay(.26,function()completedFill:Destroy()end)
   end
-  motion:Create(group,TweenInfo.new(.24),{GroupTransparency=1}):Play()
+  self.exiting=true;self.stageGeneration=(self.stageGeneration or 0)+1
+  motion:Freeze(text,{'TextTransparency','Position'})
+  local exit=motion:Create(group,TweenInfo.new(.24),{GroupTransparency=1})
+  self.exitTween=exit
+  exit.Completed:Once(function(state)
+   if self.exitTween~=exit then return end
+   self.exitTween=nil
+   if(state==Enum.PlaybackState.Completed or state==Enum.PlaybackState.Cancelled)and screen.Parent then screen:Destroy()end
+  end)
+  exit:Play()
   if real and hideBar then
    motion:Create(real,TweenInfo.new(.24),{BackgroundTransparency=1}):Play()
    task.wait(.24);if drag.Parent then drag.Visible=false end
   end
   root:SetAttribute('AltairLoadingProgress',nil)
-  task.delay(.26,function()screen:Destroy()end)
  end
  return service
 end
@@ -9724,7 +9860,7 @@ local function buildDiscovery(context)
   local back=make("TextButton",header,"Back",0,0,44,36);back.Text="";back.AutoButtonColor=false;back.BackgroundColor3=Design.Well;back.BackgroundTransparency=.24;back:SetAttribute("ReferenceSearchControl",true);corner(back,10)
   local arrow=make("ImageLabel",back,"Icon",12,8,20,20);applyIcon(arrow,"arrow-left");arrow.ImageColor3=Design.Muted
   text(header,"Label","Discover",58,0,420,36,27,Design.Ink,true)
-  local count=text(header,"Count","3 sources",644,4,174,28,16,Design.Muted);count.TextXAlignment=Enum.TextXAlignment.Right
+  local count=text(header,"Count","3 sources",644,4,174,28,16,Design.Muted);count.AnchorPoint=Vector2.new(1,0);count.Position=UDim2.new(1,0,0,u(4));count.TextXAlignment=Enum.TextXAlignment.Right
   local spinner=make("Frame",header,"Spinner",833,7,22,22);spinner.Visible=false;corner(spinner,22)
   local arc=Instance.new("UIStroke");arc.Color=Design.Muted;arc.Thickness=u(3);arc.Parent=spinner
   local mask=Instance.new("UIGradient");mask.Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(.499,1),NumberSequenceKeypoint.new(.501,0),NumberSequenceKeypoint.new(1,0)});mask.Parent=arc
@@ -10682,10 +10818,14 @@ local function bindSentivel(context)
 end
 
 
--- Small palette-linked rules and finite selection feedback. This controller
--- owns only its new visuals and Icon.Rotation, never dock or panel geometry.
+-- Palette-linked exterior rails. Dock owns the complete tile selection pose.
+-- Owns new visuals and clipping; never dock or panel geometry.
 local function bindNavigationAccents(context)
  local root=context.Root;local bar=root.SmartBar;local buttons=bar.Back.Buttons
+ local dock=context.Dock
+ assert(type(dock)=="table"and dock.NavigationGeometryOwnership==1 and type(dock.SetNavigationState)=="function","Matching Dock navigation geometry contract 1 is required")
+ -- Exterior rails need the button-list padding; the dock still owns every pose.
+ local buttonsClips=buttons.ClipsDescendants;buttons.ClipsDescendants=false
  local service={alive=true};local connections,visuals,entries,categories,sectionRules={},{},{},{},{}
  local motion=motionService(nil,true);local running={};local pending=false
  local names={"Home","Character","Scripts","Playerlist","Settings"}
@@ -10746,23 +10886,14 @@ local function bindNavigationAccents(context)
  local function selectButton(entry,selected,shown)
   local state=not shown and"hidden"or selected and"selected"or entry.hovered and"hovered"or"idle"
   if entry.state==state then return end
-  local wasSelected=entry.selected;entry.state=state;entry.selected=selected;entry.version+=1
-  local version=entry.version;local reduced=root:GetAttribute("AltairReduceMotion")==true
-  local width=selected and .68 or entry.hovered and .46 or .26
-  local alpha=not shown and 1 or selected and .10 or entry.hovered and .44 or .84
+  entry.state=state;local reduced=root:GetAttribute("AltairReduceMotion")==true
+  local width=selected and .74 or entry.hovered and .62 or .50
+  local alpha=not shown and 1 or selected and .08 or entry.hovered and .32 or .60
   for _,visual in ipairs(entry.rules)do
    local goal={BackgroundTransparency=alpha}
-   if not reduced then goal.Size=UDim2.new(width,0,0,1.2)end
+   if reduced then visual.line.Size=UDim2.new(width,0,0,1.2)else goal.Size=UDim2.new(width,0,0,1.2)end
    animate(visual.line,reduced and .12 or selected and .28 or .22,goal,selected and Enum.EasingStyle.Back or Enum.EasingStyle.Quart)
   end
-  if selected and not wasSelected and not reduced then
-   local kick=animate(entry.icon,.10,{Rotation=entry.rotation-5},Enum.EasingStyle.Quad)
-   kick.Completed:Once(function(state)
-    if state==Enum.PlaybackState.Completed and service.alive and entry.version==version and entry.icon.Parent then
-     animate(entry.icon,.34,{Rotation=entry.rotation},Enum.EasingStyle.Back)
-    end
-   end)
-  else animate(entry.icon,reduced and .12 or .24,{Rotation=entry.rotation})end
  end
  local function watchPanel(panel,queue)
   if not panel then return end
@@ -10772,6 +10903,7 @@ local function bindNavigationAccents(context)
  local function refresh()
   if not service.alive then return end
   local selected=selectedName();local shown=root.Enabled and bar.Visible and not bar:GetAttribute("AltairClosing")and(not context.IsBarOpen or context.IsBarOpen())
+  dock:SetNavigationState(selected,shown)
   for name,entry in pairs(entries)do selectButton(entry,name==selected,shown)end
   for _,record in ipairs(sectionRules)do
    local live=panelLive(record.panel);local state=live and"shown"or"hidden"
@@ -10797,9 +10929,12 @@ local function bindNavigationAccents(context)
  for _,name in ipairs(names)do
   local button=buttons:FindFirstChild(name);local icon=button and button:FindFirstChild("Icon")
   if button and icon then
-   local top=rule(button,"PanelAccentTop",UDim2.new(.5,0,0,2),UDim2.new(.26,0,0,1.2))
-   local bottom=rule(button,"PanelAccentBottom",UDim2.new(.5,0,1,-2),UDim2.new(.26,0,0,1.2))
-   local entry={button=button,icon=icon,rotation=icon.Rotation,version=0,rules={top,bottom}}
+   -- Entire strokes sit beyond the tile edges, never at their inset ends.
+   -- Keep them children so the list layout cannot turn them into extra cells.
+   local clips=button.ClipsDescendants;button.ClipsDescendants=false
+   local top=rule(button,"PanelAccentTop",UDim2.new(.5,0,0,-3.5),UDim2.new(.50,0,0,1.2))
+   local bottom=rule(button,"PanelAccentBottom",UDim2.new(.5,0,1,3.5),UDim2.new(.50,0,0,1.2))
+   local entry={button=button,clips=clips,rules={top,bottom}}
    entries[name]=entry;bindPalette(entry,button)
    connect(button.MouseEnter,function()entry.hovered=true;queue()end)
    connect(button.MouseLeave,function()entry.hovered=false;queue()end)
@@ -10821,7 +10956,6 @@ local function bindNavigationAccents(context)
  end
  section(root.Character,root.Character.Interactions:FindFirstChild("PropertiesTitle"),buttons.Character)
  section(root.Character,root.Character.Interactions:FindFirstChild("ActionsTitle"),buttons.Scripts)
- section(root.Scripts,root.Scripts:FindFirstChild("Title"),buttons.Scripts)
  section(root.Playerlist,root.Playerlist:FindFirstChild("Title"),buttons.Playerlist)
  local types=root.Settings.SettingTypes
  local function category(object)
@@ -10843,8 +10977,11 @@ local function bindNavigationAccents(context)
   for animation in pairs(running)do animation:Cancel()end
   for _,records in ipairs({entries,categories,sectionRules})do for _,record in pairs(records)do
    for _,connection in ipairs(record.paletteConnections or{})do connection:Disconnect()end
-   if record.icon and record.icon.Parent then record.icon.Rotation=record.rotation end
+   if record.button and record.button.Parent then
+    if record.button.ClipsDescendants==false then record.button.ClipsDescendants=record.clips end
+   end
   end end
+  if buttons.Parent and buttons.ClipsDescendants==false then buttons.ClipsDescendants=buttonsClips end
   for _,object in ipairs(visuals)do object:Destroy()end
  end
  connect(root.Destroying,function()service:Destroy()end)
@@ -11044,6 +11181,7 @@ bindings.StartupOwnership=1
 bindings.NativeUtilitiesOwnership=1
 -- Contract 1: raw theme targets and final idle-dim Color3 outputs stay separate.
 bindings.IdleColorOwnership=1
+bindings.NavigationGeometryOwnership=1
 bindings.IdleColor=Design.idleColor
 bindings.IdleBase=Design.idleBase
 bindings.BindIdleColors=Design.bindIdleColors
@@ -11183,7 +11321,7 @@ return function(options)
 
         styleWorkbenchPanels(objects[1])
         buildDiscovery({Root=objects[1],BuildOnly=true})
- objects[1]:SetAttribute("AltairUIRevision",50)
+ objects[1]:SetAttribute("AltairUIRevision",52)
 		bindCapsules({Root=objects[1],BuildOnly=true})
 		current()
 		return objects[1]

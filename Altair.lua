@@ -483,6 +483,12 @@ altairValues = {
 			value = 16,
 			active = false,
 			callback = function(value)
+				local state=altairValues.cameraState
+				if state and state.closingCamera==camera then
+					local target=camera
+					state:CancelClose()
+					state.owned[target]=nil;state.pendingRestore[target]=nil
+				end
 				tweenService:Create(camera, TweenInfo.new(fovMotionDuration(0.6), Enum.EasingStyle.Exponential), { FieldOfView = value }):Play()
 			end,
 		},
@@ -1048,7 +1054,7 @@ function altairValues.loadUIModule(name)
 		if ok and type(contents)=="string" and contents:match("%S") then source=contents end
 	end
 	requireStartup()
-	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=50") end
+	if not source then source=game:HttpGet(altairValues.interfaceSource:gsub("Build%.lua$",name..".lua").."?uiRevision=52") end
 	requireStartup()
 	assert(type(source)=="string" and source:match("%S"), "Empty Altair UI module: "..name)
 	local compile=optional(loadstring)
@@ -1095,7 +1101,8 @@ local function loadInterface()
 		assert(bindings.StartupOwnership==1,"Update UI/Build.lua: startup root and loading ownership contract 1 is required")
 		assert(bindings.NativeUtilitiesOwnership==1,"Update UI/Build.lua: native utility ownership contract 1 is required")
 		assert(bindings.IdleColorOwnership==1,"Update UI/Build.lua: idle color ownership contract 1 is required")
-		assert(root:GetAttribute("AltairUIRevision")==50 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: matching UI revision 50 is required")
+		assert(bindings.NavigationGeometryOwnership==1,"Update UI/Build.lua: dock navigation geometry contract 1 is required")
+		assert(root:GetAttribute("AltairUIRevision")==52 and root:FindFirstChild("SpotifyUnlinkConfirmation"),"Update UI/Build.lua: matching UI revision 52 is required")
 		assert(type(bindings)=="table" and type(bindings.Capsules)=="function" and type(bindings.SoftShadows)=="function" and type(bindings.Dock)=="function" and type(bindings.DragContrast)=="function" and root:FindFirstChild("SharedPanelSurface"), "Update UI/Build.lua: current UI bindings are missing")
 		assert(type(bindings.SurfaceOpacity)=="function" and type(bindings.NavigationAccents)=="function" and type(bindings.Motion)=="function", "Update UI/Build.lua: current material/navigation bindings are missing")
 		assert(root:FindFirstChild("TopCapsules") and root:FindFirstChild("NotificationCapsules"), "Update UI/Build.lua: capsule templates are missing")
@@ -1413,12 +1420,14 @@ end
 -- camera actions below require the current live instance returned here.
 local cameraState = {
 	available = true,
+	closeVersion = 0,
 	baselines = setmetatable({ [camera] = baseFieldOfView }, { __mode = "k" }),
 	owned = setmetatable({}, { __mode = "k" }),
 	pendingRestore = setmetatable({}, { __mode = "k" }),
 }
 altairValues.cameraState = cameraState
 function cameraState:CancelClose()
+	self.closeVersion += 1
 	local animation = altairValues.homeCameraTween
 	altairValues.homeCameraTween = nil
 	self.closingCamera = nil
@@ -1876,7 +1885,7 @@ altairValues.dialogMotion=(function()
   local state=states[panel]
   return state~=nil and state.version==version and self:IsOpen(panel)
  end
- function controller:Open(panel)
+ function controller:Open(panel,nativePrompt)
   assert(panel:IsA("CanvasGroup"),"Update UI/Build.lua: dialog groups are missing")
   local feedback=altairValues.interfaceBindings.DialogFeedback
   if feedback then feedback(panel)end
@@ -1886,6 +1895,29 @@ altairValues.dialogMotion=(function()
   state.version+=1;state.opened=true;state.dialog=true
   state.rest=panel:GetAttribute("AltairDialogPosition")or state.rest or panel.Position
   local size=panel:GetAttribute("AltairDialogSize")or panel.Size
+  if panel==disconnectedPrompt then
+   state.baseRest=state.baseRest or state.rest
+   state.rest=state.baseRest
+   local parent=panel.Parent
+   if typeof(nativePrompt)=="Instance"and nativePrompt:IsA("GuiObject")and nativePrompt.Visible and parent and parent:IsA("ScreenGui")and nativePrompt:IsDescendantOf(parent)then
+    local viewport=parent.AbsoluteSize
+    local nativeSize=nativePrompt.AbsoluteSize
+    local height=panel.AbsoluteSize.Y
+    if height<=0 then
+     local scale=panel:FindFirstChildOfClass("UIScale")
+     height=(size.Y.Scale*viewport.Y+size.Y.Offset)*(scale and scale.Scale or 1)
+    end
+    if viewport.X>0 and viewport.Y>0 and nativeSize.X>0 and nativeSize.Y>0 and height>0 then
+     local y=state.baseRest.Y.Scale*viewport.Y+state.baseRest.Y.Offset
+     local top=y-panel.AnchorPoint.Y*height
+     local nativeTop=nativePrompt.AbsolutePosition.Y-parent.AbsolutePosition.Y
+     -- Reserve 12px clearance plus the existing 14px downward entrance travel.
+     local shift=math.min(math.max(0,top+height-nativeTop+26),math.max(0,top-12))
+     state.rest=UDim2.new(state.baseRest.X.Scale,state.baseRest.X.Offset,state.baseRest.Y.Scale,state.baseRest.Y.Offset-shift)
+    end
+   end
+   panel:SetAttribute("AltairDialogPosition",state.rest)
+  end
   panel:SetAttribute("AltairDialogClosing",false)
   panel.Interactable=true
   local surface=material(panel)
@@ -2690,145 +2722,233 @@ do
 end
 
 local function BlinkSmartBar(blinkCount, color, onPulse)
-	table.insert(blinkState.queue, {
-		count = math.max(1, math.floor(tonumber(blinkCount) or 1)),
-        onPulse = onPulse,
-		color = typeof(color) == "Color3" and color or nil,
-	})
-
-	if blinkState.running then return end
+	if not checkAltair() then return end
+	local count = tonumber(blinkCount) or 1
+	if count ~= count or count == math.huge or count == -math.huge then count = 1 end
+	-- Feedback is bounded even when external callers repeatedly enqueue it.
+	local accepted = #blinkState.queue < 16
+	if accepted then
+		table.insert(blinkState.queue, {
+			count = math.clamp(math.floor(count), 1, 8),
+			onPulse = onPulse,
+			color = typeof(color) == "Color3" and color or nil,
+		})
+	end
+	if blinkState.running then
+		if not accepted then return false end
+		return
+	end
 	blinkState.running = true
-
 	task.spawn(function()
-		local activeBar, activeSaved
-		local function returnTransparency(object,state)
-			local layout=altairValues.smartBarLayout
-			if object==drag:FindFirstChild("Drag")and layout and layout.dragVisualTransparency~=nil then return layout.dragVisualTransparency end
-			return state[2]
+		local feedback, outline, backFeedback, backOutline, shadow, sourceShadow
+		local dragFeedback, dragVisual, shadowColorProperty, shadowTransparencyProperty
+		local outlineAnimation, backAnimation, shadowAnimation, dragAnimation, activeBar, activeBack
+		local visualConnections = {}
+		local function alive()
+			return checkAltair() and activeBar and activeBar:IsDescendantOf(UI)
+				and feedback and feedback.Parent == activeBar and outline and outline.Parent == feedback
+				and activeBack and activeBack.Parent == activeBar
+				and backFeedback and backFeedback.Parent == activeBack and backOutline and backOutline.Parent == backFeedback
+				and (not sourceShadow or sourceShadow.Parent) and (not shadow or shadow.Parent)
+				and (not dragVisual or dragVisual.Parent) and (not dragFeedback or dragFeedback.Parent)
 		end
-
-		local function capture(bar)
-			local saved = {}
-
-			for _, object in ipairs({
-				bar.Shadow,
-				bar.CircleGradient,
-				bar.UIStroke,
-                bar.Back.UIStroke,
-                drag:FindFirstChild("Drag"),
-			}) do
-				local stroke = object:IsA("UIStroke")
-				local image=object:IsA("ImageLabel")or object:IsA("ImageButton")
-                local transparencyProperty = stroke and "Transparency" or image and "ImageTransparency"or"BackgroundTransparency"
-				local colorProperty = stroke and "Color" or image and "ImageColor3"or"BackgroundColor3"
-
-				saved[object] = {
-					transparencyProperty,
-					object[transparencyProperty],
-					colorProperty,
-					object[colorProperty],
-				}
+		local function stopAnimations()
+			if outlineAnimation then outlineAnimation:Cancel(); outlineAnimation = nil end
+			if backAnimation then backAnimation:Cancel(); backAnimation = nil end
+			if shadowAnimation then shadowAnimation:Cancel(); shadowAnimation = nil end
+			if dragAnimation then dragAnimation:Cancel(); dragAnimation = nil end
+		end
+		local function animate(duration, outlineGoal, backGoal, shadowGoal, dragGoal)
+			stopAnimations()
+			local info = TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+			outlineAnimation = tweenService:Create(outline, info, outlineGoal)
+			outlineAnimation:Play()
+			backAnimation = tweenService:Create(backOutline, info, backGoal)
+			backAnimation:Play()
+			if shadow and shadowGoal then
+				shadowAnimation = tweenService:Create(shadow, info, shadowGoal)
+				shadowAnimation:Play()
 			end
-
-			return saved
+			if dragFeedback and dragGoal then
+				dragAnimation = tweenService:Create(dragFeedback, info, dragGoal)
+				dragAnimation:Play()
+			end
 		end
-
-		local function restore(bar, saved)
-   UI:SetAttribute("AltairThemePulse",false)
-			blinkState.color = nil
-			if not saved then return end
-
-			for object, state in pairs(saved) do
-				if object.Parent then
-					if object==drag:FindFirstChild("Drag")then
-						tweenService:Create(object,TweenInfo.new(.14,Enum.EasingStyle.Sine,Enum.EasingDirection.Out),{[state[1]]=returnTransparency(object,state)}):Play()
-					else object[state[1]] = state[2]end
-
-					object[state[3]] = blinkState.persistentColor or state[4]
+		local ok, err = pcall(function()
+			local bar = UI:FindFirstChild("SmartBar")
+			local back = bar and bar:FindFirstChild("Back")
+			if not checkAltair() or not bar or not back then return end
+			for _, object in ipairs(UI:GetChildren()) do
+				if object:IsA("ImageLabel") and object.Name == "SoftShadow"
+					and object:GetAttribute("AltairShadowFor") == "SmartBar" then
+					sourceShadow = object
+					break
 				end
 			end
-		end
-
-		local ok, err = pcall(function()
-			while #blinkState.queue > 0 do
-				local request = table.remove(blinkState.queue, 1)
-				local bar = UI.SmartBar
-
-				if bar and bar.Parent then
-					activeBar = bar
-					activeSaved = capture(bar)
-
-					local tweenInfo = TweenInfo.new(
-						0.5,
-						Enum.EasingStyle.Sine,
-						Enum.EasingDirection.InOut
-					)
-
-					UI:SetAttribute("AltairThemePulse",true)
-					for _ = 1, request.count do
-                        if type(request.onPulse)=="function"then pcall(request.onPulse)end
-						blinkState.color = request.color
-
-						for object, state in pairs(activeSaved) do
-							if object.Parent then
-								local transparency = math.max(0,state[2]-(object==bar.Shadow and .3 or object==drag:FindFirstChild("Drag")and .32 or object==bar.UIStroke and .3 or object:IsA("UIStroke")and .2 or .15))
-
-								local goal = {
-									[state[1]] = transparency,
-								}
-
-								if request.color then
-									goal[state[3]] = request.color
-								end
-
-								tweenService:Create(object, tweenInfo, goal):Play()
-							end
+			if not sourceShadow then
+				local nativeShadow = bar:FindFirstChild("SoftShadow")
+				if nativeShadow and nativeShadow:IsA("UIShadow") then sourceShadow = nativeShadow end
+			end
+			activeBar = bar
+			activeBack = back
+			feedback = Instance.new("Frame")
+			feedback.Name = "SmartBarFeedback"
+			feedback.BackgroundTransparency = 1
+			feedback.BorderSizePixel = 0
+			feedback.Size = UDim2.fromScale(1, 1)
+			feedback.Active = false
+			feedback.Interactable = false
+			feedback.ZIndex = bar.ZIndex + 5
+			feedback:SetAttribute("AltairThemeIgnore", true)
+			local corner = bar:FindFirstChildOfClass("UICorner")
+			if corner then corner:Clone().Parent = feedback end
+			outline = Instance.new("UIStroke")
+			outline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+			outline.Thickness = 1
+			outline.Transparency = 1
+			outline.Parent = feedback
+			feedback.Parent = bar
+			backFeedback = Instance.new("Frame")
+			backFeedback.Name = "SmartBarBackFeedback"
+			backFeedback.BackgroundTransparency = 1
+			backFeedback.BorderSizePixel = 0
+			backFeedback.Size = UDim2.fromScale(1, 1)
+			backFeedback.Active = false
+			backFeedback.Interactable = false
+			backFeedback.ZIndex = back.ZIndex + 5
+			backFeedback:SetAttribute("AltairThemeIgnore", true)
+			local backCorner = back:FindFirstChildOfClass("UICorner")
+			if backCorner then backCorner:Clone().Parent = backFeedback end
+			local baseBackOutline = back:FindFirstChildOfClass("UIStroke")
+			local backRestThickness = baseBackOutline and baseBackOutline.Thickness or .45
+			backOutline = Instance.new("UIStroke")
+			backOutline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+			backOutline.Thickness = backRestThickness
+			backOutline.Transparency = 1
+			backOutline.Parent = backFeedback
+			backFeedback.Parent = back
+			local drag = UI:FindFirstChild("Drag")
+			dragVisual = drag and drag:FindFirstChild("Drag")
+			if dragVisual and dragVisual:IsA("GuiObject") then
+				dragFeedback = Instance.new("Frame")
+				dragFeedback.Name = "SmartBarFeedbackDrag"
+				dragFeedback.BackgroundTransparency = 1
+				dragFeedback.BorderSizePixel = 0
+				dragFeedback.Active = false
+				dragFeedback.Interactable = false
+				dragFeedback:SetAttribute("AltairThemeIgnore", true)
+				local dragCorner = dragVisual:FindFirstChildOfClass("UICorner")
+				if dragCorner then dragCorner:Clone().Parent = dragFeedback end
+				for _, property in ipairs({"Position", "Size", "AnchorPoint", "Rotation", "ZIndex", "Visible"}) do
+					local key = property
+					dragFeedback[key] = dragVisual[key]
+					visualConnections[#visualConnections + 1] = dragVisual:GetPropertyChangedSignal(key):Connect(function()
+						if dragFeedback and dragFeedback.Parent and dragVisual.Parent then dragFeedback[key] = dragVisual[key] end
+					end)
+				end
+				dragFeedback.ZIndex = dragVisual.ZIndex + 5
+				dragFeedback.Parent = dragVisual.Parent
+			end
+			if sourceShadow then
+				-- Clone the active renderer under its existing parent. Blink owns only
+				-- this clone's tint/alpha; the base renderer remains theme-owned.
+				shadow = sourceShadow:Clone()
+				shadow.Name = "SmartBarFeedbackShadow"
+				shadow:SetAttribute("AltairThemeIgnore", true)
+				if shadow:IsA("ImageLabel") then
+					shadowColorProperty = "ImageColor3"
+					shadowTransparencyProperty = "ImageTransparency"
+					shadow.ImageTransparency = 1
+					shadow.Active = false
+					shadow.Interactable = false
+					local function syncRenderedShadowVisibility()
+						if shadow and sourceShadow.Parent then
+							shadow.Visible = sourceShadow.Visible and bar.Visible and bar:GetAttribute("AltairClosing") ~= true
 						end
-
-						task.wait(0.5)
-
-						blinkState.color = nil
-
-						for object, state in pairs(activeSaved) do
-							if object.Parent then
-								local transparency = returnTransparency(object,state)
-
-								local restoreColor = blinkState.persistentColor
-								if not restoreColor then
-									restoreColor = settingValue("Rainbow Mode", false)
-										and Color3.fromHSV((os.clock() / 8) % 1, 0.65, 0.8)
-										or state[4]
-								end
-								tweenService:Create(object, tweenInfo, {
-									[state[1]] = transparency,
-									[state[3]] = restoreColor,
-								}):Play()
-							end
-						end
-
-						task.wait(0.5)
 					end
-
-					restore(bar, activeSaved)
-					activeBar, activeSaved = nil, nil
+					for _, property in ipairs({"Position", "Size", "Rotation", "SliceScale", "ZIndex"}) do
+						local key = property
+						visualConnections[#visualConnections + 1] = sourceShadow:GetPropertyChangedSignal(key):Connect(function()
+							if shadow and shadow.Parent and sourceShadow.Parent then shadow[key] = sourceShadow[key] end
+						end)
+					end
+					syncRenderedShadowVisibility()
+					for _, signal in ipairs({
+						sourceShadow:GetPropertyChangedSignal("Visible"),
+						bar:GetPropertyChangedSignal("Visible"),
+						bar:GetAttributeChangedSignal("AltairClosing"),
+					}) do
+						visualConnections[#visualConnections + 1] = signal:Connect(syncRenderedShadowVisibility)
+					end
+				else
+					shadowColorProperty = "Color"
+					shadowTransparencyProperty = "Transparency"
+					shadow.Transparency = 1
+				end
+				shadow.Parent = sourceShadow.Parent
+			end
+			while checkAltair() and #blinkState.queue > 0 do
+				local request = table.remove(blinkState.queue, 1)
+				for _ = 1, request.count do
+					if not alive() then return end
+					if type(request.onPulse) == "function" then pcall(request.onPulse) end
+					if not alive() then return end
+					local reduced = UI:GetAttribute("AltairReduceMotion") == true
+					pcall(function() reduced = reduced or guiService.ReducedMotionEnabled == true end)
+					-- Reduced motion still delivers the callback, without a flash.
+					if reduced then
+						-- Callbacks can enqueue more work; always yield under this
+						-- profile too, rather than consuming a reentrant queue inline.
+						task.wait()
+					else
+						local stroke = bar:FindFirstChildOfClass("UIStroke")
+						local raw = request.color or blinkState.persistentColor
+							or (settingValue("Rainbow Mode", false) and Color3.fromHSV((os.clock() / 8) % 1, .65, .8))
+							or (stroke and altairValues.interfaceBindings.IdleBase(UI, stroke, "Color", stroke.Color))
+							or Color3.fromRGB(160, 166, 180)
+						local pulseColor = altairValues.interfaceBindings.IdleColor(UI, outline, "Color", raw)
+						outline.Color = pulseColor
+						backOutline.Color = pulseColor
+						if dragFeedback then dragFeedback.BackgroundColor3 = pulseColor end
+						local shadowPeak, shadowRest
+						if shadow then
+							shadow[shadowColorProperty] = pulseColor
+							shadowPeak = {[shadowTransparencyProperty] = .90}
+							shadowRest = {[shadowTransparencyProperty] = 1}
+						end
+						animate(.155,
+							{Transparency = .90, Thickness = 1.35},
+							{Transparency = .90, Thickness = backRestThickness + .45},
+							shadowPeak,
+							dragFeedback and {BackgroundTransparency = .90} or nil)
+						task.wait(.155)
+						if not alive() then return end
+						animate(.375,
+							{Transparency = 1, Thickness = 1},
+							{Transparency = 1, Thickness = backRestThickness},
+							shadowRest,
+							dragFeedback and {BackgroundTransparency = 1} or nil)
+						task.wait(.375)
+					end
 				end
 			end
 		end)
-
-		if activeBar and activeSaved then
-			pcall(restore, activeBar, activeSaved)
-		else
-			blinkState.color = nil
-		end
-
+		-- Release the queue before native cancellation/destruction signals: any
+		-- reentrant request can start its own worker instead of being stranded.
 		blinkState.running = false
-  UI:SetAttribute("AltairThemePulse",false)
-  if altairValues.theme then altairValues.theme:Apply()end
-
-		if not ok then
-			warn("Altair | SmartBar blink failed: " .. tostring(err))
-		end
+		-- One failed native cleanup must not permanently lock the request queue.
+		pcall(stopAnimations)
+		for _, connection in ipairs(visualConnections) do connection:Disconnect() end
+		if shadow then pcall(function() shadow:Destroy() end) end
+		if dragFeedback then pcall(function() dragFeedback:Destroy() end) end
+		if backFeedback then pcall(function() backFeedback:Destroy() end) end
+		if feedback then pcall(function() feedback:Destroy() end) end
+		if not checkAltair() then table.clear(blinkState.queue) end
+		-- No global Theme:Apply or base material/alpha restoration: this pulse
+		-- never changed those properties, so unrelated panels cannot flash.
+		if not ok then warn("Altair | SmartBar feedback failed: " .. tostring(err)) end
 	end)
+	if not accepted then return false end
 end
 
 local function Toast(content, color, font, skipBlink)
@@ -4000,7 +4120,8 @@ altairValues.smartBarLayout = (function()
 
  altairValues.uiAvoidance=altairValues.interfaceBindings.UIAvoidance(UI,function()return settingValue("Avoid Game UI",false)end)
  local dockView=altairValues.interfaceBindings.Dock(UI)
- altairValues.navigationAccents=altairValues.interfaceBindings.NavigationAccents({Root=UI,IsBarOpen=function()return smartBarOpen end,IsHomeOpen=function()return homeOpen end})
+ assert(type(dockView)=="table"and dockView.NavigationGeometryOwnership==1 and type(dockView.SetNavigationState)=="function","Update UI/Build.lua: matching Dock navigation geometry contract 1 is required")
+ altairValues.navigationAccents=altairValues.interfaceBindings.NavigationAccents({Root=UI,Dock=dockView,IsBarOpen=function()return smartBarOpen end,IsHomeOpen=function()return homeOpen end})
  altairValues.dragContrast=altairValues.interfaceBindings.DragContrast(UI)
 	local back = smartBar.Back
 	local time = back.Time
@@ -6749,25 +6870,28 @@ local homeController = (function()
   local function current()return alive and checkAltair()and(not ownsRequest or ownsRequest())end
   if not current()then return end
   if not item or not tonumber(item.placeId) or item.placeId<=0 then notification('Home', 'This experience is unavailable to join.', 4370336704) return end
-  if not job and (tonumber(item.placeId)==game.PlaceId or (tonumber(item.universeId) and item.universeId>0 and item.universeId==game.GameId)) then
-   if not originalSetClipboard then notification('Unable to copy join script','Clipboard support is unavailable.',4335479658) return end
-   local joinScript=string.format('game:GetService("TeleportService"):TeleportToPlaceInstance(%d, %q)',game.PlaceId,game.JobId)
-   local ok=pcall(originalSetClipboard,joinScript)
-   if not current()then return end
-   notification(ok and 'Copied Join Script' or 'Unable to copy join script',ok and 'Copied a join script for your current server.' or 'The clipboard operation failed.',ok and 4335479121 or 4335479658)
-   return
-  end
+   local instanceJoin=type(job)=='string'and job~=''
   if joining then return end
   joining=true
   task.spawn(function()
    if not current()then joining=false return end
-   local target=job and item.placeId or resolveRoot(item)
+    local target,resolveError
+    if instanceJoin then target=model.id(item.placeId)else target,resolveError=resolveRoot(item)end
    if not current()then joining=false return end
-   if not target then joining=false notification('Home','The experience launch place is unavailable. Try again shortly.',4370336704) return end
+    if model.id(target)==0 then joining=false notification('Home',resolveError or 'The experience start place could not be verified. No teleport was attempted.',4370336704) return end
+    if not instanceJoin and target==game.PlaceId then
+     joining=false
+     if not originalSetClipboard then notification('Unable to copy join script','Clipboard support is unavailable.',4335479658) return end
+     local joinScript=string.format('game:GetService("TeleportService"):TeleportToPlaceInstance(%d, %q)',game.PlaceId,game.JobId)
+     local ok=pcall(originalSetClipboard,joinScript)
+     if not current()then return end
+     notification(ok and 'Copied Join Script' or 'Unable to copy join script',ok and 'Copied a join script for your current server.' or 'The clipboard operation failed.',ok and 4335479121 or 4335479658)
+     return
+    end
    recordActivity('Joining experience',item.name or 'Experience')
    if not current()then joining=false return end
    local ok,err=pcall(function()
-    if job and job~='' then teleportService:TeleportToPlaceInstance(target,job,localPlayer)
+     if instanceJoin then teleportService:TeleportToPlaceInstance(target,job,localPlayer)
     else teleportService:Teleport(target,localPlayer) end
    end)
    joining=false
@@ -7282,8 +7406,8 @@ local homeController = (function()
   recordActivity(saved(item) and 'Saved game' or 'Removed saved game',item.name)
  end
  local function gameDetails(item)
-  local id=tonumber(item.universeId) or 0
-  if id>0 and metadata[id] then return metadata[id] end
+   local id=model.id(item.universeId)
+   if id>0 and metadata[id] then return metadata[id],true end
   local result=id>0 and getJSON('https://games.roblox.com/v1/games?universeIds='..id) or nil
   local info=result and result.data and result.data[1]
   local detail=table.clone(item)
@@ -7291,7 +7415,7 @@ local homeController = (function()
   local thumbnailPlace=model.id(detail.rootPlaceId)>0 and detail.rootPlaceId or detail.placeId
   if model.id(thumbnailPlace)>0 then detail.artwork='rbxthumb://type=GameThumbnail&id='..tostring(thumbnailPlace)..'&w=768&h=432'end
   if info then metadata[id]=detail end
-  return detail
+   return detail,info~=nil
  end
  local function repairGame(item,detail)
   if not detail or model.id(detail.rootPlaceId)==0 then return false end
@@ -7302,10 +7426,10 @@ local homeController = (function()
   return changed
  end
  resolveRoot=function(item)
-  if model.id(item.universeId)==0 then return model.id(item.placeId)>0 and item.placeId or nil end
-  if model.id(item.rootPlaceId)>0 then return item.rootPlaceId end
-  local detail=gameDetails(item)
+   if model.id(item.universeId)==0 then return nil,'This saved experience has no universe ID, so its start place could not be verified. No teleport was attempted.'end
+   local detail,verified=gameDetails(item)
   if not alive then return nil end
+   if not verified then return nil,'The experience start place could not be verified from Roblox. No teleport was attempted.'end
   if repairGame(item,detail) then save() renderGames() end
   return model.id(item.rootPlaceId)>0 and item.rootPlaceId or nil
  end
@@ -7558,11 +7682,13 @@ local homeController = (function()
  connect(fp:GetPropertyChangedSignal('Visible'),function()if fp.Visible and opened then renderFriends()end end)
  connect(home:GetPropertyChangedSignal('Visible'),function()if home.Visible and opened then renderFriends()end end)
 
- local gameRows=setmetatable({},{__mode="k"})
+ -- These three game lists belong to this Home controller. Engine ancestry
+ -- does not retain their Luau references; weak keys can lose live row pools.
+ local gameRows={}
  local function gameRow(list,item,order,directory)
   local pool=gameRows[list];if not pool then pool={};gameRows[list]=pool end
   local key=gameKey(item);local slot=pool[key]
-  if not slot or not slot.row.Parent then
+  if not slot or slot.row.Parent~=list then
    local entry=row(list,key,order);slot={row=entry};pool[key]=slot
    action(entry.Interact,function()
     local current=slot.item;if not current then return end
@@ -7585,7 +7711,18 @@ local homeController = (function()
   return key
  end
  local function hideUnusedGames(list,seen)
-  for key,slot in pairs(gameRows[list]or{})do if slot.row.Parent and not seen[key]then slot.row.Visible=false end end
+  local pool=gameRows[list]or{}
+  local owned={}
+  for key,slot in pairs(pool)do
+   local entry=slot.row
+   if entry.Parent==list then
+    owned[entry]=true
+    if not seen[key]then entry.Visible=false end
+   end
+  end
+  for _,entry in ipairs(list:GetChildren())do
+   if entry:IsA('GuiObject')and entry:GetAttribute('RuntimeEntry')==true and not owned[entry]then entry:Destroy()end
+  end
  end
  renderGames=function()
   local browser=gp.Browser;local query=browser.SearchBox.Text;local items={}
@@ -7795,6 +7932,7 @@ local homeController = (function()
   for tween in pairs(homeFadeTweens)do tween:Cancel()end
   homeBlur:Destroy()
   for _,c in ipairs(connections) do c:Disconnect() end table.clear(connections)
+  table.clear(gameRows)
   if menu.Parent then menu:Destroy() end
  end
  controller.tick=tick
@@ -7899,19 +8037,21 @@ local function UpdateHome() homeController.tick() end
 altairValues.homeFovTarget=Instance.new("NumberValue")
 altairValues.homeFovTarget.Value=camera.FieldOfView
 altairValues.lifecycle:own(altairValues.homeFovTarget)
-altairValues.homeFovBinding="AltairHomeFov-"..httpService:GenerateGUID(false)
-runService:BindToRenderStep(altairValues.homeFovBinding,Enum.RenderPriority.Last.Value+1,function()
- if not altairValues.lifecycle.alive or not homeOpen then return end
+local function applyHomeFov(force)
+ if not altairValues.lifecycle.alive then return end
+ local closingCamera=cameraState.closingCamera
+ local closeVersion=cameraState.closeVersion
+ local restore=altairValues.homeCameraTween
+ if not homeOpen and not(closingCamera and restore and cameraState.owned[closingCamera])then return end
  local activeCamera=syncCamera()
- if not activeCamera then return end
+ if not activeCamera or not cameraState.owned[activeCamera]then return end
+ if not homeOpen and(activeCamera~=closingCamera or cameraState.closingCamera~=closingCamera or cameraState.closeVersion~=closeVersion or altairValues.homeCameraTween~=restore)then return end
  local target=altairValues.homeFovTarget.Value
- if math.abs(activeCamera.FieldOfView-target)>.01 then activeCamera.FieldOfView=target end
-end)
-track(altairValues.homeFovTarget.Changed:Connect(function()
- if not altairValues.lifecycle.alive or not homeOpen then return end
- local activeCamera=syncCamera()
- if activeCamera then activeCamera.FieldOfView=altairValues.homeFovTarget.Value end
-end))
+ if force==true or math.abs(activeCamera.FieldOfView-target)>.01 then activeCamera.FieldOfView=target end
+end
+altairValues.homeFovBinding="AltairHomeFov-"..httpService:GenerateGUID(false)
+runService:BindToRenderStep(altairValues.homeFovBinding,Enum.RenderPriority.Last.Value+1,applyHomeFov)
+track(altairValues.homeFovTarget.Changed:Connect(applyHomeFov))
 
 openHome = function(requestVersion)
  if not altairValues.lifecycle.alive then return end
@@ -7966,13 +8106,25 @@ closeHome = function(immediate)
  tweenService:Create(homeBlur,TweenInfo.new(immediate and 0 or .8,Enum.EasingStyle.Quint),{Size=0}):Play()
  cameraState:CancelClose()
  if activeCamera and cameraState.owned[activeCamera] then
-  local restore=tweenService:Create(activeCamera,TweenInfo.new(immediate and 0 or fovMotionDuration(.8),Enum.EasingStyle.Quint),{FieldOfView=cameraState.baselines[activeCamera]})
+  local closeVersion=cameraState.closeVersion
+  altairValues.homeFovTarget.Value=activeCamera.FieldOfView
+  local restore=tweenService:Create(altairValues.homeFovTarget,TweenInfo.new(immediate and 0 or fovMotionDuration(.8),Enum.EasingStyle.Quint),{Value=cameraState.baselines[activeCamera]})
   altairValues.homeCameraTween=restore
   cameraState.closingCamera=activeCamera
   restore.Completed:Once(function(state)
-   if not altairValues.lifecycle.alive or altairValues.homeCameraTween~=restore then return end
+   if not altairValues.lifecycle.alive or homeOpen or altairValues.homeCameraTween~=restore or cameraState.closingCamera~=activeCamera or cameraState.closeVersion~=closeVersion then return end
+   if state==Enum.PlaybackState.Completed then
+    -- Commit the final sample before releasing the closing owner, even if
+    -- Changed delivery or the next render callback has not run yet.
+    local restored=pcall(applyHomeFov,true)
+    if not altairValues.lifecycle.alive or homeOpen or altairValues.homeCameraTween~=restore or cameraState.closingCamera~=activeCamera or cameraState.closeVersion~=closeVersion then return end
+    if restored then
+     cameraState.owned[activeCamera]=nil;cameraState.pendingRestore[activeCamera]=nil
+    else
+     cameraState.pendingRestore[activeCamera]=true
+    end
+   end
    altairValues.homeCameraTween=nil;cameraState.closingCamera=nil
-   if state==Enum.PlaybackState.Completed then cameraState.owned[activeCamera]=nil;cameraState.pendingRestore[activeCamera]=nil end
   end)
   restore:Play()
  end
@@ -8682,9 +8834,8 @@ local function openSmartBar()
 	if cold then for _, button in ipairs(smartBar.Back.Buttons:GetChildren()) do
 		if button:IsA("GuiObject") then
 			if button.Name == "Placeholder" then
-				button.Visible = true
+				button.Visible = false
 				button.BackgroundTransparency = 1
-				button.Size = altairValues.smartBarLayout:getButtonSize()
 				continue
 			end
 
@@ -8695,7 +8846,6 @@ local function openSmartBar()
 
 			if gradient then gradient.Rotation = -120 end
 			if strokeGradient then strokeGradient.Rotation = -120 end
-			button.Size = altairValues.smartBarLayout:getButtonSize()
 			button.BackgroundTransparency = 1
 			if stroke then stroke.Transparency = 1 end
 			if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then icon.ImageTransparency = 1 end
@@ -8729,7 +8879,6 @@ local function openSmartBar()
 
 			if stroke then smartBarTransition:create(stroke, TweenInfo.new(.8, Enum.EasingStyle.Quint), { Transparency = .94 }):Play() end
 			smartBarTransition:create(button, TweenInfo.new(.8, Enum.EasingStyle.Quint), {
-				Size = altairValues.smartBarLayout:getButtonSize(),
 				BackgroundTransparency = 0,
 			}):Play()
 			if gradient then smartBarTransition:create(gradient, TweenInfo.new(1, Enum.EasingStyle.Quint), { Rotation = 50 }):Play() end
@@ -8794,7 +8943,6 @@ local function closeSmartBar(requestVersion)
 			local icon = button:FindFirstChild("Icon")
 			if stroke then smartBarTransition:create(stroke, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Transparency = 1 }):Play() end
 			smartBarTransition:create(button, TweenInfo.new(0.3, Enum.EasingStyle.Quint), {
-				Size = altairValues.smartBarLayout:getButtonSize(true),
 				BackgroundTransparency = 1,
 			}):Play()
 			if icon and (icon:IsA("ImageLabel") or icon:IsA("ImageButton")) then
@@ -13764,7 +13912,7 @@ local function runtime()
 					disconnectedPrompt.Content.Text="Roblox reported a connection error. You can retry or dismiss this message."
 					disconnectedPrompt.Action.Text="Rejoin"
 				end
-    altairValues.dialogMotion:Open(disconnectedPrompt)
+    altairValues.dialogMotion:Open(disconnectedPrompt,disconnectedRobloxUI)
 
 				altairValues.disconnectAction=track(disconnectedPrompt.Action.MouseButton1Click:Connect(function()
 					if disconnectType == "ban" then
